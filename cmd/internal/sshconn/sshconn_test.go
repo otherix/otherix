@@ -638,12 +638,16 @@ func TestDialLoadBalancerBrokersRelay(t *testing.T) {
 type fakeGateway struct {
 	mu     sync.Mutex
 	bearer string
+	sni    string
 }
 
 func (g *fakeGateway) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.bearer = r.Header.Get("Authorization")
+		if r.TLS != nil {
+			g.sni = r.TLS.ServerName
+		}
 		g.mu.Unlock()
 		hj, ok := w.(http.Hijacker)
 		if !ok {
@@ -719,6 +723,63 @@ func TestDialIngressGatewayPresentsCred(t *testing.T) {
 	gw.mu.Unlock()
 	if bearer != "Bearer otx_ingress_faketoken" {
 		t.Errorf("gateway bearer = %q, want %q", bearer, "Bearer otx_ingress_faketoken")
+	}
+}
+
+// TestDialIngressPinsBrokerServerName proves the client pins the gateway TLS
+// ServerName to the broker-provided node identity (splicer_server_name), NOT the
+// dialed splicer host. The broker returns a dial address of 127.0.0.1 but an
+// identity ServerName of example.com; the client must present example.com as the
+// SNI. This is the co-located-gateway fix: the node leaf carries its identity SAN
+// (node-<name>.agents.otherix.local) but not the dialed ingress IP, so pinning the
+// dialed host would fail verification. Revert to confirm: if dialGateway pinned
+// u.Hostname() the gateway would observe SNI 127.0.0.1, failing this test.
+func TestDialIngressPinsBrokerServerName(t *testing.T) {
+	gw := &fakeGateway{}
+	gwTS := httptest.NewTLSServer(gw.handler())
+	defer gwTS.Close()
+	// Dial 127.0.0.1 (the real listener) but hand the client a distinct identity
+	// ServerName. Both 127.0.0.1 and example.com are in the shared httptest cert,
+	// so the only thing that decides which one verifies is which the client pins.
+	splicer := "https://" + gwTS.Listener.Addr().String()
+
+	cpTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Port int `json:"port"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"transport":           "gateway",
+			"vm_id":               "11111111-1111-1111-1111-111111111111",
+			"port":                body.Port,
+			"splicer_addr":        splicer,
+			"splicer_server_name": "example.com",
+			"session_cred":        "otx_ingress_faketoken",
+			"expires_at":          time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+		})
+	}))
+	defer cpTS.Close()
+
+	cfg := Config{
+		ServerURL:   cpTS.URL,
+		BearerToken: "otx_clitoken",
+		CACertPEM:   certPEM(cpTS.Certificate()),
+	}
+
+	conn, err := DialIngress(context.Background(), cfg, "vm1", 22)
+	if err != nil {
+		t.Fatalf("DialIngress: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	// Drive a byte so the handshake and request are certainly complete before the
+	// SNI is read (the fake gateway records it in the request handler).
+	_, _ = io.WriteString(conn, "x")
+
+	gw.mu.Lock()
+	sni := gw.sni
+	gw.mu.Unlock()
+	if sni != "example.com" {
+		t.Errorf("gateway observed SNI = %q, want %q (broker identity, not the dialed host)", sni, "example.com")
 	}
 }
 

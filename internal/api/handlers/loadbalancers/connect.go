@@ -21,13 +21,14 @@ import (
 // lbConnectResponse extends the VM ingress response with the chosen backend's
 // name, which the relay transport needs to address /v1/vms/{name}/relay.
 type lbConnectResponse struct {
-	Transport   string `json:"transport"`
-	VMID        string `json:"vm_id"`
-	VMName      string `json:"vm_name"`
-	Port        int    `json:"port"`
-	SplicerAddr string `json:"splicer_addr,omitempty"`
-	SessionCred string `json:"session_cred,omitempty"`
-	ExpiresAt   string `json:"expires_at,omitempty"`
+	Transport         string `json:"transport"`
+	VMID              string `json:"vm_id"`
+	VMName            string `json:"vm_name"`
+	Port              int    `json:"port"`
+	SplicerAddr       string `json:"splicer_addr,omitempty"`
+	SplicerServerName string `json:"splicer_server_name,omitempty"`
+	SessionCred       string `json:"session_cred,omitempty"`
+	ExpiresAt         string `json:"expires_at,omitempty"`
 }
 
 // Connect implements POST /v1/loadbalancers/{id}/connect, where {id} is the
@@ -102,6 +103,7 @@ func (h *Handler) Connect(w http.ResponseWriter, r *http.Request) {
 		}
 		if res.Transport == "gateway" {
 			resp.SplicerAddr = res.SplicerAddr
+			resp.SplicerServerName = res.SplicerServerName
 			resp.SessionCred = res.SessionCred
 			resp.ExpiresAt = res.ExpiresAt.UTC().Format(time.RFC3339)
 		}

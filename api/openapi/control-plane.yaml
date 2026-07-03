@@ -8217,9 +8217,10 @@ components:
         Connect coordinates returned by the L4 ingress broker. The
         `transport` field discriminates the shape:
 
-        - `gateway` — overlay VM. `splicer_addr`, `session_cred`, and
-          `expires_at` are present; the client dials `splicer_addr` and
-          presents `session_cred`.
+        - `gateway` — overlay VM. `splicer_addr`, `splicer_server_name`,
+          `session_cred`, and `expires_at` are present; the client dials
+          `splicer_addr`, pins the TLS `ServerName` to `splicer_server_name`,
+          and presents `session_cred`.
         - `relay` — bridge VM. The gateway-only fields are omitted; the
           client connects back through the control-plane relay.
       required: [transport, vm_id, port]
@@ -8242,6 +8243,16 @@ components:
           description: |
             The converged gateway's address to dial. Present only on the
             `gateway` transport.
+        splicer_server_name:
+          type: string
+          description: |
+            The gateway node's identity SAN
+            (`node-<name>.agents.otherix.local`) the client pins as the TLS
+            `ServerName` for the ingress leg, rather than the dialed
+            `splicer_addr` host: every node leaf carries this identity SAN,
+            so the pin verifies for a co-located gateway whose leaf does not
+            carry the ingress address. Present only on the `gateway`
+            transport.
         session_cred:
           type: string
           description: |
