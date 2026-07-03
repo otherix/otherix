@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -377,5 +378,131 @@ func TestLoadBalancerPublishedPortSwapAndRelease(t *testing.T) {
 	reuser2.PublishedPort = &p2
 	if _, err := s.CreateLoadBalancer(ctx, reuser2); err != nil {
 		t.Fatalf("reuse freed p2: %v", err)
+	}
+}
+
+// lbPublishedPortGuardKey mirrors the store's unexported published-port guard
+// key so a test can seed or read the guard directly from the external package.
+func lbPublishedPortGuardKey(port int32) string {
+	return etcd.Key("uniq", "lb_published_port", strconv.Itoa(int(port)))
+}
+
+// TestLoadBalancerReclaimOwnLeakedPortGuard verifies that a load balancer can
+// re-claim a published-port guard that already points at itself (a leaked
+// guard whose row no longer references the port), while a guard held by a
+// DIFFERENT load balancer still rejects the claim.
+func TestLoadBalancerReclaimOwnLeakedPortGuard(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	owner := seedLBOwner(t, s)
+
+	port := int32(7100)
+	lb, err := s.CreateLoadBalancer(ctx, lbParams(uniqueLBName("lb"), owner))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Simulate a leaked guard: the port guard points at lb, but lb's row does
+	// not reference the port (lb is unpublished). Write the guard directly.
+	if _, err := cli.Raw().Put(ctx, lbPublishedPortGuardKey(port), lb.ID.String()); err != nil {
+		t.Fatalf("seed leaked guard: %v", err)
+	}
+
+	// Publishing lb onto its own leaked port must succeed (reclaim).
+	upd := store.UpdateLoadBalancerParams{
+		ID: lb.ID, Name: lb.Name, Port: lb.Port, Selector: lb.Selector,
+		HealthCheck: lb.HealthCheck, PublishedPort: &port, Protocol: "tcp",
+	}
+	if _, err := s.UpdateLoadBalancer(ctx, upd); err != nil {
+		t.Fatalf("reclaim own leaked port: %v", err)
+	}
+
+	// A different LB claiming a port whose guard is held by lb must be rejected.
+	other, err := s.CreateLoadBalancer(ctx, lbParams(uniqueLBName("lb"), owner))
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	otherPort := int32(7101)
+	if _, err := cli.Raw().Put(ctx, lbPublishedPortGuardKey(otherPort), lb.ID.String()); err != nil {
+		t.Fatalf("seed other-owned guard: %v", err)
+	}
+	updOther := store.UpdateLoadBalancerParams{
+		ID: other.ID, Name: other.Name, Port: other.Port, Selector: other.Selector,
+		HealthCheck: other.HealthCheck, PublishedPort: &otherPort, Protocol: "tcp",
+	}
+	if _, err := s.UpdateLoadBalancer(ctx, updOther); !errors.Is(err, store.ErrLoadBalancerPublishedPortExists) {
+		t.Fatalf("claim other-owned port err = %v, want ErrLoadBalancerPublishedPortExists", err)
+	}
+}
+
+// TestUpdateLoadBalancerStaleRevisionConflicts verifies the row ModRevision CAS:
+// an update built from a stale revision (the row changed since it was read)
+// fails with ErrLoadBalancerConflict rather than silently clobbering.
+func TestUpdateLoadBalancerStaleRevisionConflicts(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	owner := seedLBOwner(t, s)
+
+	lb, rev, err := func() (store.LoadBalancer, int64, error) {
+		created, err := s.CreateLoadBalancer(ctx, lbParams(uniqueLBName("lb"), owner))
+		if err != nil {
+			return store.LoadBalancer{}, 0, err
+		}
+		return s.LoadBalancerByIDWithRevision(ctx, created.ID)
+	}()
+	if err != nil {
+		t.Fatalf("create+read: %v", err)
+	}
+
+	// First update commits at the read revision -> succeeds and bumps the row.
+	first := store.UpdateLoadBalancerParams{
+		ID: lb.ID, Name: lb.Name, Port: 81, Selector: lb.Selector,
+		HealthCheck: lb.HealthCheck, ExpectedRevision: rev,
+	}
+	if _, err := s.UpdateLoadBalancer(ctx, first); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+
+	// Second update reuses the now-stale revision -> conflict.
+	second := store.UpdateLoadBalancerParams{
+		ID: lb.ID, Name: lb.Name, Port: 82, Selector: lb.Selector,
+		HealthCheck: lb.HealthCheck, ExpectedRevision: rev,
+	}
+	if _, err := s.UpdateLoadBalancer(ctx, second); !errors.Is(err, store.ErrLoadBalancerConflict) {
+		t.Fatalf("stale update err = %v, want ErrLoadBalancerConflict", err)
+	}
+}
+
+// TestUpdateUnpublishSucceedsWhenGuardAlreadyGone verifies the release is
+// best-effort: an unpublish whose old-port guard was already freed still
+// succeeds (the row commit is authoritative, the guard release is cleanup).
+func TestUpdateUnpublishSucceedsWhenGuardAlreadyGone(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	owner := seedLBOwner(t, s)
+
+	port := int32(7200)
+	p := lbParams(uniqueLBName("lb"), owner)
+	p.PublishedPort = &port
+	p.Protocol = "tcp"
+	lb, err := s.CreateLoadBalancer(ctx, p)
+	if err != nil {
+		t.Fatalf("create published: %v", err)
+	}
+	// Concurrently free the guard out from under the pending unpublish.
+	if _, err := cli.Raw().Delete(ctx, lbPublishedPortGuardKey(port)); err != nil {
+		t.Fatalf("pre-delete guard: %v", err)
+	}
+
+	upd := store.UpdateLoadBalancerParams{
+		ID: lb.ID, Name: lb.Name, Port: lb.Port, Selector: lb.Selector,
+		HealthCheck: lb.HealthCheck, PublishedPort: nil, Protocol: "",
+	}
+	got, err := s.UpdateLoadBalancer(ctx, upd)
+	if err != nil {
+		t.Fatalf("unpublish: %v", err)
+	}
+	if got.PublishedPort != nil {
+		t.Errorf("PublishedPort = %v, want nil after unpublish", got.PublishedPort)
 	}
 }

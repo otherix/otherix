@@ -19,6 +19,7 @@ import (
 
 	"github.com/otherix/otherix/internal/api/handlers/loadbalancers"
 	"github.com/otherix/otherix/internal/api/handlers/vms"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -30,6 +31,8 @@ type fakeStore struct {
 	byID            map[uuid.UUID]store.LoadBalancer
 	byName          map[string]uuid.UUID // lower(name) -> id
 	byPublishedPort map[int32]uuid.UUID  // published port -> id (uniqueness guard)
+	revByID         map[uuid.UUID]int64  // id -> synthetic ModRevision (bumps per write)
+	updateConflicts map[uuid.UUID]int    // id -> remaining forced ErrLoadBalancerConflict on update
 	lastCreated     store.LoadBalancer
 
 	vms        map[uuid.UUID]store.VM
@@ -47,6 +50,8 @@ func newFakeStore() *fakeStore {
 		byID:            map[uuid.UUID]store.LoadBalancer{},
 		byName:          map[string]uuid.UUID{},
 		byPublishedPort: map[int32]uuid.UUID{},
+		revByID:         map[uuid.UUID]int64{},
+		updateConflicts: map[uuid.UUID]int{},
 		vms:             map[uuid.UUID]store.VM{},
 		runtimes:        map[uuid.UUID]store.VMRuntime{},
 		runtimeErr:      map[uuid.UUID]error{},
@@ -116,6 +121,7 @@ func (f *fakeStore) seedLB(t *testing.T, name string, owner uuid.UUID, port int3
 	}
 	f.byID[lb.ID] = lb
 	f.byName[strings.ToLower(name)] = lb.ID
+	f.revByID[lb.ID] = 1
 	return lb
 }
 
@@ -167,6 +173,7 @@ func (f *fakeStore) CreateLoadBalancer(_ context.Context, arg store.CreateLoadBa
 	if lb.PublishedPort != nil {
 		f.byPublishedPort[*lb.PublishedPort] = lb.ID
 	}
+	f.revByID[lb.ID] = 1
 	f.lastCreated = lb
 	return lb, nil
 }
@@ -179,10 +186,30 @@ func (f *fakeStore) LoadBalancerByName(_ context.Context, name string) (store.Lo
 	return f.byID[id], nil
 }
 
+// LoadBalancerByNameWithRevision mirrors the real store: it returns the row and
+// its synthetic ModRevision so the update handler can gate the write on it.
+func (f *fakeStore) LoadBalancerByNameWithRevision(_ context.Context, name string) (store.LoadBalancer, int64, error) {
+	id, ok := f.byName[strings.ToLower(name)]
+	if !ok {
+		return store.LoadBalancer{}, 0, store.ErrNotFound
+	}
+	return f.byID[id], f.revByID[id], nil
+}
+
 func (f *fakeStore) UpdateLoadBalancer(_ context.Context, arg store.UpdateLoadBalancerParams) (store.LoadBalancer, error) {
 	lb, ok := f.byID[arg.ID]
 	if !ok {
 		return store.LoadBalancer{}, store.ErrNotFound
+	}
+	// Injected transient conflict: model a concurrent writer that keeps winning
+	// the CAS for the first N attempts, so the handler's retry loop is exercised.
+	if n := f.updateConflicts[arg.ID]; n > 0 {
+		f.updateConflicts[arg.ID] = n - 1
+		return store.LoadBalancer{}, store.ErrLoadBalancerConflict
+	}
+	// Optimistic-concurrency gate, mirroring the etcd ModRevision CAS.
+	if arg.ExpectedRevision > 0 && arg.ExpectedRevision != f.revByID[arg.ID] {
+		return store.LoadBalancer{}, store.ErrLoadBalancerConflict
 	}
 	if lower := strings.ToLower(arg.Name); lower != strings.ToLower(lb.Name) {
 		if _, taken := f.byName[lower]; taken {
@@ -208,6 +235,7 @@ func (f *fakeStore) UpdateLoadBalancer(_ context.Context, arg store.UpdateLoadBa
 	lb.SourceCIDRs = arg.SourceCIDRs
 	lb.UpdatedAt = time.Now().UTC()
 	f.byID[lb.ID] = lb
+	f.revByID[lb.ID]++
 	if lb.PublishedPort != nil {
 		f.byPublishedPort[*lb.PublishedPort] = lb.ID
 	}
@@ -347,6 +375,23 @@ func TestCreatePublishedInvalidSourceCIDR(t *testing.T) {
 	}
 }
 
+// TestCreatePublishedTooManySourceCIDRs asserts a source_cidrs list longer than
+// MaxSourceCIDRs is rejected with 400 rather than persisting an unbounded
+// allowlist.
+func TestCreatePublishedTooManySourceCIDRs(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, opUser())
+	cidrs := strings.TrimSuffix(strings.Repeat(`"10.0.0.0/8",`, validation.MaxSourceCIDRs+1), ",")
+	body := `{"name":"web","port":80,"selector":{"app":"web"},"published_port":8080,"source_cidrs":[` + cidrs + `]}`
+	r := do(t, router, http.MethodPost, "/v1/loadbalancers", body)
+	if r.Code != http.StatusBadRequest {
+		t.Fatalf("too many source cidrs = %d, want 400; body=%s", r.Code, r.Body.String())
+	}
+	if code := errorCode(t, r); code != "validation_failed" {
+		t.Errorf("code = %q, want validation_failed", code)
+	}
+}
+
 // TestCreatePublishFieldsRequirePublishedPort asserts that a create carrying
 // publish-only fields (protocol, source_cidrs) without a published_port is
 // rejected with 400. Those fields have no meaning on an unpublished LB, and
@@ -407,6 +452,64 @@ func TestUpdatePublishFieldsRequirePublishPermission(t *testing.T) {
 	if code := errorCode(t, rec); code != "permission_denied" {
 		t.Errorf("code = %q, want permission_denied", code)
 	}
+}
+
+// TestUpdatePublishOnlyFieldsRejectedWhenUnpublished asserts that an update
+// carrying publish-only fields (protocol, source_cidrs) that leaves the row
+// unpublished is rejected with 400, matching the create path, so no inert
+// exposure state is persisted. The unpublish sentinel (published_port:0), which
+// clears all three fields together, still succeeds.
+func TestUpdatePublishOnlyFieldsRejectedWhenUnpublished(t *testing.T) {
+	op := opUser()
+	now := time.Now().UTC()
+
+	t.Run("source_cidrs on unpublished LB", func(t *testing.T) {
+		st := newFakeStore()
+		lb := store.LoadBalancer{
+			ID:        uuid.New(),
+			Name:      "u1",
+			OwnerID:   op.ID,
+			Port:      80,
+			Selector:  map[string]string{"app": "u"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		st.byID[lb.ID] = lb
+		st.byName[strings.ToLower(lb.Name)] = lb.ID
+
+		rec := do(t, newRouter(st, op), http.MethodPatch, "/v1/loadbalancers/u1", `{"source_cidrs":["10.0.0.0/8"]}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("unpublished source_cidrs = %d, want 400; body=%s", rec.Code, rec.Body.String())
+		}
+		if code := errorCode(t, rec); code != "validation_failed" {
+			t.Errorf("code = %q, want validation_failed", code)
+		}
+	})
+
+	t.Run("unpublish sentinel clears all three", func(t *testing.T) {
+		st := newFakeStore()
+		port := int32(8080)
+		lb := store.LoadBalancer{
+			ID:            uuid.New(),
+			Name:          "p1",
+			OwnerID:       op.ID,
+			Port:          80,
+			Selector:      map[string]string{"app": "p"},
+			PublishedPort: &port,
+			Protocol:      "tcp",
+			SourceCIDRs:   []string{"10.0.0.0/8"},
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+		st.byID[lb.ID] = lb
+		st.byName[strings.ToLower(lb.Name)] = lb.ID
+		st.byPublishedPort[port] = lb.ID
+
+		rec := do(t, newRouter(st, op), http.MethodPatch, "/v1/loadbalancers/p1", `{"published_port":0}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unpublish = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func TestCreateLoadBalancerStampsOwner(t *testing.T) {
@@ -682,6 +785,52 @@ func TestUpdateLoadBalancerByName(t *testing.T) {
 	}
 	if view["port"] != float64(9090) {
 		t.Errorf("port = %v, want 9090", view["port"])
+	}
+}
+
+// TestUpdateRetriesTransientConflict proves the handler re-reads and re-applies
+// on a concurrency conflict: two forced conflicts are absorbed by the bounded
+// retry loop and the third attempt commits, so the client still sees 200.
+func TestUpdateRetriesTransientConflict(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	if rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	st.updateConflicts[st.lastCreated.ID] = 2 // absorbed by the 4-attempt loop
+
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"port":9090}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var view map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view["port"] != float64(9090) {
+		t.Errorf("port = %v, want 9090", view["port"])
+	}
+}
+
+// TestUpdatePersistentConflictReturns409 proves the retry loop is bounded: a
+// writer that keeps winning past the attempt budget surfaces as a 409 rather
+// than looping forever.
+func TestUpdatePersistentConflictReturns409(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, devUser())
+	if rec := do(t, router, http.MethodPost, "/v1/loadbalancers",
+		`{"name":"web","port":8080,"selector":{"app":"web"}}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	st.updateConflicts[st.lastCreated.ID] = 100 // never resolves within the budget
+
+	rec := do(t, router, http.MethodPatch, "/v1/loadbalancers/web", `{"port":9090}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("update status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "conflict" {
+		t.Errorf("error code = %q, want %q", code, "conflict")
 	}
 }
 

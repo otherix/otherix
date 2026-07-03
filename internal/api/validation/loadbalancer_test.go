@@ -32,3 +32,21 @@ func TestValidateSourceCIDR(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateSourceCIDRs(t *testing.T) {
+	if err := validation.ValidateSourceCIDRs([]string{"10.0.0.0/8", "192.168.0.0/16"}); err != nil {
+		t.Errorf("valid list = %v, want nil", err)
+	}
+	// One bad entry rejects.
+	if err := validation.ValidateSourceCIDRs([]string{"10.0.0.0/8", "bad"}); err == nil {
+		t.Error("bad entry = nil, want error")
+	}
+	// Over the cap rejects.
+	tooMany := make([]string, validation.MaxSourceCIDRs+1)
+	for i := range tooMany {
+		tooMany[i] = "10.0.0.0/8"
+	}
+	if err := validation.ValidateSourceCIDRs(tooMany); err == nil {
+		t.Errorf("%d entries = nil, want error", len(tooMany))
+	}
+}

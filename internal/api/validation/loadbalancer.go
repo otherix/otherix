@@ -30,3 +30,21 @@ func ValidateSourceCIDR(s string) error {
 	}
 	return nil
 }
+
+// MaxSourceCIDRs bounds a published listener's client-IP allowlist so the row
+// JSON and the pushed declared state stay small.
+const MaxSourceCIDRs = 64
+
+// ValidateSourceCIDRs rejects a list longer than MaxSourceCIDRs, then validates
+// each entry via ValidateSourceCIDR.
+func ValidateSourceCIDRs(cidrs []string) error {
+	if len(cidrs) > MaxSourceCIDRs {
+		return fmt.Errorf("too many source cidrs: %d (max %d)", len(cidrs), MaxSourceCIDRs)
+	}
+	for _, c := range cidrs {
+		if err := ValidateSourceCIDR(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}

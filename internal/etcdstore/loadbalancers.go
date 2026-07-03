@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -54,19 +55,47 @@ func lbPublishedPortChanged(old, cur *int32) bool {
 }
 
 // releaseLBPublishedPortGuard drops the published-port guard for port, but only
-// if it still maps to owner. A stale in-flight update/delete holding an old read
+// if it still maps to lbID. A stale in-flight update/delete holding an old read
 // of the port must not blindly delete a guard a concurrent unpublish+reclaim may
 // have handed to another load balancer; the value gate makes the release a
 // no-op otherwise. Callers run this AFTER the main row Txn commits, so a crash
 // between the two leaks a recoverable guard rather than freeing a port whose row
 // is still published.
-func (s *Store) releaseLBPublishedPortGuard(ctx context.Context, port int32, owner uuid.UUID) error {
+func (s *Store) releaseLBPublishedPortGuard(ctx context.Context, port int32, lbID uuid.UUID) error {
 	g := lbPublishedPortGuard(port)
 	_, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.Value(g), "=", owner.String())).
+		If(clientv3.Compare(clientv3.Value(g), "=", lbID.String())).
 		Then(clientv3.OpDelete(g)).
 		Commit()
 	return err
+}
+
+// claimLBPublishedPortGuard returns the compare/op to fold into the main row
+// Txn to claim the published-port guard for lbID. The guard may be claimed when
+// it is absent (CreateRevision==0 CAS, as normal) OR when it already points at
+// lbID (a leaked guard this load balancer owns but whose row stopped
+// referencing the port - reclaiming it is safe and lets the owner recover a
+// wedged port). A guard held by a DIFFERENT load balancer returns
+// store.ErrLoadBalancerPublishedPortExists. Returns nil/nil when the guard is
+// already ours (no op needed; the row write alone re-adopts it).
+func (s *Store) claimLBPublishedPortGuard(ctx context.Context, port int32, lbID uuid.UUID) ([]clientv3.Cmp, []clientv3.Op, error) {
+	g := lbPublishedPortGuard(port)
+	got, err := s.c.Raw().Get(ctx, g)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read published-port guard: %v", err)
+	}
+	if len(got.Kvs) == 0 {
+		// Absent: claim it atomically with the row (CreateRevision==0 catches a
+		// concurrent claimer - the Txn fails and the caller maps it to a 409).
+		return []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(g), "=", 0)},
+			[]clientv3.Op{clientv3.OpPut(g, lbID.String())}, nil
+	}
+	if string(got.Kvs[0].Value) == lbID.String() {
+		// Already ours (leaked): no guard op; the row write re-adopts it. No
+		// other LB can have taken it (their CreateRevision==0 would have failed).
+		return nil, nil, nil
+	}
+	return nil, nil, store.ErrLoadBalancerPublishedPortExists
 }
 
 // LoadBalancerByID returns the non-deleted load balancer with the given id, or
@@ -102,6 +131,44 @@ func (s *Store) LoadBalancerByName(ctx context.Context, name string) (store.Load
 	return s.LoadBalancerByID(ctx, id)
 }
 
+// LoadBalancerByIDWithRevision returns the non-deleted load balancer and its
+// primary-row etcd ModRevision (for an optimistic-concurrency update), or
+// store.ErrNotFound.
+func (s *Store) LoadBalancerByIDWithRevision(ctx context.Context, id uuid.UUID) (store.LoadBalancer, int64, error) {
+	got, err := s.c.Raw().Get(ctx, lbKey(id))
+	if err != nil {
+		return store.LoadBalancer{}, 0, err
+	}
+	if len(got.Kvs) == 0 {
+		return store.LoadBalancer{}, 0, store.ErrNotFound
+	}
+	var lb store.LoadBalancer
+	if err := json.Unmarshal(got.Kvs[0].Value, &lb); err != nil {
+		return store.LoadBalancer{}, 0, fmt.Errorf("unmarshal load balancer %q: %v", id, err)
+	}
+	if lb.DeletedAt != nil {
+		return store.LoadBalancer{}, 0, store.ErrNotFound
+	}
+	return lb, got.Kvs[0].ModRevision, nil
+}
+
+// LoadBalancerByNameWithRevision resolves a load balancer through its name guard
+// and returns it with its primary-row ModRevision.
+func (s *Store) LoadBalancerByNameWithRevision(ctx context.Context, name string) (store.LoadBalancer, int64, error) {
+	raw, found, err := s.c.Get(ctx, lbNameGuard(name))
+	if err != nil {
+		return store.LoadBalancer{}, 0, err
+	}
+	if !found {
+		return store.LoadBalancer{}, 0, store.ErrNotFound
+	}
+	id, err := uuid.Parse(string(raw))
+	if err != nil {
+		return store.LoadBalancer{}, 0, fmt.Errorf("corrupt load balancer name guard %q: %v", name, err)
+	}
+	return s.LoadBalancerByIDWithRevision(ctx, id)
+}
+
 // CreateLoadBalancer inserts a load balancer, stamping created_at/updated_at,
 // and writes the name guard + primary atomically. A name collision
 // (case-insensitive, among non-deleted rows) returns
@@ -132,28 +199,22 @@ func (s *Store) CreateLoadBalancer(ctx context.Context, arg store.CreateLoadBala
 		clientv3.OpPut(guard, lb.ID.String()),
 		clientv3.OpPut(lbKey(lb.ID), string(val)),
 	}
-	// When published, claim the port guard atomically with the row (an empty
-	// port guard, CreateRevision==0, is free to take).
-	var portGuard string
+	// When published, claim the port guard (absent -> CAS; already-ours -> reclaim).
 	if lb.PublishedPort != nil {
-		portGuard = lbPublishedPortGuard(*lb.PublishedPort)
-		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(portGuard), "=", 0))
-		ops = append(ops, clientv3.OpPut(portGuard, lb.ID.String()))
+		pcmps, pops, perr := s.claimLBPublishedPortGuard(ctx, *lb.PublishedPort, lb.ID)
+		if perr != nil {
+			return store.LoadBalancer{}, perr
+		}
+		cmps = append(cmps, pcmps...)
+		ops = append(ops, pops...)
 	}
 	resp, err := s.c.Raw().Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
 		return store.LoadBalancer{}, fmt.Errorf("create load balancer txn: %v", err)
 	}
 	if !resp.Succeeded {
-		// Disambiguate which guard rejected the create for the error code. The
-		// follow-up Get is non-transactional, so under a rare simultaneous
-		// name+port collision the message may misattribute; both map to a 409,
-		// so this is cosmetic only, never authoritative.
-		if portGuard != "" {
-			if got, gerr := s.c.Raw().Get(ctx, portGuard); gerr == nil && len(got.Kvs) > 0 {
-				return store.LoadBalancer{}, store.ErrLoadBalancerPublishedPortExists
-			}
-		}
+		// A published-port collision already returned from claimLBPublishedPortGuard
+		// before the Txn, so the only remaining Txn rejection is a name collision.
 		return store.LoadBalancer{}, store.ErrLoadBalancerNameExists
 	}
 	return lb, nil
@@ -183,11 +244,20 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 		return store.LoadBalancer{}, err
 	}
 
-	// Main Txn: rewrite the row, swap the name guard on rename, and CLAIM a new
-	// published port (CreateRevision==0 CAS). The row must reflect the new port
-	// only if the new port was claimable, so the claim is atomic with the write.
+	// Main Txn: rewrite the row, swap the name guard on rename, and claim a new
+	// published port (absent -> CreateRevision==0 CAS; already-ours -> reclaim).
+	// The row must reflect the new port only if the new port was claimable, so
+	// the claim is atomic with the write.
 	cmps := []clientv3.Cmp{}
 	ops := []clientv3.Op{clientv3.OpPut(lbKey(arg.ID), string(val))}
+
+	// Optimistic concurrency: pin the row to the revision the caller read, so a
+	// concurrent writer that slipped in between the caller's read and this commit
+	// loses the Txn and the caller re-reads. Folded into the same Txn as the guard
+	// claim, so a CAS-losing attempt also rolls back any port-guard claim it made.
+	if arg.ExpectedRevision > 0 {
+		cmps = append(cmps, clientv3.Compare(clientv3.ModRevision(lbKey(arg.ID)), "=", arg.ExpectedRevision))
+	}
 
 	renamed := !strings.EqualFold(existing.Name, arg.Name)
 	if renamed {
@@ -199,9 +269,12 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 	oldPort, newPort := existing.PublishedPort, updated.PublishedPort
 	portChanged := lbPublishedPortChanged(oldPort, newPort)
 	if portChanged && newPort != nil {
-		g := lbPublishedPortGuard(*newPort)
-		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(g), "=", 0))
-		ops = append(ops, clientv3.OpPut(g, arg.ID.String()))
+		pcmps, pops, perr := s.claimLBPublishedPortGuard(ctx, *newPort, arg.ID)
+		if perr != nil {
+			return store.LoadBalancer{}, perr
+		}
+		cmps = append(cmps, pcmps...)
+		ops = append(ops, pops...)
 	}
 
 	resp, err := s.c.Raw().Txn(ctx).If(cmps...).Then(ops...).Commit()
@@ -209,21 +282,38 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 		return store.LoadBalancer{}, fmt.Errorf("update load balancer txn: %v", err)
 	}
 	if !resp.Succeeded {
-		if portChanged && newPort != nil {
-			if got, gerr := s.c.Raw().Get(ctx, lbPublishedPortGuard(*newPort)); gerr == nil && len(got.Kvs) > 0 {
-				return store.LoadBalancer{}, store.ErrLoadBalancerPublishedPortExists
-			}
-		}
-		return store.LoadBalancer{}, store.ErrLoadBalancerNameExists
+		return store.LoadBalancer{}, s.classifyUpdateTxnFailure(ctx, arg)
 	}
 
 	// Release the OLD published-port guard (value-gated, after the main Txn).
 	if portChanged && oldPort != nil {
 		if err := s.releaseLBPublishedPortGuard(ctx, *oldPort, arg.ID); err != nil {
-			return store.LoadBalancer{}, fmt.Errorf("release old published-port guard: %v", err)
+			// The row already committed at the new port; the guard release is
+			// best-effort cleanup. A failure leaves a recoverable orphaned guard
+			// (a later republish onto that port reclaims it) - do not surface a
+			// 500 on an otherwise-successful update.
+			s.log.WarnContext(ctx, "release old published-port guard failed (update still succeeded)",
+				"lb", arg.ID.String(), "port", *oldPort, "error", err.Error())
 		}
 	}
 	return updated, nil
+}
+
+// classifyUpdateTxnFailure maps a lost UpdateLoadBalancer Txn to the sentinel the
+// handler expects. When a row CAS was requested, a concurrent delete or a row
+// revision that moved under us is the retryable store.ErrLoadBalancerConflict
+// (the handler re-reads: a re-read then 404s cleanly on a delete, or re-applies
+// against the fresh row). A published-port collision already returned from
+// claimLBPublishedPortGuard before the Txn, so the only other rejection is a
+// name-guard collision.
+func (s *Store) classifyUpdateTxnFailure(ctx context.Context, arg store.UpdateLoadBalancerParams) error {
+	if arg.ExpectedRevision > 0 {
+		_, curRev, rerr := s.LoadBalancerByIDWithRevision(ctx, arg.ID)
+		if errors.Is(rerr, store.ErrNotFound) || (rerr == nil && curRev != arg.ExpectedRevision) {
+			return store.ErrLoadBalancerConflict
+		}
+	}
+	return store.ErrLoadBalancerNameExists
 }
 
 // ListLoadBalancers returns the non-deleted load balancers ordered by
@@ -295,7 +385,12 @@ func (s *Store) DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error {
 	// commits; same stale-read defense as the name guard).
 	if existing.PublishedPort != nil {
 		if err := s.releaseLBPublishedPortGuard(ctx, *existing.PublishedPort, id); err != nil {
-			return fmt.Errorf("release published-port guard: %v", err)
+			// The soft-delete already committed; the guard release is best-effort
+			// cleanup. A failure leaves a recoverable orphaned guard (a later
+			// republish onto that port reclaims it) - do not surface a 500 on an
+			// otherwise-successful delete.
+			s.log.WarnContext(ctx, "release published-port guard failed (delete still succeeded)",
+				"lb", id.String(), "port", *existing.PublishedPort, "error", err.Error())
 		}
 	}
 
@@ -307,6 +402,16 @@ func (s *Store) DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error {
 	// return nil (the delete succeeded).
 	if err := s.deleteLBBackendHealthPrefix(ctx, id); err != nil {
 		s.log.WarnContext(ctx, "delete lb backend health cascade failed (delete still succeeded)",
+			"lb", id.String(), "error", err.Error())
+	}
+
+	// Reap this load balancer's observed published-listener status records. Same
+	// best-effort contract as the backend-health cascade above: the records are
+	// observed state that re-derives from heartbeat, so a failed reap only leaves
+	// stale rows the lb view already stale-ignores - never a 500 on an
+	// otherwise-successful delete.
+	if err := s.deleteLBPublishedListenerStatusPrefix(ctx, id); err != nil {
+		s.log.WarnContext(ctx, "delete lb published listener status cascade failed (delete still succeeded)",
 			"lb", id.String(), "error", err.Error())
 	}
 	return nil

@@ -161,6 +161,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	poolReconciler, netReconciler := rec.pools, rec.networks
 	vmReconciler, wgReconciler := rec.vms, rec.wireGuard
 	healthReconciler := rec.health
+	pubListenerReconciler := rec.publishedListeners
 
 	// Console token store - in-memory, lifecycle bound to the agent
 	// process; restart drops the tokens alongside the QEMU `-serial`
@@ -193,7 +194,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// nil-pointer panic. startHeartbeat below launches the goroutine that
 	// drives this same Sender's loop. When the ingress plane is active its
 	// session-CA store is fanned into the heartbeat response handler chain.
-	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, artStore, poolReconciler, vmReconciler, netReconciler, wgReconciler, healthReconciler, ingressCAStoreOf(ingressPlane), log)
+	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, artStore, poolReconciler, vmReconciler, netReconciler, wgReconciler, healthReconciler, pubListenerReconciler, ingressCAStoreOf(ingressPlane), log)
 
 	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, dhcpResponder, nudgerFor(sender), blobsHandler)
 
@@ -212,6 +213,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	vmReconcilerDone := runReconciler(heartbeatCtx, "vm reconciler", vmReconciler.Run, log)
 	wgReconcilerDone := runReconciler(heartbeatCtx, "wireguard reconciler", wgReconciler.Run, log)
 	healthReconcilerDone := runReconciler(heartbeatCtx, "health reconciler", healthReconciler.Run, log)
+	pubListenerReconcilerDone := runReconciler(heartbeatCtx, "published-listener reconciler", pubListenerReconciler.Run, log)
 	dnsForwarderDone := runSupervised(heartbeatCtx, "dns forwarder", dnsForwarder.Run, dnsForwarderMinBackoff, dnsForwarderMaxBackoff, log)
 	dhcpResponderDone := runReconciler(heartbeatCtx, "dhcp responder", dhcpResponder.Run, log)
 	artifactSweeperDone := runReconciler(heartbeatCtx, "artifact sweeper", sweeper.Run, log)
@@ -241,6 +243,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "network reconciler", done: netReconcilerDone},
 		{name: "wireguard reconciler", done: wgReconcilerDone},
 		{name: "health reconciler", done: healthReconcilerDone},
+		{name: "published-listener reconciler", done: pubListenerReconcilerDone},
 		{name: "dns forwarder", done: dnsForwarderDone},
 		{name: "dhcp responder", done: dhcpResponderDone},
 		{name: "artifact sweeper", done: artifactSweeperDone},
@@ -384,11 +387,12 @@ func stopAgentServers(grace time.Duration, srv *http.Server, plane *ingress.Plan
 
 // agentReconcilers bundles the per-resource reconcilers the agent runs.
 type agentReconcilers struct {
-	pools     *reconciler.Pools
-	networks  *reconciler.Networks
-	vms       *reconciler.VMs
-	wireGuard *reconciler.WireGuard
-	health    *reconciler.Health
+	pools              *reconciler.Pools
+	networks           *reconciler.Networks
+	vms                *reconciler.VMs
+	wireGuard          *reconciler.WireGuard
+	health             *reconciler.Health
+	publishedListeners *reconciler.PublishedListeners
 }
 
 // buildReconcilers constructs the per-resource reconcilers. Each consumes its
@@ -423,7 +427,13 @@ func buildReconcilers(cfg *config.AgentConfig, manager *vm.Manager, fabric netfa
 	if err != nil {
 		return agentReconcilers{}, fmt.Errorf("health reconciler: %w", err)
 	}
-	return agentReconcilers{pools: pools, networks: networks, vms: vms, wireGuard: wireGuard, health: health}, nil
+	// The published-listener reconciler owns the gateway's public L4 listeners; a
+	// nil ListenerManager falls back to the production net-backed binder.
+	publishedListeners := reconciler.NewPublishedListeners(nil, log, 0)
+	return agentReconcilers{
+		pools: pools, networks: networks, vms: vms, wireGuard: wireGuard,
+		health: health, publishedListeners: publishedListeners,
+	}, nil
 }
 
 // overlayService is the runtime contract shared by the DNS forwarder and the
@@ -705,7 +715,7 @@ func (a poolSnapshotAdapter) PoolSnapshots(pool string) ([]heartbeat.PoolSnapsho
 // console, etc.) from running. The returned Sender is the single live
 // instance — it backs both the heartbeat loop (startHeartbeat) and the
 // POST /v1/heartbeat/nudge handler (no second Sender is constructed).
-func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, artStore *artifactstore.Store, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, healthRec *reconciler.Health, caStore *ingress.SessionCAStore, log *slog.Logger) *heartbeat.Sender {
+func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, manager *vm.Manager, artStore *artifactstore.Store, poolRec *reconciler.Pools, vmRec *reconciler.VMs, netRec *reconciler.Networks, wgRec *reconciler.WireGuard, healthRec *reconciler.Health, pubRec *reconciler.PublishedListeners, caStore *ingress.SessionCAStore, log *slog.Logger) *heartbeat.Sender {
 	if nodeName == "" {
 		log.Warn("heartbeat disabled: node_name is empty (cert CN parse failed upstream)")
 		return nil
@@ -716,17 +726,18 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 	}
 
 	deps := heartbeat.CollectorDeps{
-		VMs:           manager,
-		VMReporter:    vmRec,
-		Pools:         poolRec,
-		PoolImages:    poolImageAdapter{ctx: ctx, manager: manager, log: log},
-		PoolSnapshots: poolSnapshotAdapter{ctx: ctx, manager: manager, log: log},
-		Blobs:         blobInventoryAdapter{store: artStore, log: log},
-		Networks:      netRec,
-		WireGuard:     wgRec,
-		HealthChecks:  healthRec,
-		Migration:     cfg.Migration,
-		QEMU:          cfg.QEMU,
+		VMs:                manager,
+		VMReporter:         vmRec,
+		Pools:              poolRec,
+		PoolImages:         poolImageAdapter{ctx: ctx, manager: manager, log: log},
+		PoolSnapshots:      poolSnapshotAdapter{ctx: ctx, manager: manager, log: log},
+		Blobs:              blobInventoryAdapter{store: artStore, log: log},
+		Networks:           netRec,
+		WireGuard:          wgRec,
+		HealthChecks:       healthRec,
+		PublishedListeners: pubRec,
+		Migration:          cfg.Migration,
+		QEMU:               cfg.QEMU,
 	}
 	// The image cache tier store may be nil when no artifacts root is
 	// configured; only wire the adapter when present so it never dereferences a
@@ -761,10 +772,11 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 	// reconciler consumes declared_vms; network reconciler consumes
 	// declared_networks; WireGuard reconciler consumes self_overlay_ip +
 	// declared_wireguard_peers; health reconciler consumes
-	// declared_health_checks. Each ignores the others' payload without
+	// declared_health_checks; published-listener reconciler consumes
+	// declared_load_balancers. Each ignores the others' payload without
 	// needing to know about it. A co-located ingress plane adds its
 	// session-CA store so the same loop keeps the connect gate's key fresh.
-	handler := heartbeat.MultiResponseHandler{poolRec, vmRec, netRec, wgRec, healthRec}
+	handler := heartbeat.MultiResponseHandler{poolRec, vmRec, netRec, wgRec, healthRec, pubRec}
 	if caStore != nil {
 		handler = append(handler, caStore)
 	}

@@ -4,6 +4,8 @@
 package store
 
 import (
+	"net"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -137,6 +139,9 @@ type UpdateLoadBalancerParams struct {
 	// SourceCIDRs, when non-empty, restricts the published listener to these
 	// client CIDRs (allowlist). Nil/empty means any source that reaches the port.
 	SourceCIDRs []string
+	// ExpectedRevision, when > 0, gates the update on the primary row's etcd
+	// ModRevision (optimistic concurrency). 0 disables the check (back-compat).
+	ExpectedRevision int64
 }
 
 // ListLoadBalancersParams is the input to ListLoadBalancers: an opaque
@@ -158,6 +163,31 @@ type LBHealthTarget struct {
 	HealthCheck LoadBalancerHealthCheck
 }
 
+// PublishedLoadBalancer is a published load balancer plus its resolved backend
+// set, computed for push to gateway-role nodes. It is node-independent: every
+// gateway forwards to backends wherever they run, so the same set is pushed to
+// all gateway nodes (unlike LBHealthTarget, which filters to a node's local
+// backends). Computed, not persisted, so its fields carry no struct tags.
+type PublishedLoadBalancer struct {
+	LBID          uuid.UUID
+	PublishedPort int32
+	Protocol      string
+	BackendPort   int32 // lb.Port (the guest port)
+	SourceCIDRs   []string
+	Backends      []PublishedBackend
+}
+
+// PublishedBackend is one resolved backend of a published load balancer: the
+// backend VM plus the overlay address a gateway dials it at. Healthy is the
+// observed active-health verdict, informational only - eligibility (fail toward
+// inclusion) is already applied, so a backend appears here iff it is eligible.
+type PublishedBackend struct {
+	VMID      uuid.UUID
+	OverlayIP netip.Addr
+	MAC       net.HardwareAddr
+	Healthy   bool
+}
+
 // LBBackendHealth is the observed active-health verdict for one (load balancer,
 // backend VM) pair, reported by the VM's owning agent through the heartbeat and
 // stamped with the CP receive time (the agent's clock is never trusted for
@@ -165,5 +195,20 @@ type LBHealthTarget struct {
 // (warming) backend and a confirmed-down backend both report Healthy=false.
 type LBBackendHealth struct {
 	Healthy    bool
+	ReportedAt time.Time
+}
+
+// LBPublishedListenerStatus is the observed bind state of one published load
+// balancer's public listener on one gateway node, reported through the heartbeat
+// and stamped with the CP receive time (the agent's clock is never trusted for
+// freshness). Bound is the agent's verdict for its last bind attempt; Error
+// carries the failure string when Bound is false. Keyed by (lbID, NodeID); the
+// per-lb prefix range gives the LB view every gateway's listener status in one
+// round trip.
+type LBPublishedListenerStatus struct {
+	NodeID     uuid.UUID
+	Port       int32
+	Bound      bool
+	Error      string
 	ReportedAt time.Time
 }

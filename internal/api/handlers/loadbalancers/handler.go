@@ -26,6 +26,10 @@ import (
 type Store interface {
 	CreateLoadBalancer(ctx context.Context, arg store.CreateLoadBalancerParams) (store.LoadBalancer, error)
 	LoadBalancerByName(ctx context.Context, name string) (store.LoadBalancer, error)
+	// LoadBalancerByNameWithRevision resolves the row and its etcd ModRevision so
+	// an update can be gated on it (optimistic concurrency); the Update handler
+	// threads the revision into UpdateLoadBalancerParams and retries on a conflict.
+	LoadBalancerByNameWithRevision(ctx context.Context, name string) (store.LoadBalancer, int64, error)
 	UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBalancerParams) (store.LoadBalancer, error)
 	ListLoadBalancers(ctx context.Context, arg store.ListLoadBalancersParams) ([]store.LoadBalancer, error)
 	DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error

@@ -38,43 +38,58 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.store.LoadBalancerByName(r.Context(), name)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+	// Read-modify-write with a bounded retry. The row is re-read (with its
+	// ModRevision), the deterministic apply* helpers re-derive the target state,
+	// and UpdateLoadBalancer commits under a ModRevision CAS. A concurrent writer
+	// that lands between the read and the commit fails the CAS with
+	// ErrLoadBalancerConflict; the loop re-reads and re-applies against fresh
+	// state. Bounded so a pathological writer cannot livelock the request.
+	const maxUpdateAttempts = 4
+	var updated store.LoadBalancer
+	for attempt := 0; ; attempt++ {
+		row, rev, err := h.store.LoadBalancerByNameWithRevision(r.Context(), name)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				h.writeNotFound(w, r)
+				return
+			}
+			response.WriteError(w, r, http.StatusInternalServerError,
+				response.CodeInternal, "load load balancer", nil)
+			return
+		}
+
+		if err := auth.CheckOwnership(user, &row.OwnerID, auth.PermLoadBalancerUpdate); err != nil {
+			// Cross-owner invisibility: a caller who does not own the row must not
+			// learn it exists, so this is 404, not 403.
 			h.writeNotFound(w, r)
 			return
 		}
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "load load balancer", nil)
-		return
-	}
 
-	if err := auth.CheckOwnership(user, &row.OwnerID, auth.PermLoadBalancerUpdate); err != nil {
-		// Cross-owner invisibility: a caller who does not own the row must not
-		// learn it exists, so this is 404, not 403.
-		h.writeNotFound(w, r)
-		return
-	}
+		if !applyUpdateBaseFields(w, r, &req, &row) {
+			return
+		}
 
-	if !applyUpdateBaseFields(w, r, &req, &row) {
-		return
-	}
+		if !applyUpdatePublish(w, r, user, &req, &row) {
+			return
+		}
 
-	if !applyUpdatePublish(w, r, user, &req, &row) {
-		return
-	}
-
-	updated, err := h.store.UpdateLoadBalancer(r.Context(), store.UpdateLoadBalancerParams{
-		ID:            row.ID,
-		Name:          row.Name,
-		Port:          row.Port,
-		Selector:      row.Selector,
-		HealthCheck:   row.HealthCheck,
-		PublishedPort: row.PublishedPort,
-		Protocol:      row.Protocol,
-		SourceCIDRs:   row.SourceCIDRs,
-	})
-	if err != nil {
+		updated, err = h.store.UpdateLoadBalancer(r.Context(), store.UpdateLoadBalancerParams{
+			ID:               row.ID,
+			Name:             row.Name,
+			Port:             row.Port,
+			Selector:         row.Selector,
+			HealthCheck:      row.HealthCheck,
+			PublishedPort:    row.PublishedPort,
+			Protocol:         row.Protocol,
+			SourceCIDRs:      row.SourceCIDRs,
+			ExpectedRevision: rev,
+		})
+		if err == nil {
+			break
+		}
+		if errors.Is(err, store.ErrLoadBalancerConflict) && attempt < maxUpdateAttempts-1 {
+			continue // re-read and re-apply against fresh state
+		}
 		if errors.Is(err, store.ErrLoadBalancerNameExists) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "load balancer name already in use", nil)
@@ -83,6 +98,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrLoadBalancerPublishedPortExists) {
 			response.WriteError(w, r, http.StatusConflict,
 				response.CodeConflict, "published port already in use", nil)
+			return
+		}
+		if errors.Is(err, store.ErrLoadBalancerConflict) {
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeConflict, "load balancer changed concurrently, retry", nil)
 			return
 		}
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -177,16 +197,29 @@ func applyUpdatePublish(w http.ResponseWriter, r *http.Request, user *auth.User,
 		row.Protocol = *req.Protocol
 	}
 	if req.SourceCIDRs != nil {
-		for _, c := range *req.SourceCIDRs {
-			if err := validation.ValidateSourceCIDR(c); err != nil {
-				response.WriteError(w, r, http.StatusBadRequest,
-					response.CodeValidationFailed, err.Error(), nil)
-				return false
-			}
+		if err := validation.ValidateSourceCIDRs(*req.SourceCIDRs); err != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, err.Error(), nil)
+			return false
 		}
 		row.SourceCIDRs = *req.SourceCIDRs
 	}
+	// Publish-only fields (protocol, source_cidrs) are meaningless without a
+	// published port. Reject them on a row that stays unpublished, matching the
+	// create path, so no inert exposure state is persisted.
+	if hasPublishOnlyFieldsWithoutPort(row) {
+		response.WriteError(w, r, http.StatusBadRequest, response.CodeValidationFailed,
+			"protocol and source_cidrs require a published_port", nil)
+		return false
+	}
 	return true
+}
+
+// hasPublishOnlyFieldsWithoutPort reports whether row carries publish-only
+// exposure state (a protocol or a source-CIDR allowlist) with no published port
+// to attach it to.
+func hasPublishOnlyFieldsWithoutPort(row *store.LoadBalancer) bool {
+	return row.PublishedPort == nil && (row.Protocol != "" || len(row.SourceCIDRs) > 0)
 }
 
 // writeNotFound emits the standard load-balancer 404 with the dedicated

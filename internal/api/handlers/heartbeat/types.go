@@ -39,6 +39,11 @@ type requestBody struct {
 	// balancer backends declared on this node (the observed-health up-channel).
 	// The CP folds each verdict into the backend's observed health.
 	HealthChecks []healthCheckReport `json:"health_checks,omitempty"`
+	// PublishedListeners carries a gateway node's observed bind state for each
+	// published load balancer listener it was declared. The CP folds each entry
+	// into the observed lb_published_listener_status keyed by (lb_id, reporting
+	// node). Non-empty only from a gateway recipient.
+	PublishedListeners []publishedListenerReport `json:"published_listeners,omitempty"`
 	// IngressAdvertisedEndpoint is the node's self-reported ingress splicer URL
 	// (/v1/connect), reported when the node serves the ingress plane. The CP folds
 	// it into node.IngressAdvertisedEndpoint preserve-on-empty: a non-empty value
@@ -55,6 +60,17 @@ type healthCheckReport struct {
 	LBID    uuid.UUID `json:"lb_id"`
 	VMID    uuid.UUID `json:"vm_id"`
 	Healthy bool      `json:"healthy"`
+}
+
+// publishedListenerReport mirrors PublishedListenerReport on the agent side (the
+// manual-sync contract) — one gateway node's observed bind state for a published
+// load balancer's public listener. Bound is the agent's verdict for its last bind
+// attempt; Error carries the failure string when Bound is false.
+type publishedListenerReport struct {
+	LBID  uuid.UUID `json:"lb_id"`
+	Port  int32     `json:"port"`
+	Bound bool      `json:"bound"`
+	Error string    `json:"error,omitempty"`
 }
 
 // blobReport mirrors HeartbeatBlob (the agent up-channel node-level blob entry).
@@ -237,6 +253,40 @@ type responseBody struct {
 	// desired-probe down-channel; the agent reports each verdict back up via
 	// requestBody.HealthChecks). Full-snapshot semantics.
 	DeclaredHealthChecks []declaredHealthCheck `json:"declared_health_checks"`
+	// DeclaredLoadBalancers is the CP-declared set of published load balancers a
+	// gateway-role node must bind a public listener for, each with its resolved
+	// eligible backend set. Non-empty only for a gateway recipient; a hypervisor
+	// node receives an empty list. Full-snapshot semantics: the agent binds
+	// exactly the published ports in this list and closes the rest.
+	DeclaredLoadBalancers []declaredLoadBalancer `json:"declared_load_balancers"`
+}
+
+// declaredLoadBalancer mirrors DeclaredLoadBalancer on the agent side (the
+// manual-sync contract) — one published load balancer the CP wants a gateway to
+// bind a public L4 listener for. PublishedPort is the public listener port,
+// BackendPort the guest port each backend is dialed at, and SourceCIDRs the
+// optional allowlist (empty means allow-all). Backends is the resolved eligible
+// backend set (fail toward inclusion), node-independent across gateways.
+type declaredLoadBalancer struct {
+	LBID          uuid.UUID         `json:"lb_id"`
+	PublishedPort int32             `json:"published_port"`
+	Protocol      string            `json:"protocol"`
+	BackendPort   int32             `json:"backend_port"`
+	SourceCIDRs   []string          `json:"source_cidrs,omitempty"`
+	Backends      []declaredBackend `json:"backends"`
+}
+
+// declaredBackend mirrors DeclaredBackend on the agent side — one resolved
+// backend of a published load balancer: the backend VM plus the overlay address
+// a gateway dials it at (OverlayIP is netip.Addr.String(), MAC is
+// net.HardwareAddr.String()). Healthy is the observed active-health verdict,
+// informational only — eligibility is already applied, so a backend appears here
+// iff it is eligible.
+type declaredBackend struct {
+	VMID      uuid.UUID `json:"vm_id"`
+	OverlayIP string    `json:"overlay_ip"`
+	MAC       string    `json:"mac"`
+	Healthy   bool      `json:"healthy"`
 }
 
 // declaredHealthCheck mirrors DeclaredHealthCheck on the agent side (the

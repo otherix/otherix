@@ -497,6 +497,46 @@ func TestNewLinux_RejectsMissingVMs(t *testing.T) {
 	}
 }
 
+type stubPublishedListenerReporter struct{ reports []PublishedListenerReport }
+
+func (s stubPublishedListenerReporter) PublishedListenerReports() []PublishedListenerReport {
+	return s.reports
+}
+
+// TestCollect_IncludesPublishedListeners confirms the collector folds the
+// published-listener bind verdicts (from the PublishedListenerReporter seam)
+// into Report.PublishedListeners for the heartbeat up-channel — one bound and
+// one failed listener both survive.
+func TestCollect_IncludesPublishedListeners(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpuinfo"), []byte(syntheticCPUInfo), 0o644); err != nil {
+		t.Fatalf("write cpuinfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte(syntheticMemInfo), 0o644); err != nil {
+		t.Fatalf("write meminfo: %v", err)
+	}
+	lbBound, lbFailed := uuid.New(), uuid.New()
+	want := []PublishedListenerReport{
+		{LBID: lbBound, Port: 8080, Bound: true},
+		{LBID: lbFailed, Port: 8081, Bound: false, Error: "bind: address already in use"},
+	}
+	c := &LinuxCollector{
+		procPath:           dir,
+		vms:                stubLister{},
+		agentVersion:       "test",
+		architecture:       "amd64",
+		publishedListeners: stubPublishedListenerReporter{reports: want},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if diff := cmp.Diff(want, rep.PublishedListeners); diff != "" {
+		t.Errorf("Report.PublishedListeners mismatch (-want +got):\n%s", diff)
+	}
+}
+
 const syntheticCPUInfo = `processor	: 0
 vendor_id	: AuthenticAMD
 model name	: AMD EPYC 9554

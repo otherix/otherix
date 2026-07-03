@@ -203,6 +203,10 @@ smoke-lb: ## Load-balancer smoke: otherix lb fronts a label-selected VM pool, ba
 smoke-lb-health: ## Load-balancer active-health smoke: a warming LB still serves, a backend whose traffic port closes (VM still running) is excluded on the health verdict and rejoins on re-open, a split health port is honored, and an all-down pool 409s (run after local-dev-start)
 	bash dev/smoke/lb-health/run.sh
 
+.PHONY: smoke-published-port
+smoke-published-port: ## Published-LB-port smoke: `otherix lb ... --publish` makes a gateway-role node bind a real public port (a peer's raw connect is accepted-then-closed), a never-published control port stays refused, and `--no-publish` reaps the listener (run after local-dev-deploy)
+	bash dev/smoke/published-port/run.sh
+
 .PHONY: smoke-vm-create-redelivery
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
 	bash dev/smoke/vm-create-redelivery/run.sh

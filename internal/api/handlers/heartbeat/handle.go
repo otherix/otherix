@@ -118,6 +118,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		OverlayReachability:    outcome.overlayReachability,
 		SessionCAPublicPEM:     outcome.sessionCAPublicPEM,
 		DeclaredHealthChecks:   outcome.declaredHealthChecks,
+		DeclaredLoadBalancers:  outcome.declaredLoadBalancers,
 	})
 }
 
@@ -196,6 +197,7 @@ type heartbeatOutcome struct {
 	declaredFDB            []declaredFDBEntry
 	overlayReachability    []overlayReachability
 	declaredHealthChecks   []declaredHealthCheck
+	declaredLoadBalancers  []declaredLoadBalancer
 	selfOverlayIP          *string
 	otwg0MTU               *int32
 	sessionCAPublicPEM     *string
@@ -272,6 +274,9 @@ func (h *Handler) applyObservedReports(ctx context.Context, hp store.HeartbeatPr
 		return err
 	}
 	if err := h.applyHealthChecks(ctx, hp, nodeID, body.HealthChecks); err != nil {
+		return err
+	}
+	if err := h.applyPublishedListeners(ctx, hp, nodeID, body.PublishedListeners); err != nil {
 		return err
 	}
 	if err := h.applyPoolReports(ctx, hp, nodeID, body.Pools); err != nil {
@@ -351,6 +356,11 @@ func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection
 		return err
 	}
 	outcome.declaredHealthChecks = declaredHealthChecks
+	declaredLoadBalancers, err := h.loadDeclaredLoadBalancers(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredLoadBalancers = declaredLoadBalancers
 	self, err := hp.AgentWireguardByNodeID(ctx, nodeID)
 	switch {
 	case err == nil:
@@ -418,6 +428,52 @@ func (h *Handler) loadDeclaredHealthChecks(ctx context.Context, hp store.Heartbe
 			TimeoutSeconds:     t.HealthCheck.TimeoutSeconds,
 			HealthyThreshold:   t.HealthCheck.HealthyThreshold,
 			UnhealthyThreshold: t.HealthCheck.UnhealthyThreshold,
+		})
+	}
+	return out, nil
+}
+
+// loadDeclaredLoadBalancers returns the published load balancers a gateway-role
+// node must bind a public L4 listener for, each with its resolved eligible
+// backend set. Surfaces as `HeartbeatResponse.declared_load_balancers`. It is
+// gated on the gateway role exactly like gatewayAddrsForNode: a non-gateway node
+// returns nil (never receives listener state) without running the published
+// backend scan. The set is node-independent (the store resolver takes no nodeID),
+// so every gateway node gets the same payload; the agent binds exactly the ports
+// in this list and closes the rest.
+func (h *Handler) loadDeclaredLoadBalancers(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID) ([]declaredLoadBalancer, error) {
+	node, err := hp.NodeByID(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("node by id %s: %v", nodeID, err)
+	}
+	if !node.HasRole(store.NodeRoleGateway) {
+		return nil, nil
+	}
+	lbs, err := hp.ListPublishedLoadBalancerBackends(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list published load balancer backends: %v", err)
+	}
+	if len(lbs) == 0 {
+		return nil, nil
+	}
+	out := make([]declaredLoadBalancer, 0, len(lbs))
+	for _, lb := range lbs {
+		backends := make([]declaredBackend, 0, len(lb.Backends))
+		for _, b := range lb.Backends {
+			backends = append(backends, declaredBackend{
+				VMID:      b.VMID,
+				OverlayIP: b.OverlayIP.String(),
+				MAC:       b.MAC.String(),
+				Healthy:   b.Healthy,
+			})
+		}
+		out = append(out, declaredLoadBalancer{
+			LBID:          lb.LBID,
+			PublishedPort: lb.PublishedPort,
+			Protocol:      lb.Protocol,
+			BackendPort:   lb.BackendPort,
+			SourceCIDRs:   lb.SourceCIDRs,
+			Backends:      backends,
 		})
 	}
 	return out, nil
@@ -1399,6 +1455,71 @@ func (h *Handler) applyHealthChecks(ctx context.Context, hp store.HeartbeatProje
 		}
 		if err := hp.UpsertLBBackendHealth(ctx, r.LBID, r.VMID, r.Healthy, now); err != nil {
 			return fmt.Errorf("upsert lb backend health: %v", err)
+		}
+	}
+	return nil
+}
+
+// applyPublishedListeners writes the reported per-(lb, reporting node) published
+// listener bind verdicts. Unlike applyHealthChecks there is NO per-VM placement
+// gate: a published listener is node-scoped (the gateway binds a public port), so
+// the record is keyed by the reporting node's own identity, which the cert
+// binding already authenticates. The only gate is the soft-deleted-LB skip, so an
+// in-flight heartbeat naming a just-deleted LB cannot re-create a status row the
+// delete cascade removed. The CP stamps the receive time so freshness never
+// depends on the agent's clock.
+// maxListenerErrorLen bounds the agent-supplied published-listener bind-error
+// string the CP persists, so a misbehaving gateway cannot bloat etcd values.
+const maxListenerErrorLen = 256
+
+// truncateRunes returns s clipped to at most n runes (never splitting a
+// multi-byte rune). n <= 0 returns "".
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:n])
+}
+
+func (h *Handler) applyPublishedListeners(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []publishedListenerReport) error {
+	if len(reports) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	liveLB := map[uuid.UUID]bool{}
+	isLive := func(lbID uuid.UUID) (bool, error) {
+		if v, ok := liveLB[lbID]; ok {
+			return v, nil
+		}
+		_, err := hp.LoadBalancerByID(ctx, lbID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				liveLB[lbID] = false
+				return false, nil
+			}
+			return false, fmt.Errorf("resolve lb liveness: %v", err)
+		}
+		liveLB[lbID] = true
+		return true, nil
+	}
+	for _, r := range reports {
+		live, err := isLive(r.LBID)
+		if err != nil {
+			return err
+		}
+		if !live {
+			continue // LB deleted -> do not resurrect its listener status rows
+		}
+		// The error string is agent-supplied and stored verbatim as an etcd
+		// value; bound its length so a misbehaving or compromised gateway cannot
+		// grow the key space with an oversized message (defense in depth - real
+		// bind errors are short).
+		if err := hp.UpsertLBPublishedListenerStatus(ctx, r.LBID, nodeID, r.Port, r.Bound, truncateRunes(r.Error, maxListenerErrorLen), now); err != nil {
+			return fmt.Errorf("upsert lb published listener status: %v", err)
 		}
 	}
 	return nil
