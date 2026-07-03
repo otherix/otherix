@@ -288,7 +288,12 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 	// Release the OLD published-port guard (value-gated, after the main Txn).
 	if portChanged && oldPort != nil {
 		if err := s.releaseLBPublishedPortGuard(ctx, *oldPort, arg.ID); err != nil {
-			return store.LoadBalancer{}, fmt.Errorf("release old published-port guard: %v", err)
+			// The row already committed at the new port; the guard release is
+			// best-effort cleanup. A failure leaves a recoverable orphaned guard
+			// (a later republish onto that port reclaims it) - do not surface a
+			// 500 on an otherwise-successful update.
+			s.log.WarnContext(ctx, "release old published-port guard failed (update still succeeded)",
+				"lb", arg.ID.String(), "port", *oldPort, "error", err.Error())
 		}
 	}
 	return updated, nil
@@ -380,7 +385,12 @@ func (s *Store) DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error {
 	// commits; same stale-read defense as the name guard).
 	if existing.PublishedPort != nil {
 		if err := s.releaseLBPublishedPortGuard(ctx, *existing.PublishedPort, id); err != nil {
-			return fmt.Errorf("release published-port guard: %v", err)
+			// The soft-delete already committed; the guard release is best-effort
+			// cleanup. A failure leaves a recoverable orphaned guard (a later
+			// republish onto that port reclaims it) - do not surface a 500 on an
+			// otherwise-successful delete.
+			s.log.WarnContext(ctx, "release published-port guard failed (delete still succeeded)",
+				"lb", id.String(), "port", *existing.PublishedPort, "error", err.Error())
 		}
 	}
 

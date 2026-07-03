@@ -472,3 +472,37 @@ func TestUpdateLoadBalancerStaleRevisionConflicts(t *testing.T) {
 		t.Fatalf("stale update err = %v, want ErrLoadBalancerConflict", err)
 	}
 }
+
+// TestUpdateUnpublishSucceedsWhenGuardAlreadyGone verifies the release is
+// best-effort: an unpublish whose old-port guard was already freed still
+// succeeds (the row commit is authoritative, the guard release is cleanup).
+func TestUpdateUnpublishSucceedsWhenGuardAlreadyGone(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	owner := seedLBOwner(t, s)
+
+	port := int32(7200)
+	p := lbParams(uniqueLBName("lb"), owner)
+	p.PublishedPort = &port
+	p.Protocol = "tcp"
+	lb, err := s.CreateLoadBalancer(ctx, p)
+	if err != nil {
+		t.Fatalf("create published: %v", err)
+	}
+	// Concurrently free the guard out from under the pending unpublish.
+	if _, err := cli.Raw().Delete(ctx, lbPublishedPortGuardKey(port)); err != nil {
+		t.Fatalf("pre-delete guard: %v", err)
+	}
+
+	upd := store.UpdateLoadBalancerParams{
+		ID: lb.ID, Name: lb.Name, Port: lb.Port, Selector: lb.Selector,
+		HealthCheck: lb.HealthCheck, PublishedPort: nil, Protocol: "",
+	}
+	got, err := s.UpdateLoadBalancer(ctx, upd)
+	if err != nil {
+		t.Fatalf("unpublish: %v", err)
+	}
+	if got.PublishedPort != nil {
+		t.Errorf("PublishedPort = %v, want nil after unpublish", got.PublishedPort)
+	}
+}
