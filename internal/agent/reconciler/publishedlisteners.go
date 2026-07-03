@@ -51,7 +51,7 @@ type boundListener struct {
 // kernel sockets: it binds a raw TCP listener for every declared published
 // port and releases them all on shutdown.
 //
-// Slice-2 datapath is a stub: an accepted connection is immediately closed
+// The datapath is a stub: an accepted connection is immediately closed
 // (RST). Source-CIDR enforcement and backend splicing arrive later; this
 // reconciler only opens and closes the public ports.
 type PublishedListeners struct {
@@ -199,7 +199,7 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 	}
 }
 
-// accept runs one per-listener goroutine. Slice-2 stub datapath: accept a
+// accept runs one per-listener goroutine. Stub datapath: accept a
 // connection and immediately close it (RST); no read, no splice, no ACL.
 //
 // It MUST return on the first Accept error. A closed listener makes Accept
