@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/netip"
 	"testing"
 
 	"github.com/google/uuid"
@@ -337,5 +338,101 @@ func TestReconcileFailOpenOnCreateError(t *testing.T) {
 
 	if err := ReconcileFunc(f, ReconcileConfig{}, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile must fail open on a create error, got %v", err)
+	}
+}
+
+func TestSubnetAddressPressure(t *testing.T) {
+	mustPrefix := func(s string) netip.Prefix {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			t.Fatalf("ParsePrefix(%q) = %v", s, err)
+		}
+		return p
+	}
+	tests := []struct {
+		name            string
+		gatewayCount    int
+		vmNicCount      int
+		subnet          netip.Prefix
+		wantOver        bool
+		wantUsableHosts int
+	}{
+		{
+			name:            "slash24 under fraction",
+			gatewayCount:    10,
+			vmNicCount:      90,
+			subnet:          mustPrefix("10.0.0.0/24"),
+			wantOver:        false,
+			wantUsableHosts: 253,
+		},
+		{
+			name:            "slash24 over fraction",
+			gatewayCount:    100,
+			vmNicCount:      110,
+			subnet:          mustPrefix("10.0.0.0/24"),
+			wantOver:        true,
+			wantUsableHosts: 253,
+		},
+		{
+			name:            "slash24 exactly at fraction is over",
+			gatewayCount:    203,
+			vmNicCount:      0,
+			subnet:          mustPrefix("10.0.0.0/24"),
+			wantOver:        true,
+			wantUsableHosts: 253,
+		},
+		{
+			name:            "slash30 tiny subnet no panic",
+			gatewayCount:    0,
+			vmNicCount:      0,
+			subnet:          mustPrefix("10.0.0.0/30"),
+			wantOver:        false,
+			wantUsableHosts: 1,
+		},
+		{
+			name:            "slash31 no usable hosts",
+			gatewayCount:    5,
+			vmNicCount:      5,
+			subnet:          mustPrefix("10.0.0.0/31"),
+			wantOver:        false,
+			wantUsableHosts: 0,
+		},
+		{
+			name:            "slash32 no usable hosts",
+			gatewayCount:    5,
+			vmNicCount:      5,
+			subnet:          mustPrefix("10.0.0.0/32"),
+			wantOver:        false,
+			wantUsableHosts: 0,
+		},
+		{
+			name:            "invalid zero prefix",
+			gatewayCount:    1000,
+			vmNicCount:      1000,
+			subnet:          netip.Prefix{},
+			wantOver:        false,
+			wantUsableHosts: 0,
+		},
+		{
+			name:            "ipv6 prefix not supported",
+			gatewayCount:    1000,
+			vmNicCount:      1000,
+			subnet:          mustPrefix("fd00::/64"),
+			wantOver:        false,
+			wantUsableHosts: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			over, usableHosts := subnetAddressPressure(tt.gatewayCount, tt.vmNicCount, tt.subnet)
+			if over != tt.wantOver {
+				t.Errorf("subnetAddressPressure(%d, %d, %v) over = %v, want %v",
+					tt.gatewayCount, tt.vmNicCount, tt.subnet, over, tt.wantOver)
+			}
+			if usableHosts != tt.wantUsableHosts {
+				t.Errorf("subnetAddressPressure(%d, %d, %v) usableHosts = %v, want %v",
+					tt.gatewayCount, tt.vmNicCount, tt.subnet, usableHosts, tt.wantUsableHosts)
+			}
+		})
 	}
 }

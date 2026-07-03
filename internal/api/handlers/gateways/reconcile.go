@@ -13,11 +13,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/store"
 )
+
+// gatewaySubnetPressureFraction is the share of an overlay's usable host
+// addresses that gateway memberships plus VM NICs may consume before the
+// reconcile emits an observability warning. 0.8 leaves a fifth of the subnet as
+// headroom: enough to make the warning fire well before VM-NIC allocation starts
+// returning store.ErrSubnetExhausted, without crying wolf on a subnet that is
+// merely busy. It only warns; it never caps or blocks placement.
+const gatewaySubnetPressureFraction = 0.8
 
 // ReconcileConfig tunes the gateway coverage reconcile. It carries no fields
 // today; it is retained as the config seam for future tunables.
@@ -127,7 +136,58 @@ func reconcileNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.L
 		log.InfoContext(ctx, "gateway coverage reconcile: added gateway membership",
 			slog.String("network_id", n.ID.String()), slog.String("gateway_id", gw.String()))
 	}
+	warnOnSubnetPressure(ctx, log, n, members, nics)
 	return nil
+}
+
+// warnOnSubnetPressure emits a single per-network warning when gateway
+// memberships plus VM NICs together consume a large fraction of the overlay's
+// usable host addresses. Gateway memberships draw a tenant IP from the same
+// per-network subnet as VM NICs, so a busy small subnet can silently starve
+// vm create with store.ErrSubnetExhausted. This is observation only: it never
+// changes placement and never returns an error, and a missing or unparseable
+// subnet is treated as no pressure.
+func warnOnSubnetPressure(ctx context.Context, log *slog.Logger, n store.Network, members []store.GatewayMembership, nics []store.VMNic) {
+	var subnet netip.Prefix
+	if n.Subnet != nil {
+		subnet = *n.Subnet
+	}
+	over, usableHosts := subnetAddressPressure(len(members), len(nics), subnet)
+	if !over {
+		return
+	}
+	log.WarnContext(ctx, "gateway coverage reconcile: gateway memberships pressure overlay subnet; the gateway role consumes overlay address space that competes with VM NICs - disable the gateway role on some nodes or use a larger subnet",
+		slog.String("network_id", n.ID.String()),
+		slog.Int("gateway_membership_count", len(members)),
+		slog.Int("vm_nic_count", len(nics)),
+		slog.Int("usable_hosts", usableHosts),
+		slog.String("subnet", subnet.String()))
+}
+
+// subnetAddressPressure reports whether gatewayCount plus vmNicCount consume at
+// least gatewaySubnetPressureFraction of subnet's usable host addresses, and
+// returns that usable-host count. usableHosts excludes the network address, the
+// broadcast address, and the anycast gateway (.1), so a /24 yields 253. It is
+// meaningful only for IPv4 overlays: an invalid prefix, an IPv6 prefix, or a
+// subnet too small to hold any usable host (/31, /32) yields over=false and
+// usableHosts clamped at zero, never a divide-by-zero.
+func subnetAddressPressure(gatewayCount, vmNicCount int, subnet netip.Prefix) (over bool, usableHosts int) {
+	if !subnet.IsValid() || !subnet.Addr().Is4() {
+		return false, 0
+	}
+	hostBits := 32 - subnet.Bits()
+	if hostBits < 0 {
+		return false, 0
+	}
+	// hostBits is in [0, 32]; total fits an int on any 64-bit build.
+	total := 1 << hostBits
+	usableHosts = total - 3 // network + broadcast + anycast gateway (.1)
+	if usableHosts <= 0 {
+		return false, 0
+	}
+	consumed := gatewayCount + vmNicCount
+	over = float64(consumed) >= gatewaySubnetPressureFraction*float64(usableHosts)
+	return over, usableHosts
 }
 
 // reapNetwork removes gateway memberships that have become unnecessary on a
