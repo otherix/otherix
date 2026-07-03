@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/otherix/otherix/internal/agent/heartbeat"
+	"github.com/otherix/otherix/internal/agent/netfabric"
 )
 
 // Connection-slot caps for the raw published-port datapath. They bound the
@@ -52,6 +53,17 @@ type neighborResolver interface {
 // a fake yielding a net.Pipe end or an error.
 type datapathDialer interface {
 	DialOverlay(ctx context.Context, device, addr string) (net.Conn, error)
+}
+
+// overlayDialer is the production datapathDialer. It dials addr with the socket
+// pinned to device via SO_BINDTODEVICE (netfabric.BindToDeviceControl), so the
+// connection egresses the resolved overlay bridge even when two overlays carry
+// the same guest subnet. The constructor wires it as the nil-dialer fallback.
+type overlayDialer struct{}
+
+func (overlayDialer) DialOverlay(ctx context.Context, device, addr string) (net.Conn, error) {
+	d := net.Dialer{Control: netfabric.BindToDeviceControl(device)}
+	return d.DialContext(ctx, "tcp", addr)
 }
 
 // macEqual reports whether the kernel-resolved neighbor MAC equals the

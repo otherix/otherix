@@ -109,23 +109,33 @@ type PublishedListeners struct {
 }
 
 // NewPublishedListeners builds the published-listener reconciler. A nil mgr
-// falls back to the production net-backed binder; tests pass a fake. tick==0
-// falls back to DefaultTickInterval.
-func NewPublishedListeners(mgr ListenerManager, log *slog.Logger, tick time.Duration) *PublishedListeners {
+// falls back to the production net-backed binder; tests pass a fake. A nil dialer
+// falls back to the production overlay dialer (SO_BINDTODEVICE via
+// netfabric.BindToDeviceControl); tests inject a fake. devices and neighbors are
+// the overlay-device resolver and neighbor-MAC resolver the datapath consumes
+// (the agent server passes the real *Networks and netfabric.Fabric). slots and
+// rnd always get safe defaults. tick==0 falls back to DefaultTickInterval.
+func NewPublishedListeners(mgr ListenerManager, devices deviceResolver, neighbors neighborResolver, dialer datapathDialer, log *slog.Logger, tick time.Duration) *PublishedListeners {
 	if mgr == nil {
 		mgr = netListenerManager{}
+	}
+	if dialer == nil {
+		dialer = overlayDialer{}
 	}
 	if tick <= 0 {
 		tick = DefaultTickInterval
 	}
 	return &PublishedListeners{
-		log:     log,
-		mgr:     mgr,
-		tick:    tick,
-		slots:   newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
-		rnd:     rand.IntN,
-		trigger: make(chan struct{}, 1),
-		bound:   map[int32]boundListener{},
+		log:       log,
+		mgr:       mgr,
+		tick:      tick,
+		devices:   devices,
+		neighbors: neighbors,
+		dialer:    dialer,
+		slots:     newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
+		rnd:       rand.IntN,
+		trigger:   make(chan struct{}, 1),
+		bound:     map[int32]boundListener{},
 	}
 }
 

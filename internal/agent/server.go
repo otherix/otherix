@@ -428,8 +428,11 @@ func buildReconcilers(cfg *config.AgentConfig, manager *vm.Manager, fabric netfa
 		return agentReconcilers{}, fmt.Errorf("health reconciler: %w", err)
 	}
 	// The published-listener reconciler owns the gateway's public L4 listeners; a
-	// nil ListenerManager falls back to the production net-backed binder.
-	publishedListeners := reconciler.NewPublishedListeners(nil, log, 0)
+	// nil ListenerManager falls back to the production net-backed binder and a nil
+	// dialer to the production SO_BINDTODEVICE overlay dialer. networks resolves a
+	// backend overlay IP to its gateway veth device; fabric resolves the neighbor
+	// MAC for the anti-SSRF pin.
+	publishedListeners := reconciler.NewPublishedListeners(nil, networks, fabric, nil, log, 0)
 	return agentReconcilers{
 		pools: pools, networks: networks, vms: vms, wireGuard: wireGuard,
 		health: health, publishedListeners: publishedListeners,
