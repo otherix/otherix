@@ -6,6 +6,7 @@ package reconciler
 import (
 	"context"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"strconv"
 	"sync"
@@ -79,13 +80,26 @@ type boundListener struct {
 // kernel sockets: it binds a raw TCP listener for every declared published
 // port and releases them all on shutdown.
 //
-// The datapath is a stub: an accepted connection is immediately closed
-// (RST). Source-CIDR enforcement and backend splicing arrive later; this
-// reconciler only opens and closes the public ports.
+// Each accepted connection is served by the raw datapath (handleConn): a
+// source-IP ACL, a backend selection, a slot acquire, an overlay-device
+// resolve, an anti-SSRF neighbor-MAC pin, an SO_BINDTODEVICE dial, and a
+// bidirectional splice. Every uncertain step closes the connection (fail toward
+// inaction).
 type PublishedListeners struct {
 	log  *slog.Logger
 	mgr  ListenerManager
 	tick time.Duration
+
+	// Datapath seams. slots and rnd are always set (safe defaults in the
+	// constructor). devices, neighbors, and dialer are the production overlay
+	// wiring, injected by the agent server; they are exercised only once a
+	// listener has an eligible backend, so an empty-backend LB closes at the
+	// select step before any is touched.
+	devices   deviceResolver
+	neighbors neighborResolver
+	dialer    datapathDialer
+	slots     *slotLimiter
+	rnd       func(int) int
 
 	desired atomic.Pointer[[]heartbeat.DeclaredLoadBalancer]
 	trigger chan struct{}
@@ -108,6 +122,8 @@ func NewPublishedListeners(mgr ListenerManager, log *slog.Logger, tick time.Dura
 		log:     log,
 		mgr:     mgr,
 		tick:    tick,
+		slots:   newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
+		rnd:     rand.IntN,
 		trigger: make(chan struct{}, 1),
 		bound:   map[int32]boundListener{},
 	}
@@ -238,8 +254,8 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 			// Ownership changed without an intervening unpublished tick (the
 			// old LB released the port and a new LB claimed it between two
 			// heartbeats). Close the stale listener and fall through to rebind
-			// under the new LB, so the observed report re-keys and a later
-			// slice's per-port config follows the new owner rather than
+			// under the new LB, so the observed report re-keys and, later, the
+			// per-port datapath config follows the new owner rather than
 			// serving the old owner's ACL/backends on this port.
 			if err := bl.ln.Close(); err != nil {
 				r.log.WarnContext(ctx, "published listener close failed (rebind on owner change)",
@@ -268,7 +284,7 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 		cfg := &atomic.Pointer[listenerConfig]{}
 		cfg.Store(configFromLB(lb))
 		r.bound[port] = boundListener{ln: ln, lbID: lb.LBID, cfg: cfg}
-		go r.accept(ln)
+		go r.accept(ctx, ln, cfg)
 		r.log.InfoContext(ctx, "published listener bound",
 			slog.Int("port", int(port)),
 			slog.String("lb_id", lb.LBID.String()),
@@ -276,20 +292,24 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 	}
 }
 
-// accept runs one per-listener goroutine. Stub datapath: accept a
-// connection and immediately close it (RST); no read, no splice, no ACL.
+// accept runs one per-listener goroutine, dispatching each accepted connection
+// to the raw datapath (handleConn). ctx is the reconciler's Run context and the
+// atomic cfg pointer is the owning listener's live config, both PASSED in (not
+// read off a shared struct field or the mutex-guarded bound map): cfg is Loaded
+// per accepted connection so a heartbeat that refreshes the backend set or
+// source allowlist reaches this loop without a rebind.
 //
 // It MUST return on the first Accept error. A closed listener makes Accept
 // return an error on every call, so a continue-on-error loop would busy-spin
 // a goroutine after Close. Returning on error lets the goroutine exit when
 // reconcile (or closeAll) closes the listener.
-func (r *PublishedListeners) accept(ln net.Listener) {
+func (r *PublishedListeners) accept(ctx context.Context, ln net.Listener, cfg *atomic.Pointer[listenerConfig]) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		_ = c.Close()
+		go r.handleConn(ctx, c, cfg.Load())
 	}
 }
 

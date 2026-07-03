@@ -8,6 +8,8 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,3 +170,417 @@ func TestSlotLimiterReleaseFreesSlot(t *testing.T) {
 		t.Errorf("acquire(\"a\") after release = false, want true (slot freed)")
 	}
 }
+
+// stubAddr is a net.Addr with a caller-supplied string form so a net.Pipe end
+// can present a routable ip:port RemoteAddr to handleConn's client-IP parse.
+type stubAddr string
+
+func (stubAddr) Network() string  { return "tcp" }
+func (a stubAddr) String() string { return string(a) }
+
+// addrConn wraps a net.Conn to override RemoteAddr and record closure. It lets
+// a test drive handleConn with a scripted client address and observe that the
+// datapath closed the accepted connection (fail toward inaction).
+type addrConn struct {
+	net.Conn
+	remote    net.Addr
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newAddrConn(remote string) (*addrConn, net.Conn) {
+	c, peer := net.Pipe()
+	return &addrConn{Conn: c, remote: stubAddr(remote), closed: make(chan struct{})}, peer
+}
+
+func (a *addrConn) RemoteAddr() net.Addr { return a.remote }
+
+func (a *addrConn) Close() error {
+	a.closeOnce.Do(func() { close(a.closed) })
+	return a.Conn.Close()
+}
+
+// isClosed reports whether Close was called within d.
+func (a *addrConn) isClosed(d time.Duration) bool {
+	select {
+	case <-a.closed:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// fakeDeviceResolver is a scripted deviceResolver seam.
+type fakeDeviceResolver struct {
+	device string
+	netID  string
+	ok     bool
+}
+
+func (f *fakeDeviceResolver) OverlayNetworkForIP(netip.Addr) (string, string, bool) {
+	return f.device, f.netID, f.ok
+}
+
+// fakeNeighborResolver is a scripted neighborResolver seam that counts calls so
+// a test can prove the slot cap gates the probe (acquire before probe).
+type fakeNeighborResolver struct {
+	mu    sync.Mutex
+	calls int
+	mac   net.HardwareAddr
+	ok    bool
+	err   error
+}
+
+func (f *fakeNeighborResolver) NeighborMAC(string, netip.Addr) (net.HardwareAddr, bool, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return f.mac, f.ok, f.err
+}
+
+func (f *fakeNeighborResolver) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// fakeDatapathDialer is a scripted datapathDialer seam. fn yields the upstream
+// conn (or an error) per call; the dialer records the resolved device+addr and
+// its call count so a test can assert a dial happened (or never did).
+type fakeDatapathDialer struct {
+	mu         sync.Mutex
+	calls      int
+	lastDevice string
+	lastAddr   string
+	fn         func() (net.Conn, error)
+}
+
+func (f *fakeDatapathDialer) DialOverlay(_ context.Context, device, addr string) (net.Conn, error) {
+	f.mu.Lock()
+	f.calls++
+	f.lastDevice = device
+	f.lastAddr = addr
+	fn := f.fn
+	f.mu.Unlock()
+	return fn()
+}
+
+func (f *fakeDatapathDialer) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+const testBackendMAC = "02:00:00:00:00:01"
+
+// datapathReconciler builds a PublishedListeners with all datapath seams
+// injected as the given fakes and deterministic single-backend selection.
+func datapathReconciler(dev *fakeDeviceResolver, nbr *fakeNeighborResolver, dialer *fakeDatapathDialer) *PublishedListeners {
+	return &PublishedListeners{
+		log:       testLogger(),
+		slots:     newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
+		rnd:       func(int) int { return 0 },
+		devices:   dev,
+		neighbors: nbr,
+		dialer:    dialer,
+	}
+}
+
+func mustParseMAC(t *testing.T, s string) net.HardwareAddr {
+	t.Helper()
+	m, err := net.ParseMAC(s)
+	if err != nil {
+		t.Fatalf("parse mac %q: %v", s, err)
+	}
+	return m
+}
+
+// oneBackendCfg is a listenerConfig with a single eligible backend and an
+// optional source allowlist.
+func oneBackendCfg(sourceCIDRs []string) *listenerConfig {
+	return &listenerConfig{
+		backendPort: 8080,
+		sourceCIDRs: sourceCIDRs,
+		backends: []heartbeat.DeclaredBackend{
+			{VMID: uuid.New(), OverlayIP: "10.0.0.5", MAC: testBackendMAC, Healthy: true},
+		},
+	}
+}
+
+// okSeams returns seams that would let a connection reach the dial step: device
+// resolvable, neighbor MAC matching the backend.
+func okSeams(t *testing.T) (*fakeDeviceResolver, *fakeNeighborResolver) {
+	return &fakeDeviceResolver{device: "otvg1", netID: "net-1", ok: true},
+		&fakeNeighborResolver{mac: mustParseMAC(t, testBackendMAC), ok: true}
+}
+
+func TestHandleConnACLReject(t *testing.T) {
+	dev, nbr := okSeams(t)
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return nil, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	c, _ := newAddrConn("198.51.100.7:40000")
+	cfg := oneBackendCfg([]string{"192.0.2.0/24"}) // client not in allowlist
+
+	r.handleConn(context.Background(), c, cfg)
+
+	if !c.isClosed(time.Second) {
+		t.Error("ACL-rejected conn not closed")
+	}
+	if got := dialer.callCount(); got != 0 {
+		t.Errorf("dialer calls on ACL reject = %d, want 0", got)
+	}
+}
+
+func TestHandleConnNoBackend(t *testing.T) {
+	dev, nbr := okSeams(t)
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return nil, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	c, _ := newAddrConn("198.51.100.7:40000")
+	cfg := &listenerConfig{backendPort: 8080} // no backends
+
+	r.handleConn(context.Background(), c, cfg)
+
+	if !c.isClosed(time.Second) {
+		t.Error("no-backend conn not closed")
+	}
+	if got := dialer.callCount(); got != 0 {
+		t.Errorf("dialer calls with no backend = %d, want 0", got)
+	}
+	if got := nbr.callCount(); got != 0 {
+		t.Errorf("neighbor probe with no backend = %d, want 0", got)
+	}
+}
+
+func TestHandleConnDeviceUnresolvable(t *testing.T) {
+	dev := &fakeDeviceResolver{ok: false} // gateway not on the backend overlay
+	_, nbr := okSeams(t)
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return nil, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	c, _ := newAddrConn("198.51.100.7:40000")
+	r.handleConn(context.Background(), c, oneBackendCfg(nil))
+
+	if !c.isClosed(time.Second) {
+		t.Error("device-unresolvable conn not closed")
+	}
+	if got := dialer.callCount(); got != 0 {
+		t.Errorf("dialer calls on unresolvable device = %d, want 0", got)
+	}
+	if got := nbr.callCount(); got != 0 {
+		t.Errorf("neighbor probe on unresolvable device = %d, want 0", got)
+	}
+}
+
+func TestHandleConnNeighborMismatch(t *testing.T) {
+	dev := &fakeDeviceResolver{device: "otvg1", netID: "net-1", ok: true}
+	nbr := &fakeNeighborResolver{mac: mustParseMAC(t, "02:00:00:00:00:99"), ok: true} // different MAC
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return nil, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	c, _ := newAddrConn("198.51.100.7:40000")
+	r.handleConn(context.Background(), c, oneBackendCfg(nil))
+
+	if !c.isClosed(time.Second) {
+		t.Error("neighbor-mismatch conn not closed")
+	}
+	if got := dialer.callCount(); got != 0 {
+		t.Errorf("dialer calls on neighbor mismatch = %d, want 0", got)
+	}
+}
+
+func TestHandleConnHappyPathSplice(t *testing.T) {
+	dev, nbr := okSeams(t)
+	upstream, testUpstream := net.Pipe()
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return upstream, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	c, testClient := newAddrConn("192.0.2.10:50000")
+	cfg := oneBackendCfg([]string{"192.0.2.0/24"}) // client allowed
+
+	go r.handleConn(context.Background(), c, cfg)
+
+	// Wait for the dial, then assert it targeted the resolved device + addr.
+	deadline := time.Now().Add(2 * time.Second)
+	for dialer.callCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("dial never happened on happy path")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if dialer.lastDevice != "otvg1" {
+		t.Errorf("dial device = %q, want otvg1", dialer.lastDevice)
+	}
+	if dialer.lastAddr != "10.0.0.5:8080" {
+		t.Errorf("dial addr = %q, want 10.0.0.5:8080", dialer.lastAddr)
+	}
+
+	// Client -> upstream.
+	go func() { _, _ = testClient.Write([]byte("hello")) }()
+	if got := readN(t, testUpstream, 5); got != "hello" {
+		t.Errorf("upstream got %q, want hello", got)
+	}
+
+	// Upstream -> client.
+	go func() { _, _ = testUpstream.Write([]byte("world")) }()
+	if got := readN(t, testClient, 5); got != "world" {
+		t.Errorf("client got %q, want world", got)
+	}
+
+	// Closing one side tears down both.
+	_ = testClient.Close()
+	_ = testUpstream.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := testUpstream.Read(make([]byte, 1)); err == nil {
+		t.Error("upstream still open after client close, want torn down")
+	}
+}
+
+func TestHandleConnSlotCap(t *testing.T) {
+	dev, nbr := okSeams(t)
+	var mu sync.Mutex
+	var peers []net.Conn
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) {
+		up, peer := net.Pipe()
+		mu.Lock()
+		peers = append(peers, peer) // keep the peer end open so the splice blocks
+		mu.Unlock()
+		return up, nil
+	}}
+	r := datapathReconciler(dev, nbr, dialer)
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, p := range peers {
+			_ = p.Close()
+		}
+	})
+
+	// One shared backend so every conn keys the same per-backend slot.
+	shared := heartbeat.DeclaredBackend{VMID: uuid.New(), OverlayIP: "10.0.0.5", MAC: testBackendMAC, Healthy: true}
+	cfg := &listenerConfig{backendPort: 8080, backends: []heartbeat.DeclaredBackend{shared}}
+
+	// Fill the per-backend cap with live (blocked-in-splice) connections.
+	for range publishedPerBackendCap {
+		c, _ := newAddrConn("192.0.2.10:50000")
+		go r.handleConn(context.Background(), c, cfg)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for dialer.callCount() < publishedPerBackendCap {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d slots filled", dialer.callCount(), publishedPerBackendCap)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// The (cap+1)th conn must be closed without a dial.
+	c, _ := newAddrConn("192.0.2.10:50000")
+	r.handleConn(context.Background(), c, cfg)
+	if !c.isClosed(time.Second) {
+		t.Error("over-cap conn not closed")
+	}
+	if got := dialer.callCount(); got != publishedPerBackendCap {
+		t.Errorf("dialer calls after over-cap conn = %d, want %d", got, publishedPerBackendCap)
+	}
+}
+
+// TestHandleConnAcquireBeforeProbe proves the slot cap gates the expensive
+// neighbor probe, not just the dial: with the backend's slots exhausted, the
+// neighbor resolver is never consulted.
+func TestHandleConnAcquireBeforeProbe(t *testing.T) {
+	dev, nbr := okSeams(t)
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return nil, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	backend := heartbeat.DeclaredBackend{VMID: uuid.New(), OverlayIP: "10.0.0.5", MAC: testBackendMAC, Healthy: true}
+	cfg := &listenerConfig{backendPort: 8080, backends: []heartbeat.DeclaredBackend{backend}}
+
+	// Exhaust the per-backend cap directly (as if that many sessions were live).
+	key := backend.VMID.String()
+	for i := range publishedPerBackendCap {
+		if !r.slots.acquire(key) {
+			t.Fatalf("pre-fill acquire %d failed", i)
+		}
+	}
+
+	c, _ := newAddrConn("192.0.2.10:50000")
+	r.handleConn(context.Background(), c, cfg)
+
+	if !c.isClosed(time.Second) {
+		t.Error("slot-exhausted conn not closed")
+	}
+	if got := nbr.callCount(); got != 0 {
+		t.Errorf("neighbor probed while slot-exhausted = %d, want 0 (acquire must gate the probe)", got)
+	}
+	if got := dialer.callCount(); got != 0 {
+		t.Errorf("dial while slot-exhausted = %d, want 0", got)
+	}
+}
+
+// TestHandleConnExactlyOnceRelease drives a cap's worth of dial FAILURES to one
+// backend and then a fresh connection: the failures must each release exactly
+// their own slot, so the fresh connection still acquires and dials. A missing
+// release would wedge the key at cap; the fresh dial would never happen.
+func TestHandleConnExactlyOnceRelease(t *testing.T) {
+	dev, nbr := okSeams(t)
+	var callN int
+	var mu sync.Mutex
+	upstream, testUpstream := net.Pipe()
+	t.Cleanup(func() { _ = testUpstream.Close() })
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		callN++
+		if callN <= publishedPerBackendCap {
+			return nil, errFakeDial
+		}
+		return upstream, nil
+	}}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	backend := heartbeat.DeclaredBackend{VMID: uuid.New(), OverlayIP: "10.0.0.5", MAC: testBackendMAC, Healthy: true}
+	cfg := &listenerConfig{backendPort: 8080, backends: []heartbeat.DeclaredBackend{backend}}
+
+	// N sequential dial failures (each returns immediately, no splice).
+	for range publishedPerBackendCap {
+		c, _ := newAddrConn("192.0.2.10:50000")
+		r.handleConn(context.Background(), c, cfg)
+	}
+
+	// A fresh connection must still acquire a slot and dial.
+	c, _ := newAddrConn("192.0.2.10:50000")
+	go r.handleConn(context.Background(), c, cfg)
+	deadline := time.Now().Add(2 * time.Second)
+	for dialer.callCount() <= publishedPerBackendCap {
+		if time.Now().After(deadline) {
+			t.Fatal("fresh conn never dialed; failed dials did not release their slots")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestHandleConnNilCtxSafety confirms handleConn takes ctx as a parameter and a
+// real context.Background() drives the dial step (context.WithTimeout) without a
+// panic - a nil struct-field ctx would panic in the bare accept goroutine.
+func TestHandleConnNilCtxSafety(t *testing.T) {
+	dev, nbr := okSeams(t)
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return nil, errFakeDial }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	defer func() {
+		if p := recover(); p != nil {
+			t.Fatalf("handleConn panicked: %v", p)
+		}
+	}()
+	c, _ := newAddrConn("192.0.2.10:50000")
+	r.handleConn(context.Background(), c, oneBackendCfg(nil))
+	if got := dialer.callCount(); got != 1 {
+		t.Errorf("dialer calls = %d, want 1 (dial step must be reached)", got)
+	}
+}
+
+type fakeDialErr struct{}
+
+func (fakeDialErr) Error() string { return "fake dial failure" }
+
+var errFakeDial = fakeDialErr{}

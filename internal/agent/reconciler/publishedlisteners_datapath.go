@@ -4,10 +4,14 @@
 package reconciler
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
+	"net/netip"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/otherix/otherix/internal/agent/heartbeat"
 )
@@ -21,6 +25,122 @@ const (
 	publishedPerBackendCap = 8
 	publishedGatewayCap    = 256
 )
+
+// publishedDialTimeout bounds the backend dial. It does not leak into the splice
+// (the dial context is cancelled the moment the dial returns) - a live session
+// is torn down only by the Run context or a closed leg.
+const publishedDialTimeout = 10 * time.Second
+
+// deviceResolver maps a backend overlay IP to the gateway veth device that
+// reaches its overlay, or reports ok=false when this node does not gateway that
+// overlay (fail closed). Satisfied by *Networks (OverlayNetworkForIP).
+type deviceResolver interface {
+	OverlayNetworkForIP(ip netip.Addr) (device, networkID string, ok bool)
+}
+
+// neighborResolver returns the kernel-resolved neighbor MAC for a backend IP on
+// the given device. Satisfied by netfabric.Fabric (NeighborMAC). The datapath
+// pins the dial to the CP-declared MAC through this seam (anti-SSRF).
+type neighborResolver interface {
+	NeighborMAC(device string, ip netip.Addr) (net.HardwareAddr, bool, error)
+}
+
+// datapathDialer dials a backend, binding the socket to the resolved overlay
+// device (SO_BINDTODEVICE) so the connection egresses the right bridge even when
+// two overlays carry the same guest subnet. The production impl (a net.Dialer
+// with netfabric.BindToDeviceControl) is wired by the agent server; tests inject
+// a fake yielding a net.Pipe end or an error.
+type datapathDialer interface {
+	DialOverlay(ctx context.Context, device, addr string) (net.Conn, error)
+}
+
+// macEqual reports whether the kernel-resolved neighbor MAC equals the
+// CP-declared backend MAC string want. want is parsed so formatting differences
+// never cause a false mismatch; a parse failure returns false (fail closed).
+// Mirrors the sibling ingress implementation, internal/agent/ingress/splice.go
+// (macEqual).
+func macEqual(mac net.HardwareAddr, want string) bool {
+	pw, err := net.ParseMAC(want)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(mac, pw)
+}
+
+// handleConn is the raw published-port per-connection datapath: source-IP ACL,
+// backend select, slot acquire, overlay-device resolve, anti-SSRF neighbor-MAC
+// pin, SO_BINDTODEVICE dial, and bidirectional splice. Every uncertain step
+// closes the accepted connection (fail toward inaction - the client retries and
+// re-lands on a healthy backend); the only destructive action is closing a
+// connection.
+//
+// ctx is the reconciler's Run context, threaded as a PARAMETER (never a struct
+// field): a bare accept goroutine has no recover, and a nil ctx would panic in
+// context.WithTimeout. The slot is acquired BEFORE the neighbor probe: unlike
+// the credential-gated /v1/connect path (which probes before acquiring), the raw
+// listener has no pre-filter, so an unauthenticated flood would otherwise spawn
+// unbounded goroutines each blocked on the ~2s probe. Selecting the backend
+// (cheap) yields the per-backend slot key, so acquiring here caps concurrent
+// probes at the per-backend/gateway ceiling. Exactly one release runs, via the
+// single defer after acquire, on every subsequent path.
+func (r *PublishedListeners) handleConn(ctx context.Context, c net.Conn, cfg *listenerConfig) {
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	clientIP, err := netip.ParseAddr(host)
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	if !sourceIPAllowed(cfg.sourceCIDRs, clientIP) {
+		_ = c.Close()
+		return
+	}
+
+	b, ok := selectBackend(cfg.backends, r.rnd)
+	if !ok {
+		_ = c.Close()
+		return
+	}
+
+	key := b.VMID.String()
+	if !r.slots.acquire(key) {
+		_ = c.Close()
+		return
+	}
+	defer r.slots.release(key)
+
+	ip, err := netip.ParseAddr(b.OverlayIP)
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	device, _, ok := r.devices.OverlayNetworkForIP(ip)
+	if !ok {
+		_ = c.Close()
+		return
+	}
+
+	mac, ok, err := r.neighbors.NeighborMAC(device, ip)
+	if err != nil || !ok || !macEqual(mac, b.MAC) {
+		_ = c.Close()
+		return
+	}
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, publishedDialTimeout)
+	up, err := r.dialer.DialOverlay(dialCtx, device, net.JoinHostPort(b.OverlayIP, strconv.Itoa(int(cfg.backendPort))))
+	dialCancel()
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+
+	spliceCtx, spliceCancel := context.WithCancel(ctx)
+	_ = c.SetDeadline(time.Time{})
+	spliceConns(spliceCtx, spliceCancel, c, up)
+}
 
 // selectBackend picks a uniformly random backend from the CP-pushed set and
 // returns it with true, or the zero value and false when the set is empty.
