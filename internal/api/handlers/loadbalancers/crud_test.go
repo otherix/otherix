@@ -454,6 +454,64 @@ func TestUpdatePublishFieldsRequirePublishPermission(t *testing.T) {
 	}
 }
 
+// TestUpdatePublishOnlyFieldsRejectedWhenUnpublished asserts that an update
+// carrying publish-only fields (protocol, source_cidrs) that leaves the row
+// unpublished is rejected with 400, matching the create path, so no inert
+// exposure state is persisted. The unpublish sentinel (published_port:0), which
+// clears all three fields together, still succeeds.
+func TestUpdatePublishOnlyFieldsRejectedWhenUnpublished(t *testing.T) {
+	op := opUser()
+	now := time.Now().UTC()
+
+	t.Run("source_cidrs on unpublished LB", func(t *testing.T) {
+		st := newFakeStore()
+		lb := store.LoadBalancer{
+			ID:        uuid.New(),
+			Name:      "u1",
+			OwnerID:   op.ID,
+			Port:      80,
+			Selector:  map[string]string{"app": "u"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		st.byID[lb.ID] = lb
+		st.byName[strings.ToLower(lb.Name)] = lb.ID
+
+		rec := do(t, newRouter(st, op), http.MethodPatch, "/v1/loadbalancers/u1", `{"source_cidrs":["10.0.0.0/8"]}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("unpublished source_cidrs = %d, want 400; body=%s", rec.Code, rec.Body.String())
+		}
+		if code := errorCode(t, rec); code != "validation_failed" {
+			t.Errorf("code = %q, want validation_failed", code)
+		}
+	})
+
+	t.Run("unpublish sentinel clears all three", func(t *testing.T) {
+		st := newFakeStore()
+		port := int32(8080)
+		lb := store.LoadBalancer{
+			ID:            uuid.New(),
+			Name:          "p1",
+			OwnerID:       op.ID,
+			Port:          80,
+			Selector:      map[string]string{"app": "p"},
+			PublishedPort: &port,
+			Protocol:      "tcp",
+			SourceCIDRs:   []string{"10.0.0.0/8"},
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+		st.byID[lb.ID] = lb
+		st.byName[strings.ToLower(lb.Name)] = lb.ID
+		st.byPublishedPort[port] = lb.ID
+
+		rec := do(t, newRouter(st, op), http.MethodPatch, "/v1/loadbalancers/p1", `{"published_port":0}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unpublish = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
 func TestCreateLoadBalancerStampsOwner(t *testing.T) {
 	st := newFakeStore()
 	u := devUser()

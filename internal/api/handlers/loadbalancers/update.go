@@ -204,7 +204,22 @@ func applyUpdatePublish(w http.ResponseWriter, r *http.Request, user *auth.User,
 		}
 		row.SourceCIDRs = *req.SourceCIDRs
 	}
+	// Publish-only fields (protocol, source_cidrs) are meaningless without a
+	// published port. Reject them on a row that stays unpublished, matching the
+	// create path, so no inert exposure state is persisted.
+	if hasPublishOnlyFieldsWithoutPort(row) {
+		response.WriteError(w, r, http.StatusBadRequest, response.CodeValidationFailed,
+			"protocol and source_cidrs require a published_port", nil)
+		return false
+	}
 	return true
+}
+
+// hasPublishOnlyFieldsWithoutPort reports whether row carries publish-only
+// exposure state (a protocol or a source-CIDR allowlist) with no published port
+// to attach it to.
+func hasPublishOnlyFieldsWithoutPort(row *store.LoadBalancer) bool {
+	return row.PublishedPort == nil && (row.Protocol != "" || len(row.SourceCIDRs) > 0)
 }
 
 // writeNotFound emits the standard load-balancer 404 with the dedicated
