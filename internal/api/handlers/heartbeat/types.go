@@ -237,6 +237,40 @@ type responseBody struct {
 	// desired-probe down-channel; the agent reports each verdict back up via
 	// requestBody.HealthChecks). Full-snapshot semantics.
 	DeclaredHealthChecks []declaredHealthCheck `json:"declared_health_checks"`
+	// DeclaredLoadBalancers is the CP-declared set of published load balancers a
+	// gateway-role node must bind a public listener for, each with its resolved
+	// eligible backend set. Non-empty only for a gateway recipient; a hypervisor
+	// node receives an empty list. Full-snapshot semantics: the agent binds
+	// exactly the published ports in this list and closes the rest.
+	DeclaredLoadBalancers []declaredLoadBalancer `json:"declared_load_balancers"`
+}
+
+// declaredLoadBalancer mirrors DeclaredLoadBalancer on the agent side (the
+// manual-sync contract) — one published load balancer the CP wants a gateway to
+// bind a public L4 listener for. PublishedPort is the public listener port,
+// BackendPort the guest port each backend is dialed at, and SourceCIDRs the
+// optional allowlist (empty means allow-all). Backends is the resolved eligible
+// backend set (fail toward inclusion), node-independent across gateways.
+type declaredLoadBalancer struct {
+	LBID          uuid.UUID         `json:"lb_id"`
+	PublishedPort int32             `json:"published_port"`
+	Protocol      string            `json:"protocol"`
+	BackendPort   int32             `json:"backend_port"`
+	SourceCIDRs   []string          `json:"source_cidrs,omitempty"`
+	Backends      []declaredBackend `json:"backends"`
+}
+
+// declaredBackend mirrors DeclaredBackend on the agent side — one resolved
+// backend of a published load balancer: the backend VM plus the overlay address
+// a gateway dials it at (OverlayIP is netip.Addr.String(), MAC is
+// net.HardwareAddr.String()). Healthy is the observed active-health verdict,
+// informational only — eligibility is already applied, so a backend appears here
+// iff it is eligible.
+type declaredBackend struct {
+	VMID      uuid.UUID `json:"vm_id"`
+	OverlayIP string    `json:"overlay_ip"`
+	MAC       string    `json:"mac"`
+	Healthy   bool      `json:"healthy"`
 }
 
 // declaredHealthCheck mirrors DeclaredHealthCheck on the agent side (the

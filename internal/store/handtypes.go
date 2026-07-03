@@ -104,6 +104,12 @@ type HeartbeatProjection interface {
 	// verdict naming a just-deleted LB, so an in-flight heartbeat cannot
 	// re-create a health row the delete cascade removed.
 	LoadBalancerByID(ctx context.Context, id uuid.UUID) (LoadBalancer, error)
+	// ListPublishedLoadBalancerBackends resolves every published load balancer
+	// (PublishedPort set) with its eligible backend set, for push to gateway-role
+	// nodes. Node-independent: every gateway forwards to backends wherever they
+	// run, so the same set is returned for all gateways. Eligibility fails toward
+	// inclusion (mirrors the connect broker's eligibleBackends).
+	ListPublishedLoadBalancerBackends(ctx context.Context) ([]PublishedLoadBalancer, error)
 }
 
 // OverlayNICPlacement is one NIC attached to a type=overlay network whose owning

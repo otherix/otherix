@@ -459,3 +459,9 @@ func (h heartbeatProjection) UpsertLBBackendHealth(ctx context.Context, lbID, vm
 func (h heartbeatProjection) LoadBalancerByID(ctx context.Context, id uuid.UUID) (store.LoadBalancer, error) {
 	return h.s.LoadBalancerByID(ctx, id)
 }
+
+// ListPublishedLoadBalancerBackends resolves every published load balancer with
+// its eligible backend set, for the declared_load_balancers gateway down-channel.
+func (h heartbeatProjection) ListPublishedLoadBalancerBackends(ctx context.Context) ([]store.PublishedLoadBalancer, error) {
+	return h.s.ListPublishedLoadBalancerBackends(ctx)
+}

@@ -194,6 +194,39 @@ type Response struct {
 	// Report.HealthChecks). Full-snapshot semantics: probes absent from this
 	// list are dropped by the agent's health prober.
 	DeclaredHealthChecks []DeclaredHealthCheck `json:"declared_health_checks"`
+	// DeclaredLoadBalancers is the CP-declared set of published load balancers this
+	// gateway node must bind a public L4 listener for, each with its resolved
+	// eligible backend set. Non-empty only for a gateway recipient; empty from a
+	// hypervisor node or an older CP. Full-snapshot semantics: the agent binds
+	// exactly the published ports in this list and closes the rest.
+	DeclaredLoadBalancers []DeclaredLoadBalancer `json:"declared_load_balancers"`
+}
+
+// DeclaredLoadBalancer is one published load balancer the CP wants this gateway
+// to bind a public L4 listener for (the heartbeat down-channel). PublishedPort is
+// the public listener port, BackendPort the guest port each backend is dialed at,
+// and SourceCIDRs the optional source allowlist (empty means allow-all). Backends
+// is the resolved eligible backend set; it is node-independent, so every gateway
+// receives the same set.
+type DeclaredLoadBalancer struct {
+	LBID          uuid.UUID         `json:"lb_id"`
+	PublishedPort int32             `json:"published_port"`
+	Protocol      string            `json:"protocol"`
+	BackendPort   int32             `json:"backend_port"`
+	SourceCIDRs   []string          `json:"source_cidrs,omitempty"`
+	Backends      []DeclaredBackend `json:"backends"`
+}
+
+// DeclaredBackend is one resolved backend of a published load balancer: the
+// backend VM plus the overlay address a gateway dials it at (OverlayIP is the
+// canonical IP string, MAC the canonical hardware-address string). Healthy is the
+// observed active-health verdict, informational only — eligibility is already
+// applied CP-side, so a backend appears here iff it is eligible.
+type DeclaredBackend struct {
+	VMID      uuid.UUID `json:"vm_id"`
+	OverlayIP string    `json:"overlay_ip"`
+	MAC       string    `json:"mac"`
+	Healthy   bool      `json:"healthy"`
 }
 
 // HealthCheckReport is one active L4 probe verdict the agent reports up-channel

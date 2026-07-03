@@ -118,6 +118,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		OverlayReachability:    outcome.overlayReachability,
 		SessionCAPublicPEM:     outcome.sessionCAPublicPEM,
 		DeclaredHealthChecks:   outcome.declaredHealthChecks,
+		DeclaredLoadBalancers:  outcome.declaredLoadBalancers,
 	})
 }
 
@@ -196,6 +197,7 @@ type heartbeatOutcome struct {
 	declaredFDB            []declaredFDBEntry
 	overlayReachability    []overlayReachability
 	declaredHealthChecks   []declaredHealthCheck
+	declaredLoadBalancers  []declaredLoadBalancer
 	selfOverlayIP          *string
 	otwg0MTU               *int32
 	sessionCAPublicPEM     *string
@@ -351,6 +353,11 @@ func (h *Handler) loadDeclared(ctx context.Context, hp store.HeartbeatProjection
 		return err
 	}
 	outcome.declaredHealthChecks = declaredHealthChecks
+	declaredLoadBalancers, err := h.loadDeclaredLoadBalancers(ctx, hp, nodeID)
+	if err != nil {
+		return err
+	}
+	outcome.declaredLoadBalancers = declaredLoadBalancers
 	self, err := hp.AgentWireguardByNodeID(ctx, nodeID)
 	switch {
 	case err == nil:
@@ -418,6 +425,52 @@ func (h *Handler) loadDeclaredHealthChecks(ctx context.Context, hp store.Heartbe
 			TimeoutSeconds:     t.HealthCheck.TimeoutSeconds,
 			HealthyThreshold:   t.HealthCheck.HealthyThreshold,
 			UnhealthyThreshold: t.HealthCheck.UnhealthyThreshold,
+		})
+	}
+	return out, nil
+}
+
+// loadDeclaredLoadBalancers returns the published load balancers a gateway-role
+// node must bind a public L4 listener for, each with its resolved eligible
+// backend set. Surfaces as `HeartbeatResponse.declared_load_balancers`. It is
+// gated on the gateway role exactly like gatewayAddrsForNode: a non-gateway node
+// returns nil (never receives listener state) without running the published
+// backend scan. The set is node-independent (the store resolver takes no nodeID),
+// so every gateway node gets the same payload; the agent binds exactly the ports
+// in this list and closes the rest.
+func (h *Handler) loadDeclaredLoadBalancers(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID) ([]declaredLoadBalancer, error) {
+	node, err := hp.NodeByID(ctx, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("node by id %s: %v", nodeID, err)
+	}
+	if !node.HasRole(store.NodeRoleGateway) {
+		return nil, nil
+	}
+	lbs, err := hp.ListPublishedLoadBalancerBackends(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list published load balancer backends: %v", err)
+	}
+	if len(lbs) == 0 {
+		return nil, nil
+	}
+	out := make([]declaredLoadBalancer, 0, len(lbs))
+	for _, lb := range lbs {
+		backends := make([]declaredBackend, 0, len(lb.Backends))
+		for _, b := range lb.Backends {
+			backends = append(backends, declaredBackend{
+				VMID:      b.VMID,
+				OverlayIP: b.OverlayIP.String(),
+				MAC:       b.MAC.String(),
+				Healthy:   b.Healthy,
+			})
+		}
+		out = append(out, declaredLoadBalancer{
+			LBID:          lb.LBID,
+			PublishedPort: lb.PublishedPort,
+			Protocol:      lb.Protocol,
+			BackendPort:   lb.BackendPort,
+			SourceCIDRs:   lb.SourceCIDRs,
+			Backends:      backends,
 		})
 	}
 	return out, nil
