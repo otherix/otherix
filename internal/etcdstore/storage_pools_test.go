@@ -160,6 +160,39 @@ func TestPoolImageInventoryRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNodeIDsWithPool(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	withPool := mkKindNode(t, s, "hv", store.NodeKindNode, uniquePoolName("nidp-a"))
+	gwNoPool := mkGatewayNodeNoPool(t, s, "gw")
+
+	// A node whose only pool is soft-deleted must be absent.
+	deletedName := uniquePoolName("nidp-del")
+	delNode := mkKindNode(t, s, "del", store.NodeKindNode, deletedName)
+	pools, err := s.StoragePoolsByName(ctx, deletedName)
+	if err != nil || len(pools) != 1 {
+		t.Fatalf("StoragePoolsByName(%s) = %v, %v; want 1 pool", deletedName, pools, err)
+	}
+	if err := s.DeleteStoragePool(ctx, pools[0].ID); err != nil {
+		t.Fatalf("DeleteStoragePool: %v", err)
+	}
+
+	set, err := s.NodeIDsWithPool(ctx)
+	if err != nil {
+		t.Fatalf("NodeIDsWithPool: %v", err)
+	}
+	if _, ok := set[withPool]; !ok {
+		t.Errorf("node with a pool %v missing from set %v", withPool, set)
+	}
+	if _, ok := set[gwNoPool]; ok {
+		t.Errorf("gateway-only node %v (no pool) must be absent from set %v", gwNoPool, set)
+	}
+	if _, ok := set[delNode]; ok {
+		t.Errorf("node whose only pool is soft-deleted %v must be absent from set %v", delNode, set)
+	}
+}
+
 // bytesPerGiBTest mirrors the package-internal bytesPerGiB constant for the
 // external test package.
 const bytesPerGiBTest = 1073741824

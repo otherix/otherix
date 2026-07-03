@@ -295,6 +295,27 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// NodeIDsWithPool returns the set of node ids that own at least one non-deleted
+// storage pool. This is the read-boundary signal for the derived hypervisor
+// role: a node with a usable pool can host VMs. One scan of the pool keyspace.
+func (s *Store) NodeIDsWithPool(ctx context.Context) (map[uuid.UUID]struct{}, error) {
+	items, err := s.c.Range(ctx, storagePoolPrefix())
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]struct{})
+	for _, kv := range items {
+		var p store.StoragePool
+		if err := json.Unmarshal(kv.Value, &p); err != nil {
+			return nil, err
+		}
+		if p.DeletedAt == nil {
+			out[p.NodeID] = struct{}{}
+		}
+	}
+	return out, nil
+}
+
 // UpsertPoolImageInventory replaces the observed image inventory for a pool
 // with images. Observed state written from the heartbeat path: a blind put,
 // last-writer-wins per heartbeat. An empty slice clears the inventory so a pool
