@@ -290,3 +290,71 @@ func freeTCPPort(t *testing.T) int32 {
 	defer l.Close()
 	return int32(l.Addr().(*net.TCPAddr).Port)
 }
+
+// TestPublishedListenerReports confirms the observed up-channel projection:
+// after a reconcile pass the reporter emits one report per bound entry, a
+// bound listener as Bound=true with no error and a failed bind as Bound=false
+// carrying the failure string, each keyed back to its owning LB.
+func TestPublishedListenerReports(t *testing.T) {
+	lbA, lbB := uuid.New(), uuid.New()
+	mgr := newFakeListenerManager()
+	r := NewPublishedListeners(mgr, testLogger(), time.Hour)
+	ctx := context.Background()
+
+	// First pass: port 8080 (lbA) binds cleanly.
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{
+		{LBID: lbA, PublishedPort: 8080, Protocol: "tcp", BackendPort: 22},
+	}})
+	r.reconcile(ctx)
+
+	// Second pass: bind now fails; port 8081 (lbB) fails to bind while 8080 stays up.
+	mgr.mu.Lock()
+	mgr.listenErr = errors.New("bind: address already in use")
+	mgr.mu.Unlock()
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{
+		{LBID: lbA, PublishedPort: 8080, Protocol: "tcp", BackendPort: 22},
+		{LBID: lbB, PublishedPort: 8081, Protocol: "tcp", BackendPort: 22},
+	}})
+	r.reconcile(ctx)
+
+	reports := r.PublishedListenerReports()
+	if len(reports) != 2 {
+		t.Fatalf("PublishedListenerReports() len = %d, want 2", len(reports))
+	}
+	byPort := map[int32]heartbeat.PublishedListenerReport{}
+	for _, rep := range reports {
+		byPort[rep.Port] = rep
+	}
+	if a := byPort[8080]; a.LBID != lbA || !a.Bound || a.Error != "" {
+		t.Errorf("report[8080] = %+v, want lb=%v bound no-error", a, lbA)
+	}
+	if b := byPort[8081]; b.LBID != lbB || b.Bound || b.Error == "" {
+		t.Errorf("report[8081] = %+v, want lb=%v unbound with error", b, lbB)
+	}
+}
+
+// TestPublishedListenerReportsPrunesUnpublished confirms a torn-down listener
+// stops being reported: once a port leaves the declared set the reconcile pass
+// removes it from bound, and the reporter no longer emits it (mirrors PoolReports
+// pruning).
+func TestPublishedListenerReportsPrunesUnpublished(t *testing.T) {
+	lbA := uuid.New()
+	mgr := newFakeListenerManager()
+	r := NewPublishedListeners(mgr, testLogger(), time.Hour)
+	ctx := context.Background()
+
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{
+		{LBID: lbA, PublishedPort: 8080, Protocol: "tcp", BackendPort: 22},
+	}})
+	r.reconcile(ctx)
+	if len(r.PublishedListenerReports()) != 1 {
+		t.Fatalf("after bind: PublishedListenerReports() len = %d, want 1", len(r.PublishedListenerReports()))
+	}
+
+	// LB unpublished: empty declared set reaps the listener.
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: nil})
+	r.reconcile(ctx)
+	if got := r.PublishedListenerReports(); len(got) != 0 {
+		t.Errorf("after unpublish: PublishedListenerReports() = %+v, want empty", got)
+	}
+}

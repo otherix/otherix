@@ -39,6 +39,11 @@ type requestBody struct {
 	// balancer backends declared on this node (the observed-health up-channel).
 	// The CP folds each verdict into the backend's observed health.
 	HealthChecks []healthCheckReport `json:"health_checks,omitempty"`
+	// PublishedListeners carries a gateway node's observed bind state for each
+	// published load balancer listener it was declared. The CP folds each entry
+	// into the observed lb_published_listener_status keyed by (lb_id, reporting
+	// node). Non-empty only from a gateway recipient.
+	PublishedListeners []publishedListenerReport `json:"published_listeners,omitempty"`
 	// IngressAdvertisedEndpoint is the node's self-reported ingress splicer URL
 	// (/v1/connect), reported when the node serves the ingress plane. The CP folds
 	// it into node.IngressAdvertisedEndpoint preserve-on-empty: a non-empty value
@@ -55,6 +60,17 @@ type healthCheckReport struct {
 	LBID    uuid.UUID `json:"lb_id"`
 	VMID    uuid.UUID `json:"vm_id"`
 	Healthy bool      `json:"healthy"`
+}
+
+// publishedListenerReport mirrors PublishedListenerReport on the agent side (the
+// manual-sync contract) — one gateway node's observed bind state for a published
+// load balancer's public listener. Bound is the agent's verdict for its last bind
+// attempt; Error carries the failure string when Bound is false.
+type publishedListenerReport struct {
+	LBID  uuid.UUID `json:"lb_id"`
+	Port  int32     `json:"port"`
+	Bound bool      `json:"bound"`
+	Error string    `json:"error,omitempty"`
 }
 
 // blobReport mirrors HeartbeatBlob (the agent up-channel node-level blob entry).

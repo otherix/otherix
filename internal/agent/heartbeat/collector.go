@@ -110,27 +110,36 @@ type HealthCheckReporter interface {
 	HealthCheckReports() []HealthCheckReport
 }
 
+// PublishedListenerReporter returns the agent's observed published load balancer
+// listener bind verdicts the collector folds into
+// HeartbeatRequest.published_listeners. Implemented by the published-listener
+// reconciler; nil is allowed (yields no reports) for test/legacy paths.
+type PublishedListenerReporter interface {
+	PublishedListenerReports() []PublishedListenerReport
+}
+
 // LinuxCollector reads host inventory from /proc, runs qemu-system-*
 // --version best-effort, and asks the supplied VMLister for the live
 // VM list. Designed for Linux (the only supported agent platform);
 // other platforms fail-fast in New rather than at Collect time.
 type LinuxCollector struct {
-	procPath      string
-	vms           VMLister
-	vmReporter    VMReporter
-	pools         PoolReporter
-	poolImages    PoolImageLister
-	poolSnapshots PoolSnapshotLister
-	blobs         BlobLister
-	imageBlobs    BlobLister
-	networks      NetworkReporter
-	wireguard     WireGuardReporter
-	healthChecks  HealthCheckReporter
-	migration     config.MigrationConfig
-	qemu          config.QEMUConfig
-	agentVersion  string
-	architecture  string
-	hostName      string
+	procPath           string
+	vms                VMLister
+	vmReporter         VMReporter
+	pools              PoolReporter
+	poolImages         PoolImageLister
+	poolSnapshots      PoolSnapshotLister
+	blobs              BlobLister
+	imageBlobs         BlobLister
+	networks           NetworkReporter
+	wireguard          WireGuardReporter
+	healthChecks       HealthCheckReporter
+	publishedListeners PublishedListenerReporter
+	migration          config.MigrationConfig
+	qemu               config.QEMUConfig
+	agentVersion       string
+	architecture       string
+	hostName           string
 	// ingressAdvertisedEndpoint is the node's ingress splicer URL, reported when
 	// the ingress plane is active on this node. Empty for a plain hypervisor.
 	ingressAdvertisedEndpoint string
@@ -144,19 +153,20 @@ type LinuxCollector struct {
 // for resource accounting (sumRunningVMs). When nil, the collector
 // falls back to VMs.List() for backward compatibility with tests.
 type CollectorDeps struct {
-	ProcPath      string
-	VMs           VMLister
-	VMReporter    VMReporter
-	Pools         PoolReporter
-	PoolImages    PoolImageLister
-	PoolSnapshots PoolSnapshotLister
-	Blobs         BlobLister
-	ImageBlobs    BlobLister
-	Networks      NetworkReporter
-	WireGuard     WireGuardReporter
-	HealthChecks  HealthCheckReporter
-	Migration     config.MigrationConfig
-	QEMU          config.QEMUConfig
+	ProcPath           string
+	VMs                VMLister
+	VMReporter         VMReporter
+	Pools              PoolReporter
+	PoolImages         PoolImageLister
+	PoolSnapshots      PoolSnapshotLister
+	Blobs              BlobLister
+	ImageBlobs         BlobLister
+	Networks           NetworkReporter
+	WireGuard          WireGuardReporter
+	HealthChecks       HealthCheckReporter
+	PublishedListeners PublishedListenerReporter
+	Migration          config.MigrationConfig
+	QEMU               config.QEMUConfig
 	// IngressAdvertisedEndpoint is the node's ingress splicer URL. Set only when
 	// the ingress plane is active (a co-located hypervisor or standalone gateway);
 	// left empty for a plain hypervisor.
@@ -190,6 +200,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		networks:                  deps.Networks,
 		wireguard:                 deps.WireGuard,
 		healthChecks:              deps.HealthChecks,
+		publishedListeners:        deps.PublishedListeners,
 		migration:                 deps.Migration,
 		qemu:                      deps.QEMU,
 		agentVersion:              version.Current().Version,
@@ -332,6 +343,9 @@ func (c *LinuxCollector) foldObservedInventory(report *Report) {
 	}
 	if c.healthChecks != nil {
 		report.HealthChecks = c.healthChecks.HealthCheckReports()
+	}
+	if c.publishedListeners != nil {
+		report.PublishedListeners = c.publishedListeners.PublishedListenerReports()
 	}
 }
 

@@ -453,6 +453,12 @@ func (h heartbeatProjection) UpsertLBBackendHealth(ctx context.Context, lbID, vm
 	return h.s.UpsertLBBackendHealth(ctx, lbID, vmID, healthy, reportedAt)
 }
 
+// UpsertLBPublishedListenerStatus records the observed published-listener bind
+// state for (lbID, nodeID) from a heartbeat, stamped with the CP receive time.
+func (h heartbeatProjection) UpsertLBPublishedListenerStatus(ctx context.Context, lbID, nodeID uuid.UUID, port int32, bound bool, errMsg string, reportedAt time.Time) error {
+	return h.s.UpsertLBPublishedListenerStatus(ctx, lbID, nodeID, port, bound, errMsg, reportedAt)
+}
+
 // LoadBalancerByID returns the load balancer row (or store.ErrNotFound for a
 // soft-deleted / missing one), used by the health ingest to skip a verdict
 // naming a just-deleted LB.

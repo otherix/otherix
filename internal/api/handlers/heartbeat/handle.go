@@ -276,6 +276,9 @@ func (h *Handler) applyObservedReports(ctx context.Context, hp store.HeartbeatPr
 	if err := h.applyHealthChecks(ctx, hp, nodeID, body.HealthChecks); err != nil {
 		return err
 	}
+	if err := h.applyPublishedListeners(ctx, hp, nodeID, body.PublishedListeners); err != nil {
+		return err
+	}
 	if err := h.applyPoolReports(ctx, hp, nodeID, body.Pools); err != nil {
 		return err
 	}
@@ -1452,6 +1455,50 @@ func (h *Handler) applyHealthChecks(ctx context.Context, hp store.HeartbeatProje
 		}
 		if err := hp.UpsertLBBackendHealth(ctx, r.LBID, r.VMID, r.Healthy, now); err != nil {
 			return fmt.Errorf("upsert lb backend health: %v", err)
+		}
+	}
+	return nil
+}
+
+// applyPublishedListeners writes the reported per-(lb, reporting node) published
+// listener bind verdicts. Unlike applyHealthChecks there is NO per-VM placement
+// gate: a published listener is node-scoped (the gateway binds a public port), so
+// the record is keyed by the reporting node's own identity, which the cert
+// binding already authenticates. The only gate is the soft-deleted-LB skip, so an
+// in-flight heartbeat naming a just-deleted LB cannot re-create a status row the
+// delete cascade removed. The CP stamps the receive time so freshness never
+// depends on the agent's clock.
+func (h *Handler) applyPublishedListeners(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []publishedListenerReport) error {
+	if len(reports) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	liveLB := map[uuid.UUID]bool{}
+	isLive := func(lbID uuid.UUID) (bool, error) {
+		if v, ok := liveLB[lbID]; ok {
+			return v, nil
+		}
+		_, err := hp.LoadBalancerByID(ctx, lbID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				liveLB[lbID] = false
+				return false, nil
+			}
+			return false, fmt.Errorf("resolve lb liveness: %v", err)
+		}
+		liveLB[lbID] = true
+		return true, nil
+	}
+	for _, r := range reports {
+		live, err := isLive(r.LBID)
+		if err != nil {
+			return err
+		}
+		if !live {
+			continue // LB deleted -> do not resurrect its listener status rows
+		}
+		if err := hp.UpsertLBPublishedListenerStatus(ctx, r.LBID, nodeID, r.Port, r.Bound, r.Error, now); err != nil {
+			return fmt.Errorf("upsert lb published listener status: %v", err)
 		}
 	}
 	return nil

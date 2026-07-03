@@ -43,6 +43,12 @@ type Report struct {
 	// health-check down-channel below). One entry per (lb_id, vm_id) the agent
 	// probes; the CP folds each verdict into the backend's observed health.
 	HealthChecks []HealthCheckReport `json:"health_checks,omitempty"`
+	// PublishedListeners carries this gateway's observed bind state for each
+	// published load balancer listener the CP declared to it (the heartbeat
+	// up-channel for the declared_load_balancers down-channel). One entry per
+	// declared published port; the CP folds each into the observed listener status
+	// keyed by (lb_id, this node). Empty from a hypervisor node.
+	PublishedListeners []PublishedListenerReport `json:"published_listeners,omitempty"`
 	// IngressAdvertisedEndpoint is the HTTPS URL clients dial to reach this node's
 	// ingress splicer (/v1/connect). Reported only when the node serves the ingress
 	// plane (a standalone gateway or a co-located hypervisor); empty and omitted
@@ -237,6 +243,19 @@ type HealthCheckReport struct {
 	LBID    uuid.UUID `json:"lb_id"`
 	VMID    uuid.UUID `json:"vm_id"`
 	Healthy bool      `json:"healthy"`
+}
+
+// PublishedListenerReport is one gateway node's observed bind state for a
+// published load balancer's public listener (the observed up-channel of
+// ADR-0027). Bound is the agent's verdict for its last bind attempt on Port for
+// LBID; Error carries the failure string when Bound is false. The CP folds it
+// into the load balancer's observed listener status so the view can surface a
+// gateway that cannot bind the published port.
+type PublishedListenerReport struct {
+	LBID  uuid.UUID `json:"lb_id"`
+	Port  int32     `json:"port"`
+	Bound bool      `json:"bound"`
+	Error string    `json:"error,omitempty"`
 }
 
 // DeclaredHealthCheck is one active L4 probe the CP wants the agent to run

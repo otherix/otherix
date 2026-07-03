@@ -99,6 +99,11 @@ type HeartbeatProjection interface {
 	// (load balancer, backend VM) pair from a heartbeat, stamped with the CP
 	// receive time (the agent's clock is never trusted for freshness).
 	UpsertLBBackendHealth(ctx context.Context, lbID, vmID uuid.UUID, healthy bool, reportedAt time.Time) error
+	// UpsertLBPublishedListenerStatus records the observed bind state of one
+	// published load balancer's public listener on one gateway node from a
+	// heartbeat, stamped with the CP receive time. Keyed by (lbID, nodeID); no
+	// per-VM placement gate (published listeners are node-scoped).
+	UpsertLBPublishedListenerStatus(ctx context.Context, lbID, nodeID uuid.UUID, port int32, bound bool, errMsg string, reportedAt time.Time) error
 	// LoadBalancerByID returns the load balancer row, or ErrNotFound when it is
 	// soft-deleted / missing. The backend-health ingest reads it to skip a
 	// verdict naming a just-deleted LB, so an in-flight heartbeat cannot

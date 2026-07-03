@@ -85,6 +85,26 @@ func NewPublishedListeners(mgr ListenerManager, log *slog.Logger, tick time.Dura
 	}
 }
 
+// PublishedListenerReports builds the observed up-channel projection: one report
+// per entry in the bound map, carrying the owning LB id, the published port, and
+// the bind verdict (Bound == the last bind succeeded; Error is the failure string
+// otherwise). Ports no longer in bound are naturally absent - a torn-down listener
+// stops being reported, mirroring how PoolReports only reports live pools.
+func (r *PublishedListeners) PublishedListenerReports() []heartbeat.PublishedListenerReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]heartbeat.PublishedListenerReport, 0, len(r.bound))
+	for port, bl := range r.bound {
+		out = append(out, heartbeat.PublishedListenerReport{
+			LBID:  bl.lbID,
+			Port:  port,
+			Bound: bl.err == "",
+			Error: bl.err,
+		})
+	}
+	return out
+}
+
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. Invoked by
 // the sender immediately after a successful heartbeat POST, outside this
 // reconciler's goroutine. We copy the slice (the sender's struct may be

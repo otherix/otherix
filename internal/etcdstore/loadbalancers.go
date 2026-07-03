@@ -404,6 +404,16 @@ func (s *Store) DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error {
 		s.log.WarnContext(ctx, "delete lb backend health cascade failed (delete still succeeded)",
 			"lb", id.String(), "error", err.Error())
 	}
+
+	// Reap this load balancer's observed published-listener status records. Same
+	// best-effort contract as the backend-health cascade above: the records are
+	// observed state that re-derives from heartbeat, so a failed reap only leaves
+	// stale rows the lb view already stale-ignores - never a 500 on an
+	// otherwise-successful delete.
+	if err := s.deleteLBPublishedListenerStatusPrefix(ctx, id); err != nil {
+		s.log.WarnContext(ctx, "delete lb published listener status cascade failed (delete still succeeded)",
+			"lb", id.String(), "error", err.Error())
+	}
 	return nil
 }
 

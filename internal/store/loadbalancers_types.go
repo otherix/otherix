@@ -197,3 +197,18 @@ type LBBackendHealth struct {
 	Healthy    bool
 	ReportedAt time.Time
 }
+
+// LBPublishedListenerStatus is the observed bind state of one published load
+// balancer's public listener on one gateway node, reported through the heartbeat
+// and stamped with the CP receive time (the agent's clock is never trusted for
+// freshness). Bound is the agent's verdict for its last bind attempt; Error
+// carries the failure string when Bound is false. Keyed by (lbID, NodeID); the
+// per-lb prefix range gives the LB view every gateway's listener status in one
+// round trip.
+type LBPublishedListenerStatus struct {
+	NodeID     uuid.UUID
+	Port       int32
+	Bound      bool
+	Error      string
+	ReportedAt time.Time
+}
