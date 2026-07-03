@@ -57,8 +57,8 @@ func mkGatewayNodeNoPool(t *testing.T, s *etcdstore.Store, prefix string) uuid.U
 }
 
 // TestNodeByNameRoundTripsGatewayRole confirms the gateway role persists and
-// reads back, and that a node created without the gateway bit reads back as a
-// hypervisor.
+// reads back, and that a node created without the gateway bit reads back
+// without it.
 func TestNodeByNameRoundTripsGatewayRole(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
@@ -74,7 +74,7 @@ func TestNodeByNameRoundTripsGatewayRole(t *testing.T) {
 		t.Fatalf("NodeByName(gateway): %v", err)
 	}
 	if !gw.HasRole(store.NodeRoleGateway) {
-		t.Errorf("gateway node roles = %v, want [gateway]", gw.Roles())
+		t.Errorf("gateway node GatewayRole = %v, want true", gw.GatewayRole)
 	}
 
 	defName := uniqueNodeName("def")
@@ -85,7 +85,7 @@ func TestNodeByNameRoundTripsGatewayRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeByName(default): %v", err)
 	}
-	if !def.HasRole(store.NodeRoleHypervisor) {
-		t.Errorf("default node roles = %v, want [hypervisor] (no gateway bit)", def.Roles())
+	if def.HasRole(store.NodeRoleGateway) {
+		t.Errorf("default node GatewayRole = %v, want false (no gateway bit)", def.GatewayRole)
 	}
 }

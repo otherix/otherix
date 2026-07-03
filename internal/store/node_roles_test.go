@@ -33,25 +33,19 @@ func TestNodeUnmarshalMigratesLegacyKind(t *testing.T) {
 	}
 }
 
-func TestNodeHasRoleAndRoles(t *testing.T) {
+func TestNodeHasRole(t *testing.T) {
 	gw := Node{GatewayRole: true}
 	hv := Node{GatewayRole: false}
-	if !gw.HasRole(NodeRoleGateway) || gw.HasRole(NodeRoleHypervisor) {
-		t.Errorf("gateway node HasRole gateway/hypervisor = %v/%v, want true/false",
-			gw.HasRole(NodeRoleGateway), gw.HasRole(NodeRoleHypervisor))
+	if !gw.HasRole(NodeRoleGateway) {
+		t.Errorf("gateway node HasRole(gateway) = false, want true")
 	}
-	if !hv.HasRole(NodeRoleHypervisor) || hv.HasRole(NodeRoleGateway) {
-		t.Errorf("hypervisor node HasRole hypervisor/gateway = %v/%v, want true/false",
-			hv.HasRole(NodeRoleHypervisor), hv.HasRole(NodeRoleGateway))
+	if hv.HasRole(NodeRoleGateway) {
+		t.Errorf("non-gateway node HasRole(gateway) = true, want false")
 	}
+	// hypervisor is derived at the read boundary from pool ownership, so it is
+	// never answerable from the row alone; only the gateway bit is.
 	if hv.HasRole("bogus") {
 		t.Errorf("HasRole(bogus) = true, want false")
-	}
-	if diff := cmp.Diff([]string{NodeRoleGateway}, gw.Roles()); diff != "" {
-		t.Errorf("gateway Roles() mismatch (-want +got):\n%s", diff)
-	}
-	if diff := cmp.Diff([]string{NodeRoleHypervisor}, hv.Roles()); diff != "" {
-		t.Errorf("hypervisor Roles() mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -27,8 +27,8 @@ func TestCreateNodePersistsGatewayRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeByName(gateway): %v", err)
 	}
-	if !gw.HasRole(store.NodeRoleGateway) || gw.HasRole(store.NodeRoleHypervisor) {
-		t.Errorf("gateway node roles = %v, want [gateway]", gw.Roles())
+	if !gw.HasRole(store.NodeRoleGateway) {
+		t.Errorf("gateway node GatewayRole = %v, want true", gw.GatewayRole)
 	}
 
 	hvName := uniqueNodeName("hv")
@@ -39,8 +39,8 @@ func TestCreateNodePersistsGatewayRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeByName(default): %v", err)
 	}
-	if !hv.HasRole(store.NodeRoleHypervisor) || hv.HasRole(store.NodeRoleGateway) {
-		t.Errorf("default node roles = %v, want [hypervisor]", hv.Roles())
+	if hv.HasRole(store.NodeRoleGateway) {
+		t.Errorf("default node GatewayRole = %v, want false", hv.GatewayRole)
 	}
 
 	eff, err := s.NodeEffectiveByID(ctx, gwp.ID)

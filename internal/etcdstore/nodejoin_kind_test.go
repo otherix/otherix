@@ -69,8 +69,8 @@ func TestRedeemRejectsGatewayTokenAgainstNodeRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeByName(%s): %v", name, err)
 	}
-	if !node.HasRole(store.NodeRoleHypervisor) {
-		t.Errorf("node roles = %v, want [hypervisor] (role must not flip)", node.Roles())
+	if node.HasRole(store.NodeRoleGateway) {
+		t.Errorf("node GatewayRole = %v, want false (role must not flip)", node.GatewayRole)
 	}
 	has, err := s.NodeHasActiveCert(ctx, node.ID)
 	if err != nil {
@@ -118,7 +118,7 @@ func TestRedeemRejectsNodeTokenAgainstGatewayRow(t *testing.T) {
 		t.Fatalf("NodeByName(%s): %v", name, err)
 	}
 	if !node.HasRole(store.NodeRoleGateway) {
-		t.Errorf("node roles = %v, want [gateway] (role must not flip)", node.Roles())
+		t.Errorf("node GatewayRole = %v, want true (role must not flip)", node.GatewayRole)
 	}
 }
 
@@ -153,8 +153,8 @@ func TestRedeemReusesSameKindNodeRow(t *testing.T) {
 	if res.NodeID != wantID {
 		t.Errorf("reused node id = %v, want %v", res.NodeID, wantID)
 	}
-	if !signed.HasRole(store.NodeRoleHypervisor) {
-		t.Errorf("signed node roles = %v, want [hypervisor]", signed.Roles())
+	if signed.HasRole(store.NodeRoleGateway) {
+		t.Errorf("signed node GatewayRole = %v, want false", signed.GatewayRole)
 	}
 }
 
@@ -190,6 +190,6 @@ func TestRedeemReusesSameKindGatewayRow(t *testing.T) {
 		t.Errorf("reused node id = %v, want %v", res.NodeID, wantID)
 	}
 	if !signed.HasRole(store.NodeRoleGateway) {
-		t.Errorf("signed node roles = %v, want [gateway]", signed.Roles())
+		t.Errorf("signed node GatewayRole = %v, want true", signed.GatewayRole)
 	}
 }

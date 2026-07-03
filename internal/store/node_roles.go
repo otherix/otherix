@@ -12,16 +12,6 @@ const (
 	NodeRoleGateway    = "gateway"
 )
 
-// NodeRoles returns the effective role set for a node given its stored gateway
-// bit. Exactly one role per node in this revision: a gateway node reports
-// [gateway]; every other node reports the derived [hypervisor].
-func NodeRoles(gatewayRole bool) []string {
-	if gatewayRole {
-		return []string{NodeRoleGateway}
-	}
-	return []string{NodeRoleHypervisor}
-}
-
 // EffectiveRoles returns the node's effective role set from its stored gateway
 // bit and whether it owns any usable storage pool. hypervisor is derived from
 // pool ownership (a node with a pool can host VMs); gateway is the stored,
@@ -39,22 +29,13 @@ func EffectiveRoles(gatewayRole, ownsPool bool) []string {
 	return roles
 }
 
-// HasRole reports whether the node holds the given effective role. gateway is
-// the stored bit; hypervisor is derived as its inverse. An unknown role is
-// false.
+// HasRole reports whether the node holds the given effective role. Only the
+// stored gateway bit is answerable from the row alone; the hypervisor role is
+// derived from storage-pool ownership at the read boundary (see EffectiveRoles),
+// so HasRole never reports hypervisor. An unknown role is false.
 func (n Node) HasRole(role string) bool {
-	switch role {
-	case NodeRoleGateway:
-		return n.GatewayRole
-	case NodeRoleHypervisor:
-		return !n.GatewayRole
-	default:
-		return false
-	}
+	return role == NodeRoleGateway && n.GatewayRole
 }
-
-// Roles returns the node's effective role set.
-func (n Node) Roles() []string { return NodeRoles(n.GatewayRole) }
 
 // UnmarshalJSON decodes a node row and migrates a pre-existing row that still
 // carries the legacy Kind discriminator: when the row has no explicit

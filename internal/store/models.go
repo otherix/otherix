@@ -585,11 +585,12 @@ type Network struct {
 type Node struct {
 	ID   uuid.UUID
 	Name string
-	// GatewayRole is the stored, operator-assigned ingress-gateway role bit. A
-	// node with it set serves ingress and is excluded from VM placement; the
-	// hypervisor role is derived as its inverse (see Roles). Written only at
-	// create/join in this revision. Legacy rows that predate the field are
-	// migrated from Kind=="gateway" at decode time (UnmarshalJSON).
+	// GatewayRole is the stored, operator-assigned ingress-gateway role bit,
+	// written by SetNodeGatewayRole (CAS), node create/join, and the node-delete
+	// cascade. It is one of the two effective roles: the other, hypervisor, is
+	// derived at the read boundary from storage-pool ownership (see
+	// EffectiveRoles), not stored - a node may hold both. Legacy rows that predate
+	// the field are migrated from Kind=="gateway" at decode time (UnmarshalJSON).
 	GatewayRole        bool
 	Architecture       CPUArch
 	AdvertisedEndpoint string
