@@ -803,6 +803,71 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500": { $ref: "#/components/responses/Internal" }
 
+  /v1/nodes/{id}/gateway/enable:
+    parameters:
+      - $ref: "#/components/parameters/NodeName"
+    post:
+      operationId: nodes.gateway-enable
+      tags: [nodes]
+      summary: Assign the ingress-gateway role to a node (admin).
+      description: |
+        Assigns the ingress-gateway role. The Control Plane then places gateway
+        memberships on this node for every overlay that carries a VM, so it can
+        serve ingress. Idempotent. **Required permission:** `node:manage` (admin).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Role assigned (or no-op if already assigned).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Node" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Node was modified concurrently, or idempotency key mismatch.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/nodes/{id}/gateway/disable:
+    parameters:
+      - $ref: "#/components/parameters/NodeName"
+    post:
+      operationId: nodes.gateway-disable
+      tags: [nodes]
+      summary: Remove the ingress-gateway role from a node (admin).
+      description: |
+        Removes the ingress-gateway role. The Control Plane drains and reaps this
+        node's gateway memberships session-safely, so live ingress sessions are
+        not cut abruptly. Idempotent. **Required permission:** `node:manage`
+        (admin).
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Role removed (or no-op if already absent).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Node" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/PermissionDenied" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Node was modified concurrently, or idempotency key mismatch.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /v1/nodes/{id}/readmit:
     parameters:
       - $ref: "#/components/parameters/NodeName"
