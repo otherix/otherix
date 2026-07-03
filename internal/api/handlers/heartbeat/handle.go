@@ -1134,6 +1134,11 @@ func (h *Handler) applyMemoryPressure(ctx context.Context, hp store.HeartbeatPro
 		MemoryPressureSince: newSince,
 		MemoryPressureCount: newCount,
 	}); err != nil {
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			h.log.WarnContext(ctx, "node row contended; skipping memory pressure write this heartbeat",
+				slog.String("node_id", nodeID.String()))
+			return pressureTransitionNone, nil
+		}
 		return pressureTransitionNone, fmt.Errorf("update memory pressure: %v", err)
 	}
 	return kind, nil
@@ -1161,6 +1166,11 @@ func (h *Handler) applySystemDiskPressure(ctx context.Context, hp store.Heartbea
 		SystemDiskPressureSince: newSince,
 		SystemDiskPressureCount: newCount,
 	}); err != nil {
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			h.log.WarnContext(ctx, "node row contended; skipping system_disk pressure write this heartbeat",
+				slog.String("node_id", nodeID.String()))
+			return pressureTransitionNone, nil
+		}
 		return pressureTransitionNone, fmt.Errorf("update system_disk pressure: %v", err)
 	}
 	return kind, nil
@@ -1204,6 +1214,11 @@ func (h *Handler) applyNodeUpdate(ctx context.Context, hp store.HeartbeatProject
 		SystemDiskAvailableBytes: body.Resources.SystemDiskAvailableBytes,
 	}
 	if err := hp.UpdateNodeHeartbeat(ctx, params); err != nil {
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			h.log.WarnContext(ctx, "node row contended; skipping capability write this heartbeat",
+				slog.String("node_id", nodeID.String()))
+			return nil
+		}
 		return fmt.Errorf("update node heartbeat: %v", err)
 	}
 	return nil

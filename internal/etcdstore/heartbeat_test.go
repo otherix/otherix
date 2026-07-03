@@ -631,3 +631,40 @@ func TestHeartbeatProjectionActiveMigrationForVM(t *testing.T) {
 		t.Fatalf("projection: %v", err)
 	}
 }
+
+// TestUpdateNodeHeartbeatPreservesGatewayRole asserts a heartbeat capability
+// write never drops an operator-assigned gateway role: the role is enabled, a
+// heartbeat lands, and the bit must survive.
+func TestUpdateNodeHeartbeatPreservesGatewayRole(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	node := nodeParams(uniqueNodeName("hb-gw"))
+	if _, err := s.CreateNode(ctx, node); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	if _, err := s.SetNodeGatewayRole(ctx, node.ID, true); err != nil {
+		t.Fatalf("SetNodeGatewayRole: %v", err)
+	}
+
+	version := "test"
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{
+			ID:                      node.ID,
+			AgentVersion:            &version,
+			MigrationHost:           "10.1.1.1",
+			MigrationPortRangeStart: 49152,
+			MigrationPortRangeEnd:   49251,
+		})
+	}); err != nil {
+		t.Fatalf("RunHeartbeatProjection: %v", err)
+	}
+
+	got, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if !got.HasRole(store.NodeRoleGateway) {
+		t.Errorf("heartbeat clobbered GatewayRole: HasRole(gateway) = false, want true")
+	}
+}
