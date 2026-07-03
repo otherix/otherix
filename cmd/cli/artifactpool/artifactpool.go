@@ -19,7 +19,7 @@ import "github.com/spf13/cobra"
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "artifact-pool",
-		Short: "Manage cluster-level artifact pools (CP /v1/artifact-pools surface)",
+		Short: "Manage cluster-level artifact pools",
 		Long: `artifact-pool groups the operator-facing commands against the Control
 Plane's /v1/artifact-pools surface. Artifact pools are cluster-level
 content-addressed stores for snapshots (and, later, images); every

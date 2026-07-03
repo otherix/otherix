@@ -18,7 +18,7 @@ import "github.com/spf13/cobra"
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "api-token",
-		Short: "Manage API tokens (CP /v1/users/.../api-tokens surface)",
+		Short: "Manage API tokens",
 		Long: `api-token groups the operator-facing commands for the otx_* API
 tokens that authenticate the CLI and automation. Every authenticated
 role manages its own tokens; an admin may act on another user's tokens

@@ -26,7 +26,7 @@ const (
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "vm",
-		Short: "Manage virtual machines (CP /v1/vms surface)",
+		Short: "Manage virtual machines",
 		Long: `vm groups the operator subcommands against the Control Plane's
 /v1/vms surface — create, get, list, delete. Authentication and
 endpoint resolution flow through the root-level --endpoint /

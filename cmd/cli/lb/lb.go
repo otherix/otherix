@@ -20,7 +20,7 @@ func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "lb",
 		Aliases: []string{"loadbalancer"},
-		Short:   "Manage load balancers (CP /v1/loadbalancers surface)",
+		Short:   "Manage load balancers",
 		Long: `lb groups the operator-facing commands against the Control Plane's
 /v1/loadbalancers surface. A load balancer is a named L4 front for the
 VMs whose labels match its selector; a connection to the load balancer's

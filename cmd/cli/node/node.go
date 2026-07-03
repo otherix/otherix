@@ -13,7 +13,7 @@ import "github.com/spf13/cobra"
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "node",
-		Short: "Browse cluster nodes (CP /v1/nodes surface)",
+		Short: "Browse cluster nodes",
 		Long: `node groups the operator-facing read commands against the Control
 Plane's /v1/nodes surface. admin / operator callers see the full
 Node projection (including migration capability and hardware
