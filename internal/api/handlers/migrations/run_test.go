@@ -116,8 +116,8 @@ type fakeMigrationAgent struct {
 	startTargetCalls  int
 	deleteSourceCalls int
 
-	// nudged records every endpoint NudgeHeartbeat was called with (Task 12
-	// asserts the worker fast-pushes to the computed overlay peer set).
+	// nudged records every endpoint NudgeHeartbeat was called with; the
+	// worker fast-pushes to the computed overlay peer set.
 	nudged []string
 
 	// cancelCalls records every CancelMigration the worker issues to a bound
@@ -973,7 +973,7 @@ func TestRunMigration_FailurePreCutover(t *testing.T) {
 	}
 }
 
-// TestDriveHandshake_LiveSourceFailureCancelsTarget pins Task 9: when a LIVE
+// TestDriveHandshake_LiveSourceFailureCancelsTarget pins the rule: when a LIVE
 // migration's source outgoing task ends terminal-failure pre-cutover, the worker
 // tells the bound TARGET to reap its incoming setup (best-effort
 // CancelMigration) so the target does not leak until its 30-minute incoming
@@ -1017,8 +1017,8 @@ func TestDriveHandshake_LiveSourceFailureCancelsTarget(t *testing.T) {
 	}
 }
 
-// TestDriveHandshake_LiveSuccessDoesNotCancelTarget is the revert-to-confirm for
-// Task 9: a successful LIVE migration must NOT cancel the target - the target IS
+// TestDriveHandshake_LiveSuccessDoesNotCancelTarget is the revert-to-confirm:
+// a successful LIVE migration must NOT cancel the target - the target IS
 // the now-running guest, and the cutover committed.
 func TestDriveHandshake_LiveSuccessDoesNotCancelTarget(t *testing.T) {
 	s, cli := freshStore(t)
@@ -1427,7 +1427,7 @@ func TestRunMigration_FinalizesDanglingTaskFailed(t *testing.T) {
 }
 
 // TestFinalizeForTerminal_CompletedDoesNotReapTarget is the destructive-seam
-// guard for Task 10: a COMPLETED live migration's target IS the running guest.
+// guard: a COMPLETED live migration's target IS the running guest.
 // The reconcile arm must NOT cancel it - reaping would destroy the live VM.
 func TestFinalizeForTerminal_CompletedDoesNotReapTarget(t *testing.T) {
 	s, cli := freshStore(t)

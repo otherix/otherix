@@ -90,7 +90,7 @@ Examples:
 		RunE: runBootstrap,
 	}
 	flags := cmd.Flags()
-	// Token sources (L7 — exactly one must be set).
+	// Token sources (exactly one must be set).
 	flags.String("token", "", "join token plaintext (mutually exclusive with --token-path / --token-env)")
 	flags.String("token-path", "", "path to file holding the join token (whitespace-trimmed)")
 	flags.String("token-env", "", "name of env var holding the join token (resolved at invocation)")
@@ -121,7 +121,7 @@ Examples:
 // bootstrapInputs is the validated CLI flag bundle, derived once at
 // runBootstrap entry. Drives both idempotency checking and the
 // `bootstrap.Bootstrap()` library call. Architecture comes from
-// runtime.GOARCH per L10.
+// runtime.GOARCH.
 type bootstrapInputs struct {
 	token                     string
 	caFingerprint             string
@@ -248,7 +248,7 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// readBootstrapInputs gathers flags, resolves the token via L7's three-
+// readBootstrapInputs gathers flags, resolves the token via the three-
 // way --token / --token-path / --token-env mux, and rejects invalid
 // combinations. Returns a fully-formed bootstrapInputs ready for use.
 func readBootstrapInputs(cmd *cobra.Command) (bootstrapInputs, error) {
@@ -289,7 +289,7 @@ func readBootstrapInputs(cmd *cobra.Command) (bootstrapInputs, error) {
 	return in, nil
 }
 
-// resolveTokenFromFlags returns the plaintext token, applying the L7
+// resolveTokenFromFlags returns the plaintext token, applying the
 // three-way mux. Whitespace is trimmed from path/env reads.
 func resolveTokenFromFlags(tokenLit, tokenPath, tokenEnv string) (string, error) {
 	sources := 0

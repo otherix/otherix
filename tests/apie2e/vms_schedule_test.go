@@ -332,8 +332,8 @@ func TestVMDelete_PendingVMSyncNoContent(t *testing.T) {
 	}
 }
 
-// TestScheduleFunc_DeletedPendingVMNotResurrected is the delete-vs-bind seam test
-// (deferred from Task 9): a pending VM deleted CP-side, then a reconcile tick,
+// TestScheduleFunc_DeletedPendingVMNotResurrected is the delete-vs-bind seam
+// test: a pending VM deleted CP-side, then a reconcile tick,
 // must stay GONE and never enqueue a vm.create task. It proves the scheduler loop
 // fail-closes against a deleted VM - DeleteUnscheduledVM drops the unscheduled
 // index and the VM row, so the next ListUnscheduledVMs cannot observe it (and

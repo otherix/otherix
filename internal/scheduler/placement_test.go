@@ -1397,7 +1397,7 @@ func TestSchedulePlacement_NoNetworkRequested(t *testing.T) {
 	}
 }
 
-// ----- Task 8: exclude-current-node placement (migration, spec D2) -----
+// ----- exclude-current-node placement (migration) -----
 
 // TestSchedulePlacement_ExcludesCurrentNode confirms ExcludeNodeID drops
 // the current node from the eligible set so a node-less migrate never
@@ -1452,7 +1452,7 @@ func TestSchedulePlacement_ExcludeOnlyNodeEmptyEligible(t *testing.T) {
 
 // TestSchedulePlacement_NoExcludeUnchanged confirms a nil ExcludeNodeID is
 // a no-op: the resource-aware happy path still picks the least-utilized
-// node exactly as before Task 8.
+// node exactly as it did before exclusion existed.
 func TestSchedulePlacement_NoExcludeUnchanged(t *testing.T) {
 	busyCPUTotal, busyCPUAvail, busyMemTotal, busyMemAvail := metrics(8, 1, 16384, 2048)
 	spareCPUTotal, spareCPUAvail, spareMemTotal, spareMemAvail := metrics(8, 6, 16384, 12288)

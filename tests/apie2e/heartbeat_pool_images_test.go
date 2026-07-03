@@ -75,7 +75,7 @@ func hbPostPoolImages(t *testing.T, baseURL string, ag wgAgent, poolName string,
 	}
 }
 
-// TestHeartbeatImagesUnavailablePreservesInventory pins the L11 fail-closed
+// TestHeartbeatImagesUnavailablePreservesInventory pins the fail-closed
 // contract end to end over the real CP heartbeat handler: a heartbeat reporting
 // images_unavailable for a pool PRESERVES the prior inventory rather than
 // clearing it, while a genuinely-enumerated empty list still clears it.

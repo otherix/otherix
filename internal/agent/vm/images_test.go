@@ -743,8 +743,9 @@ func TestDeleteImageRejectsTraversalBasename(t *testing.T) {
 	}
 }
 
-// TestEnsureImageIntoRehashesTamperedHit drives R2-L5: on a pinned-digest
-// cache HIT whose file bytes were tampered out-of-band (the .sha256 sidecar
+// TestEnsureImageIntoRehashesTamperedHit drives the tampered-cache re-hash
+// path: on a pinned-digest cache HIT whose file bytes were tampered
+// out-of-band (the .sha256 sidecar
 // still says S), EnsureImageInto must NOT clone the tampered bytes. It
 // re-hashes the cache file, sees the disagreement, re-downloads the correct
 // bytes from the source, and the cloned dst matches S.

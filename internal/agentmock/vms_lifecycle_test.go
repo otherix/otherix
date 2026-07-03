@@ -14,7 +14,7 @@ import (
 )
 
 // TestVmsLifecycle_PauseResumeReset_HappyPath exercises the mock-agent's
-// L1 sync surface end-to-end: create → pause → resume → reset. The
+// sync lifecycle surface end-to-end: create → pause → resume → reset. The
 // stored AgentVM tracks status across the transitions; reset stays
 // `running` because the QMP `system_reset` preserves runtime identity.
 func TestVmsLifecycle_PauseResumeReset_HappyPath(t *testing.T) {

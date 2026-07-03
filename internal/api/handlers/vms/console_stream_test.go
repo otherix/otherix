@@ -208,7 +208,7 @@ func TestResolveConsoleNodeSplitsHostAndEndpoint(t *testing.T) {
 	}
 }
 
-// --- WS seam-test harness (shared by Task 3 and Task 4) ---
+// --- WS seam-test harness (shared across the console/relay seam tests) ---
 
 // wsAgentServer is a TLS httptest server standing in for an agent's
 // console-stream endpoint. It accepts a WS, optionally echoes the first
@@ -384,7 +384,7 @@ func dialOperator(t *testing.T, cp *httptest.Server, vmName, token string) *webs
 	return c
 }
 
-// TestConsoleRelayBridgesAndClosesCleanly is the Task 3 seam test: agent
+// TestConsoleRelayBridgesAndClosesCleanly is the console-relay seam test: agent
 // A echoes a byte over the bridge, then A closes the upstream; with no
 // flip and no migration the operator WS closes normally (no re-attach).
 func TestConsoleRelayBridgesAndClosesCleanly(t *testing.T) {
