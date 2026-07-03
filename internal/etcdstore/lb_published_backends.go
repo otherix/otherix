@@ -150,6 +150,11 @@ func (s *Store) overlayBackendNIC(ctx context.Context, vmID uuid.UUID) (store.VM
 		}
 		nw, nerr := s.NetworkByID(ctx, nic.NetworkID)
 		if nerr != nil {
+			// A NIC referencing a network we cannot read is treated as not-an-
+			// overlay-NIC (skip this NIC, keep scanning) rather than bubbling: a
+			// single dangling network reference must not dark every published LB.
+			// Contrast ListVMNicsByVM above, whose failure means we cannot resolve
+			// the VM's NICs at all and so propagates.
 			continue
 		}
 		if nw.Type == store.NetworkTypeOverlay {

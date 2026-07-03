@@ -184,3 +184,58 @@ func TestListPublishedLoadBalancerBackendsHealthSubtraction(t *testing.T) {
 		t.Errorf("vmNoRec %v (no health record) must stay included (fail toward inclusion), backends=%+v", vmNoRec, got[0].Backends)
 	}
 }
+
+// TestListPublishedLoadBalancerBackendsHealthFloor guards the load-bearing floor
+// in publishedHealthStalenessWindow. With the default health check
+// (interval=10s), the un-floored window would be 10*StalenessFactor=30s but the
+// floored window is max(10,30)*StalenessFactor=90s. A confirmed-unhealthy verdict
+// aged 60s is fresh ONLY under the floored window: it must still subtract its
+// backend. If the floor were dropped (window collapses to 30s) the 60s verdict
+// would be judged stale and the confirmed-down backend re-included - the exact
+// regression the floor exists to prevent - and this test would fail.
+func TestListPublishedLoadBalancerBackendsHealthFloor(t *testing.T) {
+	s, cli := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	owner := seedLBOwner(t, s)
+	node := nodeParams(uniqueNodeName("pub-f"))
+	if _, err := s.CreateNode(ctx, node); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	ov := seedOverlayNetwork(t, s)
+
+	vmDown := seedBackendVM(t, s, cli, owner, node.ID, ov.ID, `{"app":"api"}`, "10.0.2.1", "52:54:00:00:0c:01")
+
+	pub := int32(30082)
+	lbp := lbParams(uniqueLBName("pub-f-lb"), owner)
+	lbp.Port = 80
+	lbp.Selector = map[string]string{"app": "api"}
+	lbp.PublishedPort = &pub
+	lbp.Protocol = "tcp"
+	// HealthCheck left zero -> EffectiveFor normalizes to the defaults
+	// (interval=10s), so the floored window is 90s and the un-floored 30s.
+	lb, err := s.CreateLoadBalancer(ctx, lbp)
+	if err != nil {
+		t.Fatalf("CreateLoadBalancer: %v", err)
+	}
+
+	// Unhealthy verdict aged 60s: inside the floored 90s window, outside the
+	// un-floored 30s window. It must subtract only because of the floor.
+	reportedAt := time.Now().UTC().Add(-60 * time.Second)
+	if err := s.UpsertLBBackendHealth(ctx, lb.ID, vmDown, false, reportedAt); err != nil {
+		t.Fatalf("UpsertLBBackendHealth: %v", err)
+	}
+
+	got, err := s.ListPublishedLoadBalancerBackends(ctx)
+	if err != nil {
+		t.Fatalf("ListPublishedLoadBalancerBackends: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d published LBs, want 1: %+v", len(got), got)
+	}
+	for _, b := range got[0].Backends {
+		if b.VMID == vmDown {
+			t.Errorf("vmDown %v (unhealthy 60s ago) must be subtracted under the 90s floored window; found included - the floor is not being applied, backends=%+v", vmDown, got[0].Backends)
+		}
+	}
+}
