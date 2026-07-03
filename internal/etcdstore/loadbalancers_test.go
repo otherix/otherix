@@ -299,3 +299,83 @@ func TestListVMsByOwnerFilters(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadBalancerPublishedPortRoundTrip verifies the three publish fields
+// survive a create/get, and that a duplicate published_port across two LBs is
+// rejected with ErrLoadBalancerPublishedPortExists.
+func TestLoadBalancerPublishedPortRoundTrip(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	owner := seedLBOwner(t, s)
+
+	port := int32(8080)
+	p := lbParams(uniqueLBName("lb"), owner)
+	p.PublishedPort = &port
+	p.Protocol = "tcp"
+	p.SourceCIDRs = []string{"203.0.113.0/24"}
+
+	created, err := s.CreateLoadBalancer(ctx, p)
+	if err != nil {
+		t.Fatalf("CreateLoadBalancer: %v", err)
+	}
+	if created.PublishedPort == nil || *created.PublishedPort != port {
+		t.Errorf("PublishedPort = %v, want %d", created.PublishedPort, port)
+	}
+	if created.Protocol != "tcp" {
+		t.Errorf("Protocol = %q, want tcp", created.Protocol)
+	}
+	if diff := cmp.Diff([]string{"203.0.113.0/24"}, created.SourceCIDRs); diff != "" {
+		t.Errorf("SourceCIDRs mismatch (-want +got):\n%s", diff)
+	}
+
+	// Second LB claiming the same published_port must be rejected.
+	clash := lbParams(uniqueLBName("lb"), owner)
+	clash.PublishedPort = &port
+	if _, err := s.CreateLoadBalancer(ctx, clash); !errors.Is(err, store.ErrLoadBalancerPublishedPortExists) {
+		t.Fatalf("dup published_port err = %v, want ErrLoadBalancerPublishedPortExists", err)
+	}
+}
+
+// TestLoadBalancerPublishedPortSwapAndRelease verifies PATCH can change,
+// clear, and re-claim a published_port, freeing the guard each time.
+func TestLoadBalancerPublishedPortSwapAndRelease(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	owner := seedLBOwner(t, s)
+
+	p1, p2 := int32(9001), int32(9002)
+	base := lbParams(uniqueLBName("lb"), owner)
+	base.PublishedPort = &p1
+	base.Protocol = "tcp"
+	lb, err := s.CreateLoadBalancer(ctx, base)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Change p1 -> p2, then a new LB may claim the freed p1.
+	upd := store.UpdateLoadBalancerParams{
+		ID: lb.ID, Name: lb.Name, Port: lb.Port, Selector: lb.Selector,
+		HealthCheck: lb.HealthCheck, PublishedPort: &p2, Protocol: "tcp",
+	}
+	if _, err := s.UpdateLoadBalancer(ctx, upd); err != nil {
+		t.Fatalf("update swap: %v", err)
+	}
+	reuser := lbParams(uniqueLBName("lb"), owner)
+	reuser.PublishedPort = &p1
+	if _, err := s.CreateLoadBalancer(ctx, reuser); err != nil {
+		t.Fatalf("reuse freed p1: %v", err)
+	}
+
+	// Clear p2 (unpublish); a later LB may claim p2.
+	clear := upd
+	clear.PublishedPort = nil
+	clear.Protocol = ""
+	if _, err := s.UpdateLoadBalancer(ctx, clear); err != nil {
+		t.Fatalf("update clear: %v", err)
+	}
+	reuser2 := lbParams(uniqueLBName("lb"), owner)
+	reuser2.PublishedPort = &p2
+	if _, err := s.CreateLoadBalancer(ctx, reuser2); err != nil {
+		t.Fatalf("reuse freed p2: %v", err)
+	}
+}

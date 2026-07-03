@@ -84,6 +84,16 @@ type LoadBalancer struct {
 	Port        int32
 	Selector    map[string]string
 	HealthCheck LoadBalancerHealthCheck
+	// PublishedPort, when non-nil, is the public TCP port gateway-role nodes
+	// listen on for this LB. Nil means the LB is broker-only (no public
+	// listener). Globally unique across published LBs.
+	PublishedPort *int32
+	// Protocol is the published listener's L4 protocol. Only "tcp" is legal;
+	// "" on a pre-feature row normalizes to "tcp" at the view boundary.
+	Protocol string
+	// SourceCIDRs, when non-empty, restricts the published listener to these
+	// client CIDRs (allowlist). Nil/empty means any source that reaches the port.
+	SourceCIDRs []string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	DeletedAt   *time.Time
@@ -97,6 +107,16 @@ type CreateLoadBalancerParams struct {
 	Port        int32
 	Selector    map[string]string
 	HealthCheck LoadBalancerHealthCheck
+	// PublishedPort, when non-nil, is the public TCP port gateway-role nodes
+	// listen on for this LB. Nil means the LB is broker-only (no public
+	// listener). Globally unique across published LBs.
+	PublishedPort *int32
+	// Protocol is the published listener's L4 protocol. Only "tcp" is legal;
+	// "" on a pre-feature row normalizes to "tcp" at the view boundary.
+	Protocol string
+	// SourceCIDRs, when non-empty, restricts the published listener to these
+	// client CIDRs (allowlist). Nil/empty means any source that reaches the port.
+	SourceCIDRs []string
 }
 
 // UpdateLoadBalancerParams is the input to UpdateLoadBalancer. OwnerID is
@@ -107,6 +127,16 @@ type UpdateLoadBalancerParams struct {
 	Port        int32
 	Selector    map[string]string
 	HealthCheck LoadBalancerHealthCheck
+	// PublishedPort, when non-nil, is the public TCP port gateway-role nodes
+	// listen on for this LB. Nil means the LB is broker-only (no public
+	// listener). Globally unique across published LBs.
+	PublishedPort *int32
+	// Protocol is the published listener's L4 protocol. Only "tcp" is legal;
+	// "" on a pre-feature row normalizes to "tcp" at the view boundary.
+	Protocol string
+	// SourceCIDRs, when non-empty, restricts the published listener to these
+	// client CIDRs (allowlist). Nil/empty means any source that reaches the port.
+	SourceCIDRs []string
 }
 
 // ListLoadBalancersParams is the input to ListLoadBalancers: an opaque
