@@ -50,12 +50,15 @@ const (
 	// gate; update/delete/connect are own for developer, any for
 	// admin/operator, none for viewer. `loadbalancer:connect` gates the
 	// LB connect-broker and follows the vm-broker cross-owner-404
-	// discipline.
+	// discipline. `loadbalancer:publish` gates giving a load balancer a
+	// public listener (a `published_port`); it is admin/operator only,
+	// since it exposes a guest port to unauthenticated inbound traffic.
 	PermLoadBalancerRead    Permission = "loadbalancer:read"
 	PermLoadBalancerCreate  Permission = "loadbalancer:create"
 	PermLoadBalancerUpdate  Permission = "loadbalancer:update"
 	PermLoadBalancerDelete  Permission = "loadbalancer:delete"
 	PermLoadBalancerConnect Permission = "loadbalancer:connect"
+	PermLoadBalancerPublish Permission = "loadbalancer:publish"
 
 	// Snapshots. Scoped against snapshots.owner_id (which today aligns
 	// with the parent VM's owner; see docs/rbac.md edge-case note about
@@ -158,6 +161,7 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermLoadBalancerUpdate:  ScopeAny,
 		PermLoadBalancerDelete:  ScopeAny,
 		PermLoadBalancerConnect: ScopeAny,
+		PermLoadBalancerPublish: ScopeAny,
 
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,
@@ -220,6 +224,7 @@ var permissionMatrix = map[Role]map[Permission]Scope{
 		PermLoadBalancerUpdate:  ScopeAny,
 		PermLoadBalancerDelete:  ScopeAny,
 		PermLoadBalancerConnect: ScopeAny,
+		PermLoadBalancerPublish: ScopeAny,
 
 		// Snapshots.
 		PermSnapshotRead:   ScopeAny,

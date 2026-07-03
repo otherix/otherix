@@ -118,6 +118,7 @@ the virtual-machine matrix.
 | `loadbalancer:update`  | any   | any      | own       | —      |
 | `loadbalancer:delete`  | any   | any      | own       | —      |
 | `loadbalancer:connect` | any   | any      | own       | —      |
+| `loadbalancer:publish` | any   | any      | —         | —      |
 
 `loadbalancer:read` is `any` for every role: load balancer names and
 high-level metadata are not confidential within a single self-hosted
@@ -134,6 +135,10 @@ receives 404, never 403, so existence is not leaked. A bridge-backed
 load balancer re-authorizes its data-plane leg on `vm:ssh` through the
 relay, so every role that holds `loadbalancer:connect` also holds
 `vm:ssh` at a covering scope — the two matrices must not diverge.
+
+`loadbalancer:publish` gates giving a load balancer a public listener
+(`published_port`); admin and operator only, since it exposes a guest
+port to unauthenticated inbound traffic.
 
 ### Snapshots
 

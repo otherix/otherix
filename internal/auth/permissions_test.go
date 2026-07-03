@@ -18,7 +18,7 @@ var allPermissions = []auth.Permission{
 	auth.PermVMMigrate, auth.PermVMSSH, auth.PermVMIngressGrant, auth.PermVMConnect,
 
 	auth.PermLoadBalancerRead, auth.PermLoadBalancerCreate, auth.PermLoadBalancerUpdate,
-	auth.PermLoadBalancerDelete, auth.PermLoadBalancerConnect,
+	auth.PermLoadBalancerDelete, auth.PermLoadBalancerConnect, auth.PermLoadBalancerPublish,
 
 	auth.PermSnapshotRead, auth.PermSnapshotCreate, auth.PermSnapshotDelete,
 	auth.PermSnapshotRevert,
@@ -70,6 +70,7 @@ func TestMatrix_ViewerIsReadOnly(t *testing.T) {
 		auth.PermVMRevert, auth.PermVMMigrate,
 		auth.PermLoadBalancerCreate, auth.PermLoadBalancerUpdate,
 		auth.PermLoadBalancerDelete, auth.PermLoadBalancerConnect,
+		auth.PermLoadBalancerPublish,
 		auth.PermSnapshotCreate, auth.PermSnapshotDelete, auth.PermSnapshotRevert,
 		auth.PermNetworkManage,
 		auth.PermStoragePoolManage, auth.PermStoragePoolScan,
@@ -294,6 +295,23 @@ func TestLoadBalancerConnectImpliesVMSSH(t *testing.T) {
 		// vm:ssh scope must cover the connect scope: any covers any/own; own covers own.
 		if ssh == auth.ScopeNone || (conn == auth.ScopeAny && ssh != auth.ScopeAny) {
 			t.Errorf("%v: loadbalancer:connect=%v but vm:ssh=%v (must cover)", role, conn, ssh)
+		}
+	}
+}
+
+func TestLoadBalancerPublishScopes(t *testing.T) {
+	cases := []struct {
+		role auth.Role
+		want bool
+	}{
+		{auth.RoleAdmin, true},
+		{auth.RoleOperator, true},
+		{auth.RoleDeveloper, false},
+		{auth.RoleViewer, false},
+	}
+	for _, c := range cases {
+		if got := auth.Has(c.role, auth.PermLoadBalancerPublish); got != c.want {
+			t.Errorf("Has(%s, loadbalancer:publish) = %v, want %v", c.role, got, c.want)
 		}
 	}
 }
