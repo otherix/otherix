@@ -213,9 +213,10 @@ func ProjectPoolConcept(c cpclient.PoolConceptView) ([]byte, error) {
 }
 
 // ProjectLoadBalancer renders a live load balancer as an apply-ready
-// manifest carrying port + selector, the two create inputs. Server-assigned
-// identity (id, owner, timestamps) is omitted so `lb get -o yaml | create -f`
-// round-trips.
+// manifest carrying port + selector, and, when the load balancer is published,
+// publishedPort + protocol + sourceCIDRs so a published load balancer applies
+// published on `create -f`. Server-assigned identity (id, owner, timestamps) is
+// omitted so `lb get -o yaml | create -f` round-trips.
 func ProjectLoadBalancer(lb cpclient.LoadBalancer) ([]byte, error) {
 	selector := make(map[string]string, len(lb.Selector))
 	for k, v := range lb.Selector {
@@ -224,6 +225,15 @@ func ProjectLoadBalancer(lb cpclient.LoadBalancer) ([]byte, error) {
 	spec := map[string]any{
 		"port":     int(lb.Port),
 		"selector": selector,
+	}
+	if lb.PublishedPort != nil {
+		spec["publishedPort"] = int(*lb.PublishedPort)
+		if lb.Protocol != "" {
+			spec["protocol"] = lb.Protocol
+		}
+		if len(lb.SourceCIDRs) > 0 {
+			spec["sourceCIDRs"] = append([]string(nil), lb.SourceCIDRs...)
+		}
 	}
 	if hc := loadBalancerHealthCheckSpec(lb.HealthCheck); hc != nil {
 		spec["healthCheck"] = hc

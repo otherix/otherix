@@ -27,6 +27,9 @@ var (
 	// ErrLoadBalancerNameExists reports a load-balancer name collision (the
 	// cluster-wide case-insensitive name guard rejected the create/rename).
 	ErrLoadBalancerNameExists = errors.New("store: load balancer name already in use")
+	// ErrLoadBalancerPublishedPortExists is returned when a create/update would
+	// claim a published_port already held by another load balancer.
+	ErrLoadBalancerPublishedPortExists = errors.New("store: load balancer published port already in use")
 	// ErrArtifactPoolNameExists is returned by CreateArtifactPool when a live
 	// artifact pool already owns the (case-insensitive) name.
 	ErrArtifactPoolNameExists = errors.New("store: artifact pool name already in use")

@@ -113,6 +113,14 @@ type VMSpec struct {
 type LoadBalancerSpec struct {
 	Port     int               `yaml:"port"`
 	Selector map[string]string `yaml:"selector"`
+	// PublishedPort, when non-nil, exposes the load balancer on that public TCP
+	// port via gateway-role nodes; Protocol and SourceCIDRs describe that
+	// published listener. A pointer so an omitted key stays unpublished.
+	PublishedPort *int `yaml:"publishedPort"`
+	// Protocol is the published listener's L4 protocol (currently only "tcp").
+	Protocol string `yaml:"protocol"`
+	// SourceCIDRs restricts the published listener to these client source ranges.
+	SourceCIDRs []string `yaml:"sourceCIDRs"`
 	// HealthCheck is the optional active-health-check config (ADR 0027). When
 	// present, only the set sub-fields are forwarded so the CP applies its
 	// default for each omitted one.

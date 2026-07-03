@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,43 @@ func lbPrefix() string { return etcd.Key("loadbalancers") + "/" }
 
 func lbNameGuard(name string) string {
 	return etcd.Key("uniq", "loadbalancers", "name", strings.ToLower(name))
+}
+
+// lbPublishedPortGuard keys the cluster-wide uniqueness guard for a load
+// balancer's published (public listener) port. The guard value is the owning
+// load balancer's id string.
+func lbPublishedPortGuard(port int32) string {
+	return etcd.Key("uniq", "lb_published_port", strconv.Itoa(int(port)))
+}
+
+// lbPublishedPortChanged reports whether an update moves the published port:
+// a publish (nil->N), an unpublish (M->nil), or a swap (M->N). Equal ports
+// (including both nil) return false, so an unchanged port touches no guard.
+func lbPublishedPortChanged(old, cur *int32) bool {
+	switch {
+	case old == nil && cur == nil:
+		return false
+	case old == nil || cur == nil:
+		return true
+	default:
+		return *old != *cur
+	}
+}
+
+// releaseLBPublishedPortGuard drops the published-port guard for port, but only
+// if it still maps to owner. A stale in-flight update/delete holding an old read
+// of the port must not blindly delete a guard a concurrent unpublish+reclaim may
+// have handed to another load balancer; the value gate makes the release a
+// no-op otherwise. Callers run this AFTER the main row Txn commits, so a crash
+// between the two leaks a recoverable guard rather than freeing a port whose row
+// is still published.
+func (s *Store) releaseLBPublishedPortGuard(ctx context.Context, port int32, owner uuid.UUID) error {
+	g := lbPublishedPortGuard(port)
+	_, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.Value(g), "=", owner.String())).
+		Then(clientv3.OpDelete(g)).
+		Commit()
+	return err
 }
 
 // LoadBalancerByID returns the non-deleted load balancer with the given id, or
@@ -71,14 +109,17 @@ func (s *Store) LoadBalancerByName(ctx context.Context, name string) (store.Load
 func (s *Store) CreateLoadBalancer(ctx context.Context, arg store.CreateLoadBalancerParams) (store.LoadBalancer, error) {
 	now := time.Now().UTC()
 	lb := store.LoadBalancer{
-		ID:          arg.ID,
-		Name:        arg.Name,
-		OwnerID:     arg.OwnerID,
-		Port:        arg.Port,
-		Selector:    arg.Selector,
-		HealthCheck: arg.HealthCheck,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            arg.ID,
+		Name:          arg.Name,
+		OwnerID:       arg.OwnerID,
+		Port:          arg.Port,
+		Selector:      arg.Selector,
+		HealthCheck:   arg.HealthCheck,
+		PublishedPort: arg.PublishedPort,
+		Protocol:      arg.Protocol,
+		SourceCIDRs:   arg.SourceCIDRs,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	guard := lbNameGuard(lb.Name)
@@ -86,17 +127,33 @@ func (s *Store) CreateLoadBalancer(ctx context.Context, arg store.CreateLoadBala
 	if err != nil {
 		return store.LoadBalancer{}, err
 	}
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)).
-		Then(
-			clientv3.OpPut(guard, lb.ID.String()),
-			clientv3.OpPut(lbKey(lb.ID), string(val)),
-		).
-		Commit()
+	cmps := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)}
+	ops := []clientv3.Op{
+		clientv3.OpPut(guard, lb.ID.String()),
+		clientv3.OpPut(lbKey(lb.ID), string(val)),
+	}
+	// When published, claim the port guard atomically with the row (an empty
+	// port guard, CreateRevision==0, is free to take).
+	var portGuard string
+	if lb.PublishedPort != nil {
+		portGuard = lbPublishedPortGuard(*lb.PublishedPort)
+		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(portGuard), "=", 0))
+		ops = append(ops, clientv3.OpPut(portGuard, lb.ID.String()))
+	}
+	resp, err := s.c.Raw().Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
 		return store.LoadBalancer{}, fmt.Errorf("create load balancer txn: %v", err)
 	}
 	if !resp.Succeeded {
+		// Disambiguate which guard rejected the create for the error code. The
+		// follow-up Get is non-transactional, so under a rare simultaneous
+		// name+port collision the message may misattribute; both map to a 409,
+		// so this is cosmetic only, never authoritative.
+		if portGuard != "" {
+			if got, gerr := s.c.Raw().Get(ctx, portGuard); gerr == nil && len(got.Kvs) > 0 {
+				return store.LoadBalancer{}, store.ErrLoadBalancerPublishedPortExists
+			}
+		}
 		return store.LoadBalancer{}, store.ErrLoadBalancerNameExists
 	}
 	return lb, nil
@@ -116,6 +173,9 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 	updated.Port = arg.Port
 	updated.Selector = arg.Selector
 	updated.HealthCheck = arg.HealthCheck
+	updated.PublishedPort = arg.PublishedPort
+	updated.Protocol = arg.Protocol
+	updated.SourceCIDRs = arg.SourceCIDRs
 	updated.UpdatedAt = time.Now().UTC()
 
 	val, err := etcd.Marshal(updated)
@@ -123,31 +183,45 @@ func (s *Store) UpdateLoadBalancer(ctx context.Context, arg store.UpdateLoadBala
 		return store.LoadBalancer{}, err
 	}
 
-	oldGuard := lbNameGuard(existing.Name)
-	newGuard := lbNameGuard(arg.Name)
-	if oldGuard == newGuard {
-		// Name unchanged (case-insensitive); the guard stays, only the primary
-		// row is rewritten.
-		if err := s.c.Put(ctx, lbKey(arg.ID), val); err != nil {
-			return store.LoadBalancer{}, err
-		}
-		return updated, nil
+	// Main Txn: rewrite the row, swap the name guard on rename, and CLAIM a new
+	// published port (CreateRevision==0 CAS). The row must reflect the new port
+	// only if the new port was claimable, so the claim is atomic with the write.
+	cmps := []clientv3.Cmp{}
+	ops := []clientv3.Op{clientv3.OpPut(lbKey(arg.ID), string(val))}
+
+	renamed := !strings.EqualFold(existing.Name, arg.Name)
+	if renamed {
+		newGuard := lbNameGuard(arg.Name)
+		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0))
+		ops = append(ops, clientv3.OpDelete(lbNameGuard(existing.Name)), clientv3.OpPut(newGuard, arg.ID.String()))
 	}
 
-	// Rename: the new guard must be free; swap guards + rewrite primary atomically.
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0)).
-		Then(
-			clientv3.OpPut(newGuard, arg.ID.String()),
-			clientv3.OpDelete(oldGuard),
-			clientv3.OpPut(lbKey(arg.ID), string(val)),
-		).
-		Commit()
+	oldPort, newPort := existing.PublishedPort, updated.PublishedPort
+	portChanged := lbPublishedPortChanged(oldPort, newPort)
+	if portChanged && newPort != nil {
+		g := lbPublishedPortGuard(*newPort)
+		cmps = append(cmps, clientv3.Compare(clientv3.CreateRevision(g), "=", 0))
+		ops = append(ops, clientv3.OpPut(g, arg.ID.String()))
+	}
+
+	resp, err := s.c.Raw().Txn(ctx).If(cmps...).Then(ops...).Commit()
 	if err != nil {
 		return store.LoadBalancer{}, fmt.Errorf("update load balancer txn: %v", err)
 	}
 	if !resp.Succeeded {
+		if portChanged && newPort != nil {
+			if got, gerr := s.c.Raw().Get(ctx, lbPublishedPortGuard(*newPort)); gerr == nil && len(got.Kvs) > 0 {
+				return store.LoadBalancer{}, store.ErrLoadBalancerPublishedPortExists
+			}
+		}
 		return store.LoadBalancer{}, store.ErrLoadBalancerNameExists
+	}
+
+	// Release the OLD published-port guard (value-gated, after the main Txn).
+	if portChanged && oldPort != nil {
+		if err := s.releaseLBPublishedPortGuard(ctx, *oldPort, arg.ID); err != nil {
+			return store.LoadBalancer{}, fmt.Errorf("release old published-port guard: %v", err)
+		}
 	}
 	return updated, nil
 }
@@ -215,6 +289,14 @@ func (s *Store) DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error {
 		Else(rowPut).
 		Commit(); err != nil {
 		return fmt.Errorf("delete load balancer txn: %v", err)
+	}
+
+	// Release the published-port guard (value-gated, after the soft-delete
+	// commits; same stale-read defense as the name guard).
+	if existing.PublishedPort != nil {
+		if err := s.releaseLBPublishedPortGuard(ctx, *existing.PublishedPort, id); err != nil {
+			return fmt.Errorf("release published-port guard: %v", err)
+		}
 	}
 
 	// Reap this load balancer's observed backend-health records. Best-effort

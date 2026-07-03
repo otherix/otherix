@@ -4,6 +4,8 @@
 package lb
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
@@ -59,6 +61,13 @@ func renderGet(cmd *cobra.Command, lb cpclient.LoadBalancer) error {
 	printf(cmd, "owner_id: %s\n", lb.OwnerID)
 	printf(cmd, "port: %d\n", lb.Port)
 	printf(cmd, "selector: %s\n", formatSelector(lb.Selector))
+	if lb.PublishedPort != nil {
+		printf(cmd, "published_port: %d\n", *lb.PublishedPort)
+		printf(cmd, "protocol: %s\n", lb.Protocol)
+		if len(lb.SourceCIDRs) > 0 {
+			printf(cmd, "source_cidrs: %s\n", strings.Join(lb.SourceCIDRs, ","))
+		}
+	}
 	if h := lb.Health; h != nil {
 		printf(cmd, "health: %s (%d/%d healthy)\n", h.Status, h.TargetsHealthy, h.TargetsTotal)
 	}

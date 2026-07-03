@@ -98,6 +98,99 @@ func TestLbCreate_HealthCheckBody(t *testing.T) {
 	}
 }
 
+// TestLbCreate_PublishFlags asserts `lb create --publish --publish-port N
+// --source-cidr C` sends published_port, protocol tcp, and source_cidrs in
+// the create body.
+func TestLbCreate_PublishFlags(t *testing.T) {
+	t.Parallel()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": uuid.NewString(), "name": "web-db", "owner_id": uuid.NewString(),
+			"port": 5432, "selector": map[string]any{"app": "db"}, "backends": []any{},
+			"published_port": 5432, "protocol": "tcp", "source_cidrs": []any{"203.0.113.0/24"},
+			"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	if _, _, err := runLbCmd(t, srv.URL, []string{
+		"create", "web-db", "--port", "5432", "--selector", "app=db",
+		"--publish", "--publish-port", "5432", "--source-cidr", "203.0.113.0/24",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotBody["published_port"] != float64(5432) {
+		t.Errorf("published_port = %v, want 5432", gotBody["published_port"])
+	}
+	if gotBody["protocol"] != "tcp" {
+		t.Errorf("protocol = %v, want tcp", gotBody["protocol"])
+	}
+	if got, _ := gotBody["source_cidrs"].([]any); len(got) != 1 {
+		t.Errorf("source_cidrs = %v, want one entry", gotBody["source_cidrs"])
+	}
+}
+
+// TestLbCreate_PublishDefaultsToBackendPort asserts a bare --publish (no
+// --publish-port) defaults published_port to --port.
+func TestLbCreate_PublishDefaultsToBackendPort(t *testing.T) {
+	t.Parallel()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": uuid.NewString(), "name": "web", "owner_id": uuid.NewString(),
+			"port": 80, "selector": map[string]any{"app": "web"}, "backends": []any{},
+			"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	if _, _, err := runLbCmd(t, srv.URL, []string{
+		"create", "web", "--port", "80", "--selector", "app=web", "--publish",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotBody["published_port"] != float64(80) {
+		t.Errorf("published_port = %v, want 80 (defaulted to --port)", gotBody["published_port"])
+	}
+}
+
+// TestLbCreate_SourceCIDRImpliesPublish asserts --source-cidr alone (no
+// explicit --publish) implies publishing on the backend port.
+func TestLbCreate_SourceCIDRImpliesPublish(t *testing.T) {
+	t.Parallel()
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": uuid.NewString(), "name": "web", "owner_id": uuid.NewString(),
+			"port": 80, "selector": map[string]any{"app": "web"}, "backends": []any{},
+			"created_at": "2026-07-01T10:00:00Z", "updated_at": "2026-07-01T10:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	if _, _, err := runLbCmd(t, srv.URL, []string{
+		"create", "web", "--port", "80", "--selector", "app=web",
+		"--source-cidr", "10.0.0.0/8",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotBody["published_port"] != float64(80) {
+		t.Errorf("published_port = %v, want 80 (--source-cidr implies --publish)", gotBody["published_port"])
+	}
+}
+
 // TestLbCreate_NoHealthFlagsOmitsBlock asserts that when no --health-*
 // flag is set the create body carries no health_check object at all, so
 // the server keeps its full default health-check config.

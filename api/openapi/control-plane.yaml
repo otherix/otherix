@@ -7522,6 +7522,9 @@ components:
         - selector
         - health_check
         - backends
+        - published_port
+        - protocol
+        - source_cidrs
         - created_at
         - updated_at
       properties:
@@ -7533,6 +7536,20 @@ components:
           minimum: 1
           maximum: 65535
           description: The guest TCP port ingress connections target.
+        published_port:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 65535
+          description: Public TCP port gateway nodes listen on; null = broker-only.
+        protocol:
+          type: string
+          enum: [tcp]
+          description: Published listener L4 protocol.
+        source_cidrs:
+          type: [array, "null"]
+          items:
+            type: string
+          description: Optional client-IP allowlist (CIDRs); null/empty = open.
         selector:
           type: object
           additionalProperties: { type: string }
@@ -7569,6 +7586,17 @@ components:
         selector:
           type: object
           additionalProperties: { type: string }
+        published_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        protocol:
+          type: string
+          enum: [tcp]
+        source_cidrs:
+          type: array
+          items:
+            type: string
         health_check:
           $ref: "#/components/schemas/LoadBalancerHealthCheck"
 
@@ -7585,6 +7613,18 @@ components:
         selector:
           type: object
           additionalProperties: { type: string }
+        published_port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+          description: 0 unpublishes; 1-65535 publishes/changes.
+        protocol:
+          type: string
+          enum: [tcp]
+        source_cidrs:
+          type: array
+          items:
+            type: string
         health_check:
           $ref: "#/components/schemas/LoadBalancerHealthCheck"
 
