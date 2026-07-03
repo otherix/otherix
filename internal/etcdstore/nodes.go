@@ -749,6 +749,23 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	}
 	out.CertsRevoked = certsRevoked
 
+	// Purge the node's gateway memberships + their tenant-IP reservations so a
+	// deleted gateway leaks neither membership rows nor addresses. Ordered ahead
+	// of the node soft-delete (see nodeDeleteCascade) so a crash+retry can re-run
+	// them; the periodic gateway reconcile is a backstop, not the primary path.
+	memberships, err := s.ListGatewayMembershipsForGateway(ctx, id)
+	if err != nil {
+		return store.NodeDeleteOutcome{}, fmt.Errorf("list gateway memberships for node delete: %v", err)
+	}
+	membershipOps := make([]clientv3.Op, 0, len(memberships)*3)
+	for _, m := range memberships {
+		membershipOps = append(membershipOps,
+			clientv3.OpDelete(gatewayMembershipKey(m.GatewayID, m.NetworkID)),
+			clientv3.OpDelete(gatewayMembershipNetworkIndexKey(m.NetworkID, m.GatewayID)),
+			clientv3.OpDelete(vmNicIPv4ReservationKey(m.NetworkID, m.TenantIP)),
+		)
+	}
+
 	n.DeletedAt = &now
 	n.UpdatedAt = now
 	val, err := etcd.Marshal(n)
@@ -756,7 +773,7 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		return store.NodeDeleteOutcome{}, err
 	}
 
-	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, certOps, wgRec)
+	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, certOps, membershipOps, wgRec)
 	if err := s.commitInChunks(ctx, cascade); err != nil {
 		return store.NodeDeleteOutcome{}, fmt.Errorf("force-delete node cascade: %v", err)
 	}
@@ -780,8 +797,8 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 // can never re-run (the gone node short-circuits at NodeByID). There is no
 // backstop reaper for agent_wireguard, so the leaked pubkey guard would later
 // fail a node re-bootstrap with ErrAgentWireguardPubkeyInUse.
-func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps, certOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
-	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+len(certOps)+4)
+func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps, certOps, membershipOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
+	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+len(certOps)+len(membershipOps)+4)
 	cascade = append(cascade, cancelOps...)
 	cascade = append(cascade, orphanOps...)
 	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
@@ -796,6 +813,11 @@ func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, or
 	// Revoke the node's agent certs before the node soft-delete so a crash+retry
 	// re-runs them (the gone node short-circuits at NodeByID once soft-deleted).
 	cascade = append(cascade, certOps...)
+	// Reap the node's gateway memberships (row + per-network index + tenant-IP
+	// reservation) before the node soft-delete, for the same crash+retry reason:
+	// a chunk boundary falling after the node-put plus a crash would leak the
+	// membership rows and their reserved addresses.
+	cascade = append(cascade, membershipOps...)
 	// The name-guard delete precedes the nodePut so the nodePut (which flips the
 	// row's DeletedAt and thus makes NodeByID short-circuit) is the genuine LAST
 	// op: a crash before it leaves the node row present and a retry re-runs the
