@@ -272,6 +272,57 @@ func (f *errCreateStoreFake) CreateGatewayMembership(context.Context, uuid.UUID,
 	return store.GatewayMembership{}, errors.New("transient etcd error")
 }
 
+func TestReapReapsMembershipWhenRoleTurnedOff(t *testing.T) {
+	netID := uuid.New()
+	gw := uuid.New()
+	f := &reconcileStoreFake{
+		networks: []store.Network{{ID: netID, Type: store.NetworkTypeOverlay, VNI: vni(100)}},
+		nicsByNetwork: map[uuid.UUID][]store.VMNic{
+			netID: {{ID: uuid.New(), NetworkID: netID}}, // active overlay
+		},
+		// A live node that no longer holds the gateway role (operator ran
+		// gateway disable): still reachable, but not eligible for coverage.
+		nodes:       []store.Node{{ID: gw, GatewayRole: false, Status: store.NodeStatusReady}},
+		memberships: map[uuid.UUID][]store.GatewayMembership{netID: {{GatewayID: gw, NetworkID: netID}}},
+		statusByNetwork: map[uuid.UUID][]store.NetworkNodeStatus{
+			netID: {{NodeID: gw, ActiveSessions: 0}},
+		},
+	}
+
+	if err := ReconcileFunc(f, ReconcileConfig{}, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := len(f.memberships[netID]); got != 0 {
+		t.Errorf("membership for a role-off gateway with 0 sessions survived: %d memberships, want 0 (reaped)", got)
+	}
+}
+
+func TestReapKeepsRoleOffMembershipWhileSessionsDrain(t *testing.T) {
+	netID := uuid.New()
+	gw := uuid.New()
+	f := &reconcileStoreFake{
+		networks: []store.Network{{ID: netID, Type: store.NetworkTypeOverlay, VNI: vni(100)}},
+		nicsByNetwork: map[uuid.UUID][]store.VMNic{
+			netID: {{ID: uuid.New(), NetworkID: netID}}, // active overlay
+		},
+		nodes:       []store.Node{{ID: gw, GatewayRole: false, Status: store.NodeStatusReady}},
+		memberships: map[uuid.UUID][]store.GatewayMembership{netID: {{GatewayID: gw, NetworkID: netID}}},
+		statusByNetwork: map[uuid.UUID][]store.NetworkNodeStatus{
+			netID: {{NodeID: gw, ActiveSessions: 3}}, // still draining
+		},
+	}
+
+	if err := ReconcileFunc(f, ReconcileConfig{}, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := len(f.memberships[netID]); got != 1 {
+		t.Errorf("role-off membership drained instead of held: %d memberships, want 1 (a live session must not be cut)", got)
+	}
+	if len(f.deleted) != 0 {
+		t.Errorf("DeleteGatewayMembership called %d times while a session was still live, want 0", len(f.deleted))
+	}
+}
+
 func TestReconcileFailOpenOnCreateError(t *testing.T) {
 	netID := uuid.New()
 	g1, g2 := uuid.New(), uuid.New()

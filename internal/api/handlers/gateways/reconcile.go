@@ -133,24 +133,28 @@ func reconcileNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.L
 // reapNetwork removes gateway memberships that have become unnecessary on a
 // single overlay network, while keeping any membership a live ingress session
 // still depends on. A membership (gw, net) is a reap candidate when the network
-// is no longer ingress-active (no VM NIC) or its gateway node is not live
-// (unreachable/gone/soft-deleted/absent). The reap is destructive, so it fails
-// toward inaction and enumerates the gateway-liveness taxonomy explicitly:
+// is no longer ingress-active (no VM NIC), its gateway node is not live
+// (unreachable/gone/soft-deleted/absent), or its gateway node is live but no
+// longer holds the gateway role (an operator ran gateway disable). The reap is
+// destructive, so it fails toward inaction and enumerates the taxonomy
+// explicitly:
 //
-//   - gateway live + network active        -> keep (this is the coverage the
+//   - live + role on + network active        -> keep (this is the coverage the
 //     additive pass maintains; not a reap candidate)
-//   - gateway live + active sessions > 0    -> keep (a session is draining; the
-//     sticky guard refuses to yank its coverage)
-//   - gateway live + inactive + 0 sessions  -> reap (idle membership leak)
-//   - gateway not live                      -> reap regardless of the
+//   - live + (role off OR inactive) + >0 sess -> keep (a session is draining; the
+//     sticky guard refuses to yank its coverage until the count reaches zero)
+//   - live + (role off OR inactive) + 0 sess  -> reap (idle membership leak, or a
+//     drained node whose role was turned off)
+//   - gateway not live                        -> reap regardless of the
 //     last-reported count (a dead gateway cannot hold a live session, and a
 //     stale count must not wedge the reaper forever)
 //
 // The sticky guard keys on the gateway's own self-reported active-session count
 // (network_node_status.active_sessions), a fail-closed signal: a live gateway is
-// reaped only when the network is genuinely inactive AND the gateway reports
-// zero sessions. Best-effort throughout - a delete failure is logged and retried
-// next tick; only a store read failure propagates so the caller can log it.
+// reaped only when it is no longer a coverage candidate (role off or the network
+// inactive) AND it reports zero sessions. Best-effort throughout - a delete
+// failure is logged and retried next tick; only a store read failure propagates
+// so the caller can log it.
 func reapNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.Logger, n store.Network, nodeByID map[uuid.UUID]store.Node) error {
 	members, err := st.ListGatewayMembershipsForNetwork(ctx, n.ID)
 	if err != nil {
@@ -166,15 +170,20 @@ func reapNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.Logger
 	networkActive := len(nics) > 0
 
 	// Lazily fetched: the per-gateway session counts are needed only to decide a
-	// live gateway's membership on an inactive network, never for the active or
-	// dead-gateway cases.
+	// live gateway's membership that is no longer a coverage candidate (role off
+	// or the network inactive), never for the active-coverage or dead-gateway
+	// cases.
 	var sessions map[uuid.UUID]int
 	for _, m := range members {
 		gw, found := nodeByID[m.GatewayID]
+		roleOn := found && gw.HasRole(store.NodeRoleGateway)
+		if found && nodeLive(gw) && roleOn && networkActive {
+			continue // keep: live gateway, role on, active overlay
+		}
+		// Reap candidate (inactive overlay, dead node, or role off). Never cut a
+		// live session: a live gateway still draining is kept until its
+		// self-reported active-session count reaches zero.
 		if found && nodeLive(gw) {
-			if networkActive {
-				continue
-			}
 			if sessions == nil {
 				sessions, err = sessionCountsByGateway(ctx, st, n.ID)
 				if err != nil {
