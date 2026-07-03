@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -641,6 +642,26 @@ func (s *Store) drainJobLive(ctx context.Context, jobID *int64) (bool, error) {
 	return job.State == JobStatePending || job.State == JobStateRunning, nil
 }
 
+// nodeMatchesListFilters reports whether node n passes the optional
+// architecture/status/role filters and the cursor lower bound. poolNodes is the
+// pool-owning node-id set, consulted only when a role filter is set (nil
+// otherwise) so the derived hypervisor role is sourced from pool ownership.
+func nodeMatchesListFilters(n store.Node, arg store.ListNodesEffectiveParams, poolNodes map[uuid.UUID]struct{}) bool {
+	if arg.Architecture != nil && n.Architecture != *arg.Architecture {
+		return false
+	}
+	if arg.Status != nil && n.Status != *arg.Status {
+		return false
+	}
+	if arg.Role != nil {
+		_, ownsPool := poolNodes[n.ID]
+		if !slices.Contains(store.EffectiveRoles(n.GatewayRole, ownsPool), *arg.Role) {
+			return false
+		}
+	}
+	return afterCursor(n.CreatedAt, n.ID, arg.CursorCreatedAt, arg.CursorID)
+}
+
 // ListNodesEffective returns nodes joined with their effective availability,
 // matching the optional architecture/status/role filters, ordered by
 // (created_at, id) ascending, after the cursor, capped at LimitCount.
@@ -648,6 +669,13 @@ func (s *Store) ListNodesEffective(ctx context.Context, arg store.ListNodesEffec
 	items, err := s.c.Range(ctx, nodePrefix())
 	if err != nil {
 		return nil, err
+	}
+	var poolNodes map[uuid.UUID]struct{}
+	if arg.Role != nil {
+		poolNodes, err = s.NodeIDsWithPool(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	out := make([]store.NodeEffectiveAvailability, 0, len(items))
 	for _, kv := range items {
@@ -658,16 +686,7 @@ func (s *Store) ListNodesEffective(ctx context.Context, arg store.ListNodesEffec
 		if n.DeletedAt != nil {
 			continue
 		}
-		if arg.Architecture != nil && n.Architecture != *arg.Architecture {
-			continue
-		}
-		if arg.Status != nil && n.Status != *arg.Status {
-			continue
-		}
-		if arg.Role != nil && !n.HasRole(*arg.Role) {
-			continue
-		}
-		if !afterCursor(n.CreatedAt, n.ID, arg.CursorCreatedAt, arg.CursorID) {
+		if !nodeMatchesListFilters(n, arg, poolNodes) {
 			continue
 		}
 		eff, err := s.nodeEffective(ctx, n)

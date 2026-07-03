@@ -27,9 +27,16 @@ func (h *Handler) Uncordon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ownsPool, err := h.nodeOwnsPool(r.Context(), current.ID)
+	if err != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "load node pools", nil)
+		return
+	}
+
 	switch current.Status {
 	case store.NodeStatusReady:
-		writeNodeResponse(w, r, http.StatusOK, current, response.WriteJSON)
+		writeNodeResponse(w, r, http.StatusOK, current, ownsPool, response.WriteJSON)
 		return
 	case store.NodeStatusPending,
 		store.NodeStatusDraining,
@@ -55,5 +62,5 @@ func (h *Handler) Uncordon(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "uncordon node", nil)
 		return
 	}
-	writeNodeResponse(w, r, http.StatusOK, updated, response.WriteJSON)
+	writeNodeResponse(w, r, http.StatusOK, updated, ownsPool, response.WriteJSON)
 }

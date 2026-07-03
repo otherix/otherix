@@ -83,16 +83,15 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	full := user != nil && (user.Role == auth.RoleAdmin || user.Role == auth.RoleOperator)
 
-	views := make([]any, 0, len(rows))
-	for _, n := range rows {
-		if full {
-			views = append(views, toViewEffective(n))
-		} else {
-			views = append(views, toSummaryViewEffective(n))
-		}
+	poolNodes, err := h.store.NodeIDsWithPool(r.Context())
+	if err != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "list nodes", nil)
+		return
 	}
+
 	response.WriteJSON(w, r, http.StatusOK, listResponse{
-		Data: views,
+		Data: nodeListViews(rows, poolNodes, full),
 		Meta: paginationMeta{NextCursor: nextCursor},
 	})
 }

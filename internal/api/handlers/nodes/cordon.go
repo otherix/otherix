@@ -27,9 +27,16 @@ func (h *Handler) Cordon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ownsPool, err := h.nodeOwnsPool(r.Context(), current.ID)
+	if err != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "load node pools", nil)
+		return
+	}
+
 	switch current.Status {
 	case store.NodeStatusCordoned:
-		writeNodeResponse(w, r, http.StatusOK, current, response.WriteJSON)
+		writeNodeResponse(w, r, http.StatusOK, current, ownsPool, response.WriteJSON)
 		return
 	case store.NodeStatusGone, store.NodeStatusDraining:
 		response.WriteError(w, r, http.StatusConflict,
@@ -52,5 +59,5 @@ func (h *Handler) Cordon(w http.ResponseWriter, r *http.Request) {
 			response.CodeInternal, "cordon node", nil)
 		return
 	}
-	writeNodeResponse(w, r, http.StatusOK, updated, response.WriteJSON)
+	writeNodeResponse(w, r, http.StatusOK, updated, ownsPool, response.WriteJSON)
 }

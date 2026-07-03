@@ -47,23 +47,37 @@ func TestPlacementExcludesGatewayRole(t *testing.T) {
 	}
 }
 
-// TestListNodesEffectiveRoleFilter drives the server-side role filter on the
-// list querier: with Role=gateway only the gateway node surfaces, the
-// hypervisor node is excluded. This keeps cursor pagination honest (the filter
-// runs in the store, not client-side).
+// TestListNodesEffectiveRoleFilter drives the server-side role filter after the
+// derivation change: --role gateway surfaces both the gateway-only node and the
+// co-located node; --role hypervisor surfaces both the hypervisor node and the
+// co-located node; a gateway-only node never surfaces under hypervisor.
 func TestListNodesEffectiveRoleFilter(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
 	poolName := uniquePoolName("role-filter")
-	nodeID := mkKindNode(t, s, "node", store.NodeKindNode, poolName)
-	gwID := mkKindNode(t, s, "gw", store.NodeKindGateway, poolName)
+	hvID := mkKindNode(t, s, "hv", store.NodeKindNode, poolName)
+	coID := mkKindNode(t, s, "co", store.NodeKindGateway, poolName)
+	gwID := mkGatewayNodeNoPool(t, s, "gw")
 
-	gw := store.NodeRoleGateway
-	rows, err := s.ListNodesEffective(ctx, store.ListNodesEffectiveParams{Role: &gw, LimitCount: 100})
-	if err != nil {
-		t.Fatalf("ListNodesEffective(role=gateway): %v", err)
+	collect := func(role string) map[uuid.UUID]bool {
+		rl := role
+		rows, err := s.ListNodesEffective(ctx, store.ListNodesEffectiveParams{Role: &rl, LimitCount: 100})
+		if err != nil {
+			t.Fatalf("ListNodesEffective(role=%s): %v", role, err)
+		}
+		got := map[uuid.UUID]bool{}
+		for _, r := range rows {
+			got[r.ID] = true
+		}
+		return got
 	}
-	if len(rows) != 1 || rows[0].ID != gwID {
-		t.Errorf("role=gateway -> %d rows, want only gateway %v (hypervisor %v excluded)", len(rows), gwID, nodeID)
+
+	gw := collect(store.NodeRoleGateway)
+	if !gw[gwID] || !gw[coID] || gw[hvID] {
+		t.Errorf("role=gateway = %v, want gateway-only %v and co-located %v, not hypervisor %v", gw, gwID, coID, hvID)
+	}
+	hv := collect(store.NodeRoleHypervisor)
+	if !hv[hvID] || !hv[coID] || hv[gwID] {
+		t.Errorf("role=hypervisor = %v, want hypervisor %v and co-located %v, not gateway-only %v", hv, hvID, coID, gwID)
 	}
 }
