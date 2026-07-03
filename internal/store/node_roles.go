@@ -22,6 +22,23 @@ func NodeRoles(gatewayRole bool) []string {
 	return []string{NodeRoleHypervisor}
 }
 
+// EffectiveRoles returns the node's effective role set from its stored gateway
+// bit and whether it owns any usable storage pool. hypervisor is derived from
+// pool ownership (a node with a pool can host VMs); gateway is the stored,
+// operator-assigned role. Order is [hypervisor, gateway]. A node that owns no
+// pool and holds no gateway role has an empty, non-nil role set (so the wire
+// field marshals to [] rather than null).
+func EffectiveRoles(gatewayRole, ownsPool bool) []string {
+	roles := make([]string, 0, 2)
+	if ownsPool {
+		roles = append(roles, NodeRoleHypervisor)
+	}
+	if gatewayRole {
+		roles = append(roles, NodeRoleGateway)
+	}
+	return roles
+}
+
 // HasRole reports whether the node holds the given effective role. gateway is
 // the stored bit; hypervisor is derived as its inverse. An unknown role is
 // false.

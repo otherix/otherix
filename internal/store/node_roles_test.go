@@ -54,3 +54,28 @@ func TestNodeHasRoleAndRoles(t *testing.T) {
 		t.Errorf("hypervisor Roles() mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestEffectiveRoles(t *testing.T) {
+	tests := []struct {
+		name        string
+		gatewayRole bool
+		ownsPool    bool
+		want        []string
+	}{
+		{name: "neither", gatewayRole: false, ownsPool: false, want: []string{}},
+		{name: "gateway only", gatewayRole: true, ownsPool: false, want: []string{NodeRoleGateway}},
+		{name: "hypervisor only", gatewayRole: false, ownsPool: true, want: []string{NodeRoleHypervisor}},
+		{name: "co-located", gatewayRole: true, ownsPool: true, want: []string{NodeRoleHypervisor, NodeRoleGateway}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EffectiveRoles(tt.gatewayRole, tt.ownsPool)
+			if got == nil {
+				t.Fatalf("EffectiveRoles(%v, %v) = nil, want non-nil (must marshal to [])", tt.gatewayRole, tt.ownsPool)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("EffectiveRoles(%v, %v) mismatch (-want +got):\n%s", tt.gatewayRole, tt.ownsPool, diff)
+			}
+		})
+	}
+}
