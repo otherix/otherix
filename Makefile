@@ -187,6 +187,10 @@ smoke-vm-ssh: ## VM SSH-ingress smoke: real guest login over the relay via `othe
 smoke-ingress-gateway: ## Ingress-gateway smoke: brokered `otherix forward`/`otherix ssh` reach a guest (gateway + relay), survive a live migration, recover from gateway death, and enforce no-gateway 409 + non-owner 404 (run after local-dev-start)
 	bash dev/smoke/ingress-gateway/run.sh
 
+.PHONY: smoke-ingress-gateway-colocated
+smoke-ingress-gateway-colocated: ## Co-located ingress-gateway smoke: a hypervisor node also serves ingress; `otherix node gateway enable` + `otherix forward` reach a guest on another node, multi-overlay works, and a role move keeps a live session (run after local-dev-start)
+	bash dev/smoke/ingress-gateway-colocated/run.sh
+
 .PHONY: smoke-ingress-grant
 smoke-ingress-grant: ## Ingress-grant smoke: an external grant reaches a VM with `otherix forward` using only the grant token (gateway + relay), enforces per-port scope + source-IP pin (404), and survives a live migration (run after local-dev-start)
 	bash dev/smoke/ingress-grant/run.sh
