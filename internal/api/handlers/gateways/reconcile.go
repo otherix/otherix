@@ -176,14 +176,14 @@ func reapNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.Logger
 	var sessions map[uuid.UUID]int
 	for _, m := range members {
 		gw, found := nodeByID[m.GatewayID]
-		roleOn := found && gw.HasRole(store.NodeRoleGateway)
-		if found && nodeLive(gw) && roleOn && networkActive {
+		keep, live := memberDisposition(gw, found, networkActive)
+		if keep {
 			continue // keep: live gateway, role on, active overlay
 		}
 		// Reap candidate (inactive overlay, dead node, or role off). Never cut a
 		// live session: a live gateway still draining is kept until its
 		// self-reported active-session count reaches zero.
-		if found && nodeLive(gw) {
+		if live {
 			if sessions == nil {
 				sessions, err = sessionCountsByGateway(ctx, st, n.ID)
 				if err != nil {
@@ -204,9 +204,24 @@ func reapNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.Logger
 			slog.String("network_id", n.ID.String()),
 			slog.String("gateway_id", m.GatewayID.String()),
 			slog.Bool("network_active", networkActive),
-			slog.Bool("gateway_live", found && nodeLive(gw)))
+			slog.Bool("gateway_live", live))
 	}
 	return nil
+}
+
+// memberDisposition classifies one gateway membership for the coverage reaper.
+// keep is true only for active coverage - a live gateway whose role is on while
+// the overlay is active - and such a membership is never a reap candidate. When
+// keep is false the membership is a reap candidate; live reports whether the
+// gateway is still live, in which case the caller applies the sticky
+// active-session guard before deleting. It is the branch-free classifier of the
+// keep/reap table documented on reapNetwork; the session lazy-fetch stays in the
+// caller so it runs only for a live reap candidate.
+func memberDisposition(gw store.Node, found, networkActive bool) (keep, live bool) {
+	live = found && nodeLive(gw)
+	roleOn := found && gw.HasRole(store.NodeRoleGateway)
+	keep = live && roleOn && networkActive
+	return keep, live
 }
 
 // sessionCountsByGateway returns the gateway-self-reported live ingress session

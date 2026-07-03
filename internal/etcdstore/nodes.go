@@ -730,16 +730,9 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		}
 	}
 
-	// Load the node's WireGuard fabric record so its purge ops can be ordered
-	// ahead of the node soft-delete (see nodeDeleteCascade). ErrNotFound means
-	// the node never joined the mesh - nothing to purge; any other error aborts.
-	var wgRec *store.AgentWireguard
-	rec, wgErr := s.AgentWireguardByNodeID(ctx, id)
-	switch {
-	case wgErr == nil:
-		wgRec = &rec
-	case !errors.Is(wgErr, store.ErrNotFound):
-		return store.NodeDeleteOutcome{}, fmt.Errorf("load agent_wireguard for node delete: %v", wgErr)
+	wgRec, err := s.agentWireguardRecordForDelete(ctx, id)
+	if err != nil {
+		return store.NodeDeleteOutcome{}, err
 	}
 
 	now := time.Now().UTC()
@@ -753,17 +746,9 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	// deleted gateway leaks neither membership rows nor addresses. Ordered ahead
 	// of the node soft-delete (see nodeDeleteCascade) so a crash+retry can re-run
 	// them; the periodic gateway reconcile is a backstop, not the primary path.
-	memberships, err := s.ListGatewayMembershipsForGateway(ctx, id)
+	membershipOps, err := s.gatewayMembershipDeleteOps(ctx, id)
 	if err != nil {
-		return store.NodeDeleteOutcome{}, fmt.Errorf("list gateway memberships for node delete: %v", err)
-	}
-	membershipOps := make([]clientv3.Op, 0, len(memberships)*3)
-	for _, m := range memberships {
-		membershipOps = append(membershipOps,
-			clientv3.OpDelete(gatewayMembershipKey(m.GatewayID, m.NetworkID)),
-			clientv3.OpDelete(gatewayMembershipNetworkIndexKey(m.NetworkID, m.GatewayID)),
-			clientv3.OpDelete(vmNicIPv4ReservationKey(m.NetworkID, m.TenantIP)),
-		)
+		return store.NodeDeleteOutcome{}, err
 	}
 
 	n.DeletedAt = &now
@@ -827,6 +812,43 @@ func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, or
 		clientv3.OpPut(nodeKey(nodeID), nodeVal),
 	)
 	return cascade
+}
+
+// agentWireguardRecordForDelete loads the node's WireGuard fabric record so its
+// purge ops can be ordered ahead of the node soft-delete (see nodeDeleteCascade).
+// A nil record with a nil error means the node never joined the mesh (ErrNotFound)
+// and has nothing to purge; any other error aborts the delete.
+func (s *Store) agentWireguardRecordForDelete(ctx context.Context, id uuid.UUID) (*store.AgentWireguard, error) {
+	rec, err := s.AgentWireguardByNodeID(ctx, id)
+	switch {
+	case err == nil:
+		return &rec, nil
+	case errors.Is(err, store.ErrNotFound):
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("load agent_wireguard for node delete: %v", err)
+	}
+}
+
+// gatewayMembershipDeleteOps returns the delete ops that purge every gateway
+// membership held by the node - the membership row, its per-network index, and
+// its tenant-IP reservation - so a deleted gateway leaks neither membership rows
+// nor reserved addresses. The ops are assembled here but ordered ahead of the
+// node soft-delete by nodeDeleteCascade.
+func (s *Store) gatewayMembershipDeleteOps(ctx context.Context, gatewayID uuid.UUID) ([]clientv3.Op, error) {
+	memberships, err := s.ListGatewayMembershipsForGateway(ctx, gatewayID)
+	if err != nil {
+		return nil, fmt.Errorf("list gateway memberships for node delete: %v", err)
+	}
+	ops := make([]clientv3.Op, 0, len(memberships)*3)
+	for _, m := range memberships {
+		ops = append(ops,
+			clientv3.OpDelete(gatewayMembershipKey(m.GatewayID, m.NetworkID)),
+			clientv3.OpDelete(gatewayMembershipNetworkIndexKey(m.NetworkID, m.GatewayID)),
+			clientv3.OpDelete(vmNicIPv4ReservationKey(m.NetworkID, m.TenantIP)),
+		)
+	}
+	return ops, nil
 }
 
 // nodeEffective projects a node onto the effective-availability view, computing
