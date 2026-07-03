@@ -111,6 +111,30 @@ func TestReconcileEnsuresTwoGatewaysCoverIngressNetwork(t *testing.T) {
 	}
 }
 
+func TestReconcilePlacesEveryLiveGatewayOnActiveOverlay(t *testing.T) {
+	netID := uuid.New()
+	g1, g2, g3 := uuid.New(), uuid.New(), uuid.New()
+	f := &reconcileStoreFake{
+		networks: []store.Network{{ID: netID, Type: store.NetworkTypeOverlay, VNI: vni(100)}},
+		nicsByNetwork: map[uuid.UUID][]store.VMNic{
+			netID: {{ID: uuid.New(), NetworkID: netID}},
+		},
+		nodes:       []store.Node{gatewayNode(g1), gatewayNode(g2), gatewayNode(g3)},
+		memberships: map[uuid.UUID][]store.GatewayMembership{},
+	}
+
+	if err := ReconcileFunc(f, ReconcileConfig{}, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	members, err := f.ListGatewayMembershipsForNetwork(context.Background(), netID)
+	if err != nil {
+		t.Fatalf("list memberships: %v", err)
+	}
+	if got, want := len(members), 3; got != want {
+		t.Errorf("ListGatewayMembershipsForNetwork(active overlay) = %d memberships, want %d (one per live gateway)", got, want)
+	}
+}
+
 func TestReconcileBestEffortWithSingleGateway(t *testing.T) {
 	netID := uuid.New()
 	g1 := uuid.New()
@@ -177,7 +201,7 @@ func TestReconcileSkipsNetworkWithNoVMs(t *testing.T) {
 	}
 }
 
-func TestReconcileLeavesExistingCoverageUntouched(t *testing.T) {
+func TestReconcileKeepsExistingAndAddsMissingGateway(t *testing.T) {
 	netID := uuid.New()
 	g1, g2, g3 := uuid.New(), uuid.New(), uuid.New()
 	existing := []store.GatewayMembership{
@@ -196,11 +220,20 @@ func TestReconcileLeavesExistingCoverageUntouched(t *testing.T) {
 	if err := ReconcileFunc(f, ReconcileConfig{}, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if got := len(f.created); got != 0 {
-		t.Fatalf("created %d memberships when coverage already >= 2, want 0", got)
+	// Cross-product: the two existing memberships are preserved and only the
+	// missing live gateway (g3) is added, so no membership is ever recreated.
+	if got := len(f.created); got != 1 {
+		t.Fatalf("created %d memberships, want 1 (only the missing gateway g3)", got)
 	}
-	if got := len(f.memberships[netID]); got != 2 {
-		t.Fatalf("coverage = %d memberships, want the original 2 (never removed)", got)
+	if got := len(f.created); got == 1 && f.created[0].gateway != g3 {
+		t.Errorf("created membership for %s, want the missing gateway %s", f.created[0].gateway, g3)
+	}
+	have := map[uuid.UUID]bool{}
+	for _, m := range f.memberships[netID] {
+		have[m.GatewayID] = true
+	}
+	if !have[g1] || !have[g2] || !have[g3] {
+		t.Errorf("coverage = %v, want one membership per live gateway (g1, g2, g3)", f.memberships[netID])
 	}
 }
 

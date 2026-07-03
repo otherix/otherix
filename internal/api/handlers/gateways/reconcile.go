@@ -2,37 +2,26 @@
 // Copyright 2026 Andrei Taranik
 
 // Package gateways holds the control-plane logic for VM ingress gateways: the
-// periodic coverage reconcile that keeps every ingress-active overlay backed by
-// redundant gateway memberships, and the per-VM gateway selection that only ever
-// returns a gateway whose overlay reconciliation has converged.
+// periodic coverage reconcile that places a gateway membership on every live
+// gateway node for every ingress-active overlay, and the per-VM gateway
+// selection that only ever returns a gateway whose overlay reconciliation has
+// converged.
 package gateways
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/store"
 )
 
-// defaultCoverageTarget is the number of gateway memberships the reconcile keeps
-// on each ingress-active overlay so a single gateway loss does not strand
-// ingress. Two is the minimum redundant set.
-const defaultCoverageTarget = 2
-
-// ReconcileConfig tunes the gateway coverage reconcile.
-type ReconcileConfig struct {
-	// CoverageTarget is the desired number of gateway memberships per
-	// ingress-active overlay network. Values <= 0 fall back to
-	// defaultCoverageTarget.
-	CoverageTarget int
-}
+// ReconcileConfig tunes the gateway coverage reconcile. It carries no fields
+// today; it is retained as the config seam for future tunables.
+type ReconcileConfig struct{}
 
 // GatewayReconcileStore is the storage surface the gateway coverage reconcile
 // needs. *etcdstore.Store satisfies it.
@@ -48,22 +37,17 @@ type GatewayReconcileStore interface {
 
 // ReconcileFunc returns the periodic gateway coverage reconcile pass. It runs two
 // passes over every overlay network. The additive pass: for a network that
-// carries at least one VM NIC (the ingress-active signal) it ensures the network
-// is covered by at least CoverageTarget gateway memberships, creating the
-// shortfall on live gateway nodes chosen by rendezvous hash so coverage spreads
-// across the gateway fleet. The reaping pass: it removes a membership that has
-// become unnecessary - the network has gone ingress-inactive (its last VM NIC
-// removed) or the gateway node has died - guarded so a membership a live session
-// still depends on is never reaped (see reapNetwork). Both passes are idempotent
-// (a network at target with no stale memberships is left untouched) and fail-open
-// (a transient list, create, or delete error is logged and retried next tick,
-// never failing the whole pass). With fewer than CoverageTarget live gateways the
-// additive pass creates as many as it can and moves on.
-func ReconcileFunc(st GatewayReconcileStore, cfg ReconcileConfig, log *slog.Logger) func(context.Context) error {
-	target := cfg.CoverageTarget
-	if target <= 0 {
-		target = defaultCoverageTarget
-	}
+// carries at least one VM NIC (the ingress-active signal) it places a gateway
+// membership on every live gateway node that does not already have one - a plain
+// cross-product of live gateway nodes and ingress-active overlays, no redundancy
+// target and no spread. The reaping pass: it removes a membership that has become
+// unnecessary - the network has gone ingress-inactive (its last VM NIC removed)
+// or the gateway node has died - guarded so a membership a live session still
+// depends on is never reaped (see reapNetwork). Both passes are idempotent (a
+// network already covered by every live gateway with no stale memberships is left
+// untouched) and fail-open (a transient list, create, or delete error is logged
+// and retried next tick, never failing the whole pass).
+func ReconcileFunc(st GatewayReconcileStore, _ ReconcileConfig, log *slog.Logger) func(context.Context) error {
 	return func(ctx context.Context) error {
 		overlay := store.NetworkTypeOverlay
 		networks, err := st.ListNetworks(ctx, store.ListNetworksParams{Type: &overlay})
@@ -80,7 +64,7 @@ func ReconcileFunc(st GatewayReconcileStore, cfg ReconcileConfig, log *slog.Logg
 			nodeByID[n.ID] = n
 		}
 		for _, n := range networks {
-			if err := reconcileNetwork(ctx, st, log, n, liveGateways, target); err != nil {
+			if err := reconcileNetwork(ctx, st, log, n, liveGateways); err != nil {
 				log.WarnContext(ctx, "gateway coverage reconcile: network pass failed",
 					slog.String("network_id", n.ID.String()), slog.Any("error", err))
 			}
@@ -93,10 +77,24 @@ func ReconcileFunc(st GatewayReconcileStore, cfg ReconcileConfig, log *slog.Logg
 	}
 }
 
-// reconcileNetwork raises the gateway coverage of a single overlay network to
-// target when the network is ingress-active. Returns an error only on a store
-// read failure; create failures are best-effort and do not propagate.
-func reconcileNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.Logger, n store.Network, liveGateways []uuid.UUID, target int) error {
+// reconcileNetwork places a gateway membership on every live gateway node for a
+// single overlay network when the network is ingress-active. It is the CP half of
+// a plain cross-product (live gateway nodes x ingress-active overlays): there is
+// no redundancy target and no spread, so a node holding the gateway role covers
+// every overlay that carries a VM.
+//
+// IP-consumption coupling: each membership allocates a tenant IP from the same
+// per-network /24 as VM NICs (CreateGatewayMembership -> allocateNICIPv4 ->
+// vmNicIPv4ReservationKey), so the cross-product consumes one IP per gateway-role
+// node on every ingress-active overlay, competing with VM-NIC allocation on a
+// small subnet. There is deliberately no per-node membership cap here. This fails
+// toward inaction: a full subnet makes CreateGatewayMembership return
+// store.ErrSubnetExhausted, which is logged and skipped (like any create failure)
+// so a single exhausted network never wedges the pass or blocks other networks.
+//
+// Returns an error only on a store read failure; create failures are best-effort
+// and do not propagate.
+func reconcileNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.Logger, n store.Network, liveGateways []uuid.UUID) error {
 	nics, err := st.ListVMNicsByNetwork(ctx, n.ID)
 	if err != nil {
 		return fmt.Errorf("list nics: %v", err)
@@ -109,21 +107,14 @@ func reconcileNetwork(ctx context.Context, st GatewayReconcileStore, log *slog.L
 	if err != nil {
 		return fmt.Errorf("list memberships: %v", err)
 	}
-	need := target - len(members)
-	if need <= 0 {
-		return nil
-	}
 	memberSet := make(map[uuid.UUID]bool, len(members))
 	for _, m := range members {
 		memberSet[m.GatewayID] = true
 	}
-	candidates := make([]uuid.UUID, 0, len(liveGateways))
-	for _, id := range liveGateways {
-		if !memberSet[id] {
-			candidates = append(candidates, id)
+	for _, gw := range liveGateways {
+		if memberSet[gw] {
+			continue
 		}
-	}
-	for _, gw := range spreadTargets(n.ID, candidates, need) {
 		if _, err := st.CreateGatewayMembership(ctx, gw, n.ID); err != nil {
 			if errors.Is(err, store.ErrGatewayMembershipExists) {
 				continue
@@ -246,39 +237,4 @@ func nodeLive(n store.Node) bool {
 	return n.DeletedAt == nil &&
 		n.Status != store.NodeStatusUnreachable &&
 		n.Status != store.NodeStatusGone
-}
-
-// spreadTargets picks up to need gateway ids from candidates by descending
-// rendezvous (highest-random-weight) score for the network, ties broken by id.
-// Keying on the network spreads coverage across the gateway fleet rather than
-// piling every overlay onto the same gateways. Deterministic; input order does
-// not affect the result.
-func spreadTargets(networkID uuid.UUID, candidates []uuid.UUID, need int) []uuid.UUID {
-	if need <= 0 || len(candidates) == 0 {
-		return nil
-	}
-	sorted := make([]uuid.UUID, len(candidates))
-	copy(sorted, candidates)
-	sort.Slice(sorted, func(i, j int) bool {
-		wi, wj := hrwWeight(networkID, sorted[i]), hrwWeight(networkID, sorted[j])
-		if c := bytes.Compare(wi[:], wj[:]); c != 0 {
-			return c > 0
-		}
-		return sorted[i].String() < sorted[j].String()
-	})
-	if need > len(sorted) {
-		need = len(sorted)
-	}
-	return sorted[:need]
-}
-
-// hrwWeight is the rendezvous score of covering networkID with gatewayID:
-// sha256(networkID || gatewayID). Deterministic and stable across fleet changes.
-func hrwWeight(networkID, gatewayID uuid.UUID) [sha256.Size]byte {
-	h := sha256.New()
-	h.Write(networkID[:])
-	h.Write(gatewayID[:])
-	var out [sha256.Size]byte
-	copy(out[:], h.Sum(nil))
-	return out
 }
