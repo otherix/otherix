@@ -49,19 +49,23 @@ type ingressRequest struct {
 //   - "gateway": an overlay VM. SplicerAddr is the converged gateway's
 //     ingress endpoint and SessionCred is a short-lived bearer the client
 //     presents to the gateway, which verifies it offline against the session CA
-//     public half. The control plane is out of the data path.
+//     public half. SplicerServerName is the gateway node's identity SAN the
+//     client pins the ingress TLS ServerName to (the node leaf carries its
+//     identity SAN, not necessarily the dialed ingress IP). The control plane is
+//     out of the data path.
 //   - "relay": a bridge VM. The client connects back through the control-plane
 //     relay (the relay authorizes per request itself), so no gateway address or
 //     session credential is minted here.
 //
 // Gateway-only fields are omitted on the relay path.
 type ingressResponse struct {
-	Transport   string `json:"transport"`
-	VMID        string `json:"vm_id"`
-	Port        int    `json:"port"`
-	SplicerAddr string `json:"splicer_addr,omitempty"`
-	SessionCred string `json:"session_cred,omitempty"`
-	ExpiresAt   string `json:"expires_at,omitempty"`
+	Transport         string `json:"transport"`
+	VMID              string `json:"vm_id"`
+	Port              int    `json:"port"`
+	SplicerAddr       string `json:"splicer_addr,omitempty"`
+	SplicerServerName string `json:"splicer_server_name,omitempty"`
+	SessionCred       string `json:"session_cred,omitempty"`
+	ExpiresAt         string `json:"expires_at,omitempty"`
 }
 
 // Ingress implements POST /v1/vms/{id}/ingress: it brokers an L4 ingress
@@ -197,16 +201,20 @@ func (h *Handler) rejectIngress(w http.ResponseWriter, r *http.Request) {
 }
 
 // IngressResult are the connect coordinates the broker computed for one
-// (vm, port). On the gateway path SplicerAddr/SessionCred/ExpiresAt are set and
-// a session credential has been minted; on the relay path they are zero.
+// (vm, port). On the gateway path SplicerAddr/SplicerServerName/SessionCred/
+// ExpiresAt are set and a session credential has been minted; on the relay path
+// they are zero.
 type IngressResult struct {
-	Transport   string // "gateway" | "relay"
-	VMID        uuid.UUID
-	VMName      string
-	Port        int
-	SplicerAddr string
-	SessionCred string
-	ExpiresAt   time.Time
+	Transport string // "gateway" | "relay"
+	VMID      uuid.UUID
+	VMName    string
+	Port      int
+	// SplicerAddr is the gateway ingress endpoint to dial; SplicerServerName is
+	// the gateway node's identity SAN the client pins the TLS ServerName to.
+	SplicerAddr       string
+	SplicerServerName string
+	SessionCred       string
+	ExpiresAt         time.Time
 }
 
 // ResolveIngress computes connect coordinates for vm:port. It returns
@@ -279,8 +287,13 @@ func (h *Handler) resolveOverlay(ctx context.Context, vm store.VM, nic store.VMN
 		VMName:      vm.Name,
 		Port:        port,
 		SplicerAddr: gw.IngressAdvertisedEndpoint,
-		SessionCred: cred,
-		ExpiresAt:   expiresAt,
+		// Pin the ingress TLS ServerName to the gateway node's identity SAN, not
+		// the dialed ingress host: the node leaf always carries its identity SAN
+		// but a co-located node's leaf does not carry the ingress IP (its cert is
+		// never re-signed when the role is enabled).
+		SplicerServerName: auth.NodeIdentitySAN(gw.Name),
+		SessionCred:       cred,
+		ExpiresAt:         expiresAt,
 	}, nil
 }
 
@@ -306,6 +319,7 @@ func (h *Handler) brokerIngress(w http.ResponseWriter, r *http.Request, vm store
 	resp := ingressResponse{Transport: res.Transport, VMID: res.VMID.String(), Port: res.Port}
 	if res.Transport == "gateway" {
 		resp.SplicerAddr = res.SplicerAddr
+		resp.SplicerServerName = res.SplicerServerName
 		resp.SessionCred = res.SessionCred
 		resp.ExpiresAt = res.ExpiresAt.UTC().Format(time.RFC3339)
 	}

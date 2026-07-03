@@ -341,13 +341,20 @@ func (s *Store) DeleteOrphanedNetworkNodeStatus(ctx context.Context) (int64, err
 // PromoteHealthyNodes flips nodes in 'pending' or 'unreachable' with a heartbeat
 // at or after freshAfter to 'ready', returning the affected rows. 'cordoned' and
 // 'draining' are operator-pinned and untouched.
+//
+// Each promotion re-reads the node and commits through casNodeStatus (a
+// ModRevision CAS), so it preserves every other field - notably a gateway role
+// bit toggled between the selection snapshot and this write - and refuses any
+// node that now carries an active drain (DrainTaskID set). The source status is
+// filtered from the snapshot; a node that lost the CAS or gained a drain is
+// skipped, and the next sweep retries it, so one node's skip never aborts the
+// pass.
 func (s *Store) PromoteHealthyNodes(ctx context.Context, freshAfter time.Time) ([]store.PromoteHealthyNodesRow, error) {
 	nodes, err := s.liveNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var rows []store.PromoteHealthyNodesRow
-	now := time.Now().UTC()
 	for _, n := range nodes {
 		if n.Status != store.NodeStatusPending && n.Status != store.NodeStatusUnreachable {
 			continue
@@ -355,12 +362,14 @@ func (s *Store) PromoteHealthyNodes(ctx context.Context, freshAfter time.Time) (
 		if n.LastHeartbeatAt == nil || n.LastHeartbeatAt.Before(freshAfter) {
 			continue
 		}
-		n.Status = store.NodeStatusReady
-		n.UpdatedAt = now
-		if err := s.c.PutJSON(ctx, nodeKey(n.ID), n); err != nil {
+		written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusReady)
+		if err != nil {
 			return nil, err
 		}
-		rows = append(rows, store.PromoteHealthyNodesRow{ID: n.ID, Name: n.Name, Status: n.Status})
+		if !written {
+			continue
+		}
+		rows = append(rows, store.PromoteHealthyNodesRow{ID: n.ID, Name: n.Name, Status: store.NodeStatusReady})
 	}
 	return rows, nil
 }

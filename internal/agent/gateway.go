@@ -51,18 +51,16 @@ func RunGateway(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) 
 	if err != nil {
 		return fmt.Errorf("load control tls: %w", err)
 	}
-	ingressTLS, err := loadIngressTLS(cfg.TLS)
-	if err != nil {
-		return fmt.Errorf("load ingress tls: %w", err)
-	}
 
 	// Single fabric shared by the WireGuard reconciler (otwg0) and the
-	// gateway-mode network reconciler (bridge / VTEP / FDB / tenant addr).
-	// Linux-only impl; an unsupported stub on other platforms keeps the
-	// binary compiling for development.
+	// network reconciler (bridge / VTEP / FDB / tenant addr). This node hosts no
+	// VMs (hostsVMs=false), so the reconciler brings up only the overlay transport
+	// plus its ingress veths, never the anycast services plane. Linux-only impl;
+	// an unsupported stub on other platforms keeps the binary compiling for
+	// development.
 	fabric := netfabric.New()
 
-	networks, err := reconciler.NewGatewayNetworks(fabric, log, 0)
+	networks, err := reconciler.NewNetworks(fabric, nil, log, 0, false)
 	if err != nil {
 		return fmt.Errorf("network reconciler: %w", err)
 	}
@@ -78,14 +76,26 @@ func RunGateway(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) 
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
 	defer stopHeartbeat()
 
-	// The session-CA store learns the ingress-session CA public half from the
+	// The shared ingress plane: the bearer-only /v1/connect listener plus the
+	// session-CA store that learns the ingress-session CA public half from the
 	// heartbeat response (down-channel) and backs the connect route's credential
-	// gate. It is wired into the heartbeat sender's response fan-out and read by
-	// the gate, so the same heartbeat loop that drives the reconcilers keeps the
-	// verification key fresh.
-	caStore := ingress.NewSessionCAStore(log)
+	// gate. The store is wired into the heartbeat sender's response fan-out and
+	// read by the gate, so the same heartbeat loop that drives the reconcilers
+	// keeps the verification key fresh.
+	plane, err := ingress.BuildPlane(ingress.PlaneDeps{
+		Listen:       cfg.Gateway.Listen,
+		TLS:          cfg.TLS,
+		Fabric:       fabric,
+		Overlays:     networks,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		Log:          log,
+	})
+	if err != nil {
+		return fmt.Errorf("ingress plane: %w", err)
+	}
 
-	sender := buildGatewaySender(heartbeatCtx, cfg, nodeName, networks, wireGuard, caStore, log)
+	sender := buildGatewaySender(heartbeatCtx, cfg, nodeName, networks, wireGuard, plane.CAStore, log)
 
 	controlSrv := &http.Server{
 		Addr:         cfg.Server.Listen,
@@ -94,13 +104,7 @@ func RunGateway(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) 
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
-	ingressSrv := &http.Server{
-		Addr:         cfg.Gateway.Listen,
-		Handler:      buildGatewayIngressRouter(log, ingress.ConnectDeps{Fabric: fabric, Overlays: networks, CAStore: caStore}),
-		TLSConfig:    ingressTLS,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-	}
+	ingressSrv := plane.Server
 
 	heartbeatDone := startHeartbeat(heartbeatCtx, sender, log)
 	netReconcilerDone := runReconciler(heartbeatCtx, "network reconciler", networks.Run, log)
@@ -265,33 +269,6 @@ func buildGatewayControlRouter(cfg *config.AgentConfig, nodeName string, log *sl
 	return r
 }
 
-// buildGatewayIngressRouter builds the ingress listener's router. It serves only
-// the credential-gated POST /v1/connect splicer and is deliberately not gated by
-// CP identity: the client reaches it directly with a short-lived session
-// credential and no client certificate. The connect route carries no per-request
-// timeout - a long-lived spliced session must not hit the deadline, and the
-// timeout's guarded writer does not support hijacking.
-func buildGatewayIngressRouter(log *slog.Logger, connect ingress.ConnectDeps) http.Handler {
-	r := chi.NewRouter()
-
-	r.Use(middleware.RequestID)
-	r.Use(middleware.Logger(log))
-	r.Use(middleware.Recoverer(log))
-
-	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		response.WriteError(w, r, http.StatusNotFound,
-			response.CodeNotFound, "the requested resource was not found", nil)
-	})
-	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
-		response.WriteError(w, r, http.StatusMethodNotAllowed,
-			response.CodeMethodNotAllowed, "method not allowed for this resource", nil)
-	})
-
-	ingress.MountConnectRoutes(r, ingress.NewConnectHandler(connect, log))
-
-	return r
-}
-
 // loadControlTLS builds the control listener's TLS config: it presents the
 // gateway's own leaf and requires and verifies a client cert signed by the
 // cluster CA at cfg.CACertPath. Only the control plane, presenting its CP cert,
@@ -302,19 +279,6 @@ func loadControlTLS(cfg config.TLSConfig) (*tls.Config, error) {
 		return nil, err
 	}
 	base.ClientAuth = tls.RequireAndVerifyClientCert
-	return base, nil
-}
-
-// loadIngressTLS builds the ingress listener's TLS config: it presents the
-// gateway's own leaf and verifies any client cert that IS presented against the
-// cluster CA, but does not require one. A certificate-less connect client
-// completes the handshake and is gated on its session credential instead.
-func loadIngressTLS(cfg config.TLSConfig) (*tls.Config, error) {
-	base, err := gatewayLeafTLS(cfg)
-	if err != nil {
-		return nil, err
-	}
-	base.ClientAuth = tls.VerifyClientCertIfGiven
 	return base, nil
 }
 

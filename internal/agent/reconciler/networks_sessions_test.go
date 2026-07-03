@@ -17,9 +17,9 @@ import (
 // counter the connect plane maintains lands on the matching NetworkReport, keyed
 // by the same network id the report uses, and that acquire/release balance.
 func TestNetworksSessionCounterFoldsIntoReport(t *testing.T) {
-	rec, err := NewGatewayNetworks(&netfabric.FakeFabric{}, discardLogger(), time.Minute)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
 	if err != nil {
-		t.Fatalf("NewGatewayNetworks: %v", err)
+		t.Fatalf("NewNetworks: %v", err)
 	}
 	netID := "11111111-1111-1111-1111-111111111111"
 	subnet := "10.42.0.0/16"
@@ -61,9 +61,9 @@ func TestNetworksSessionCounterFoldsIntoReport(t *testing.T) {
 // its dial from the veth and key its per-network session counter the same way the
 // report does.
 func TestNetworksOverlayNetworkForIP(t *testing.T) {
-	rec, err := NewGatewayNetworks(&netfabric.FakeFabric{}, discardLogger(), time.Minute)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
 	if err != nil {
-		t.Fatalf("NewGatewayNetworks: %v", err)
+		t.Fatalf("NewNetworks: %v", err)
 	}
 	netID := "22222222-2222-2222-2222-222222222222"
 	subnet := "10.50.0.0/16"
@@ -92,9 +92,9 @@ func TestNetworksOverlayNetworkForIP(t *testing.T) {
 // gateway membership (GatewayAddr nil) must not resolve as a dial target, because
 // there is no veth to source the dial from.
 func TestOverlayNetworkForIPRequiresMembership(t *testing.T) {
-	rec, err := NewGatewayNetworks(&netfabric.FakeFabric{}, discardLogger(), time.Minute)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
 	if err != nil {
-		t.Fatalf("NewGatewayNetworks: %v", err)
+		t.Fatalf("NewNetworks: %v", err)
 	}
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{{

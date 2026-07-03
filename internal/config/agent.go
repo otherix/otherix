@@ -34,12 +34,16 @@ type AgentConfig struct {
 	Gateway      GatewayConfig      `koanf:"gateway"`
 }
 
-// GatewayConfig configures the agent's gateway-only ingress mode. When Enabled,
-// the agent boots without qemu, VM management, storage pools, or health checks:
-// it reconciles overlays for ingress and serves the connect splicer on a
-// separate listener. Ignored when Enabled is false (an ordinary hypervisor agent).
+// GatewayConfig configures the agent's ingress plane. When Enabled, the agent
+// boots in gateway-only mode (no qemu, VM management, storage pools, or health
+// checks): it reconciles overlays for ingress and serves the connect splicer on
+// a separate listener. Listen is decoupled from Enabled: a co-located hypervisor
+// sets Listen with Enabled=false, and agent.Run serves the same ingress plane
+// alongside the full hypervisor runtime on the shared node identity.
 type GatewayConfig struct {
-	// Enabled boots the process in gateway-only mode.
+	// Enabled boots the process in gateway-only mode (the standalone-no-KVM
+	// dispatch switch). It does NOT gate the ingress plane on a hypervisor: a
+	// co-located node leaves it false and sets Listen to add ingress to agent.Run.
 	Enabled bool `koanf:"enabled"`
 	// Listen is the ingress listener address (separate from Server.Listen). The
 	// connect splicer serves here under VerifyClientCertIfGiven + the session
@@ -298,19 +302,19 @@ func (c AgentConfig) Validate() error {
 	return c.Artifacts.Validate()
 }
 
-// validate checks the gateway-mode invariants against the control listen
-// address. When Enabled, the ingress Listen must be non-empty and must differ
-// from serverListen so the two planes bind distinct ports in one process.
-// AdvertisedEndpoint is validated at bootstrap rather than at serve, so it is
-// not required here. A disabled gateway imposes no constraints.
+// validate checks the ingress-plane invariants against the control listen
+// address. The ingress Listen is a hypervisor capability decoupled from Enabled
+// (which only dispatches the standalone-no-KVM run path): a co-located node sets
+// Listen with Enabled=false so agent.Run serves the ingress plane alongside the
+// hypervisor. Whenever Listen is set it must differ from serverListen so the two
+// planes bind distinct ports in one process; Enabled additionally requires
+// Listen to be non-empty. AdvertisedEndpoint is validated at bootstrap rather
+// than at serve, so it is not required here.
 func (g GatewayConfig) validate(serverListen string) error {
-	if !g.Enabled {
-		return nil
-	}
-	if g.Listen == "" {
+	if g.Enabled && g.Listen == "" {
 		return errors.New("gateway.listen is required when gateway.enabled is true")
 	}
-	if g.Listen == serverListen {
+	if g.Listen != "" && g.Listen == serverListen {
 		return errors.New("gateway.listen must differ from server.listen (two distinct ports)")
 	}
 	return nil

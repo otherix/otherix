@@ -274,6 +274,40 @@ func (s *Store) setNodeCordon(ctx context.Context, id uuid.UUID, status store.No
 	return n, nil
 }
 
+// SetNodeGatewayRole assigns or clears the gateway role on a node under a
+// ModRevision compare-and-set. It is the ONLY writer of GatewayRole outside
+// create/join and the node-delete cascade; the whole-row heartbeat writers are
+// made CAS-safe separately so a heartbeat cannot clobber a concurrent toggle.
+// Enabling an already-enabled node (or disabling an already-disabled one) is a
+// no-op that returns the current row. Returns store.ErrConcurrentUpdate if the
+// row changed under it, store.ErrNotFound for a missing or soft-deleted node.
+func (s *Store) SetNodeGatewayRole(ctx context.Context, id uuid.UUID, enabled bool) (store.Node, error) {
+	n, modRev, err := s.nodeWithRev(ctx, id)
+	if err != nil {
+		return store.Node{}, err
+	}
+	if n.GatewayRole == enabled {
+		return n, nil
+	}
+	n.GatewayRole = enabled
+	n.UpdatedAt = time.Now().UTC()
+	val, err := etcd.Marshal(n)
+	if err != nil {
+		return store.Node{}, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(id), string(val))).
+		Commit()
+	if err != nil {
+		return store.Node{}, fmt.Errorf("set node gateway role txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.Node{}, store.ErrConcurrentUpdate
+	}
+	return n, nil
+}
+
 // nodeWithRev reads a node row and the ModRevision its primary key was last
 // written at, so a caller can CAS-guard a multi-key write against a concurrent
 // mutation of the row. Soft-deleted rows are reported as store.ErrNotFound,
@@ -696,16 +730,9 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		}
 	}
 
-	// Load the node's WireGuard fabric record so its purge ops can be ordered
-	// ahead of the node soft-delete (see nodeDeleteCascade). ErrNotFound means
-	// the node never joined the mesh - nothing to purge; any other error aborts.
-	var wgRec *store.AgentWireguard
-	rec, wgErr := s.AgentWireguardByNodeID(ctx, id)
-	switch {
-	case wgErr == nil:
-		wgRec = &rec
-	case !errors.Is(wgErr, store.ErrNotFound):
-		return store.NodeDeleteOutcome{}, fmt.Errorf("load agent_wireguard for node delete: %v", wgErr)
+	wgRec, err := s.agentWireguardRecordForDelete(ctx, id)
+	if err != nil {
+		return store.NodeDeleteOutcome{}, err
 	}
 
 	now := time.Now().UTC()
@@ -715,6 +742,15 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	}
 	out.CertsRevoked = certsRevoked
 
+	// Purge the node's gateway memberships + their tenant-IP reservations so a
+	// deleted gateway leaks neither membership rows nor addresses. Ordered ahead
+	// of the node soft-delete (see nodeDeleteCascade) so a crash+retry can re-run
+	// them; the periodic gateway reconcile is a backstop, not the primary path.
+	membershipOps, err := s.gatewayMembershipDeleteOps(ctx, id)
+	if err != nil {
+		return store.NodeDeleteOutcome{}, err
+	}
+
 	n.DeletedAt = &now
 	n.UpdatedAt = now
 	val, err := etcd.Marshal(n)
@@ -722,7 +758,7 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		return store.NodeDeleteOutcome{}, err
 	}
 
-	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, certOps, wgRec)
+	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, certOps, membershipOps, wgRec)
 	if err := s.commitInChunks(ctx, cascade); err != nil {
 		return store.NodeDeleteOutcome{}, fmt.Errorf("force-delete node cascade: %v", err)
 	}
@@ -746,8 +782,8 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 // can never re-run (the gone node short-circuits at NodeByID). There is no
 // backstop reaper for agent_wireguard, so the leaked pubkey guard would later
 // fail a node re-bootstrap with ErrAgentWireguardPubkeyInUse.
-func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps, certOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
-	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+len(certOps)+4)
+func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps, certOps, membershipOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
+	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+len(certOps)+len(membershipOps)+4)
 	cascade = append(cascade, cancelOps...)
 	cascade = append(cascade, orphanOps...)
 	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
@@ -762,6 +798,11 @@ func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, or
 	// Revoke the node's agent certs before the node soft-delete so a crash+retry
 	// re-runs them (the gone node short-circuits at NodeByID once soft-deleted).
 	cascade = append(cascade, certOps...)
+	// Reap the node's gateway memberships (row + per-network index + tenant-IP
+	// reservation) before the node soft-delete, for the same crash+retry reason:
+	// a chunk boundary falling after the node-put plus a crash would leak the
+	// membership rows and their reserved addresses.
+	cascade = append(cascade, membershipOps...)
 	// The name-guard delete precedes the nodePut so the nodePut (which flips the
 	// row's DeletedAt and thus makes NodeByID short-circuit) is the genuine LAST
 	// op: a crash before it leaves the node row present and a retry re-runs the
@@ -771,6 +812,43 @@ func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, or
 		clientv3.OpPut(nodeKey(nodeID), nodeVal),
 	)
 	return cascade
+}
+
+// agentWireguardRecordForDelete loads the node's WireGuard fabric record so its
+// purge ops can be ordered ahead of the node soft-delete (see nodeDeleteCascade).
+// A nil record with a nil error means the node never joined the mesh (ErrNotFound)
+// and has nothing to purge; any other error aborts the delete.
+func (s *Store) agentWireguardRecordForDelete(ctx context.Context, id uuid.UUID) (*store.AgentWireguard, error) {
+	rec, err := s.AgentWireguardByNodeID(ctx, id)
+	switch {
+	case err == nil:
+		return &rec, nil
+	case errors.Is(err, store.ErrNotFound):
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("load agent_wireguard for node delete: %v", err)
+	}
+}
+
+// gatewayMembershipDeleteOps returns the delete ops that purge every gateway
+// membership held by the node - the membership row, its per-network index, and
+// its tenant-IP reservation - so a deleted gateway leaks neither membership rows
+// nor reserved addresses. The ops are assembled here but ordered ahead of the
+// node soft-delete by nodeDeleteCascade.
+func (s *Store) gatewayMembershipDeleteOps(ctx context.Context, gatewayID uuid.UUID) ([]clientv3.Op, error) {
+	memberships, err := s.ListGatewayMembershipsForGateway(ctx, gatewayID)
+	if err != nil {
+		return nil, fmt.Errorf("list gateway memberships for node delete: %v", err)
+	}
+	ops := make([]clientv3.Op, 0, len(memberships)*3)
+	for _, m := range memberships {
+		ops = append(ops,
+			clientv3.OpDelete(gatewayMembershipKey(m.GatewayID, m.NetworkID)),
+			clientv3.OpDelete(gatewayMembershipNetworkIndexKey(m.NetworkID, m.GatewayID)),
+			clientv3.OpDelete(vmNicIPv4ReservationKey(m.NetworkID, m.TenantIP)),
+		)
+	}
+	return ops, nil
 }
 
 // nodeEffective projects a node onto the effective-availability view, computing

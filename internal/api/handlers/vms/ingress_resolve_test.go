@@ -138,6 +138,12 @@ func TestResolveIngressOverlayReturnsGatewayCoords(t *testing.T) {
 	if got.VMName != vm.Name {
 		t.Errorf("VMName = %q, want %q", got.VMName, vm.Name)
 	}
+	// The client pins the gateway TLS ServerName to the node identity SAN, not
+	// the dialed ingress IP, so the broker must surface the gateway node's
+	// identity (node-<name>.agents.otherix.local) alongside SplicerAddr.
+	if want := auth.NodeIdentitySAN("gw0"); got.SplicerServerName != want {
+		t.Errorf("SplicerServerName = %q, want %q", got.SplicerServerName, want)
+	}
 }
 
 // TestResolveIngressNoGatewayUnavailable: a running overlay VM with NO converged
@@ -150,7 +156,7 @@ func TestResolveIngressNoGatewayUnavailable(t *testing.T) {
 	if !errors.Is(err, gateways.ErrIngressUnavailable) {
 		t.Fatalf("ResolveIngress() error = %v, want ErrIngressUnavailable", err)
 	}
-	if got.Transport != "" || got.SplicerAddr != "" || got.SessionCred != "" {
+	if got.Transport != "" || got.SplicerAddr != "" || got.SessionCred != "" || got.SplicerServerName != "" {
 		t.Errorf("want empty coords on unavailable, got %+v", got)
 	}
 }

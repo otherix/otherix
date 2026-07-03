@@ -198,7 +198,8 @@ authorization), and there is no template entity.
 | `node:manage`      | yes   | —        | —         | —      |
 
 `node:maintenance` covers cordon / uncordon / drain. `node:manage`
-covers register (via join-tokens), update, soft-delete. The
+covers register (via join-tokens), update, soft-delete, and gateway
+role assignment. The
 `(full)` / `(summary)` distinction reflects which Node schema variant
 is returned — see `Node` and `NodeSummary` in `control-plane.yaml`.
 

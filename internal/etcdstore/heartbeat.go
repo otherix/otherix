@@ -70,56 +70,58 @@ func (h heartbeatProjection) NodeByIDAtRev(ctx context.Context, id uuid.UUID, re
 // fields, bumping updated_at. Architecture, labels, and status are left
 // untouched (the handler/reconciler own them).
 func (h heartbeatProjection) UpdateNodeHeartbeat(ctx context.Context, arg store.UpdateNodeHeartbeatParams) error {
-	n, err := h.s.NodeByID(ctx, arg.ID)
-	if err != nil {
-		return err
-	}
-	n.AgentVersion = arg.AgentVersion
-	n.MigrationHost = arg.MigrationHost
-	n.MigrationPortRangeStart = arg.MigrationPortRangeStart
-	n.MigrationPortRangeEnd = arg.MigrationPortRangeEnd
-	n.CPUCoresTotal = arg.CPUCoresTotal
-	n.CPUCoresAvailable = arg.CPUCoresAvailable
-	n.CPUModel = arg.CPUModel
-	n.CpuFlags = arg.CpuFlags
-	n.MemoryTotalMib = arg.MemoryTotalMib
-	n.MemoryAvailableMib = arg.MemoryAvailableMib
-	n.Hugepages2mibTotal = arg.Hugepages2mibTotal
-	n.Hugepages1gibTotal = arg.Hugepages1gibTotal
-	n.KernelVersion = arg.KernelVersion
-	n.QEMUVersion = arg.QEMUVersion
-	n.NumaTopology = arg.NumaTopology
-	n.Capabilities = arg.Capabilities
-	n.SystemDiskTotalBytes = arg.SystemDiskTotalBytes
-	n.SystemDiskAvailableBytes = arg.SystemDiskAvailableBytes
-	now := time.Now().UTC()
-	n.LastHeartbeatAt = &now
-	n.UpdatedAt = now
-	return h.s.c.PutJSON(ctx, nodeKey(arg.ID), n)
+	_, err := h.s.casNodeUpdate(ctx, arg.ID, func(n *store.Node) {
+		n.AgentVersion = arg.AgentVersion
+		n.MigrationHost = arg.MigrationHost
+		n.MigrationPortRangeStart = arg.MigrationPortRangeStart
+		n.MigrationPortRangeEnd = arg.MigrationPortRangeEnd
+		n.CPUCoresTotal = arg.CPUCoresTotal
+		n.CPUCoresAvailable = arg.CPUCoresAvailable
+		n.CPUModel = arg.CPUModel
+		n.CpuFlags = arg.CpuFlags
+		n.MemoryTotalMib = arg.MemoryTotalMib
+		n.MemoryAvailableMib = arg.MemoryAvailableMib
+		n.Hugepages2mibTotal = arg.Hugepages2mibTotal
+		n.Hugepages1gibTotal = arg.Hugepages1gibTotal
+		n.KernelVersion = arg.KernelVersion
+		n.QEMUVersion = arg.QEMUVersion
+		n.NumaTopology = arg.NumaTopology
+		n.Capabilities = arg.Capabilities
+		n.SystemDiskTotalBytes = arg.SystemDiskTotalBytes
+		n.SystemDiskAvailableBytes = arg.SystemDiskAvailableBytes
+		// Preserve-on-empty (fail-closed, mirrors the blobs/images-unavailable
+		// pattern): a non-empty self-reported endpoint overwrites, an empty one
+		// leaves the stored value untouched so a transient empty tick never clears a
+		// good endpoint and drops the gateway out of ingress selection. GatewayRole
+		// is never touched here; the CAS retry preserves a concurrent toggle.
+		if arg.IngressAdvertisedEndpoint != "" {
+			n.IngressAdvertisedEndpoint = arg.IngressAdvertisedEndpoint
+		}
+		now := time.Now().UTC()
+		n.LastHeartbeatAt = &now
+		n.UpdatedAt = now
+	})
+	return err
 }
 
 // UpdateNodeMemoryPressure persists the memory-pressure transition.
 func (h heartbeatProjection) UpdateNodeMemoryPressure(ctx context.Context, arg store.UpdateNodeMemoryPressureParams) error {
-	n, err := h.s.NodeByID(ctx, arg.ID)
-	if err != nil {
-		return err
-	}
-	n.MemoryPressureSince = arg.MemoryPressureSince
-	n.MemoryPressureCount = arg.MemoryPressureCount
-	n.UpdatedAt = time.Now().UTC()
-	return h.s.c.PutJSON(ctx, nodeKey(arg.ID), n)
+	_, err := h.s.casNodeUpdate(ctx, arg.ID, func(n *store.Node) {
+		n.MemoryPressureSince = arg.MemoryPressureSince
+		n.MemoryPressureCount = arg.MemoryPressureCount
+		n.UpdatedAt = time.Now().UTC()
+	})
+	return err
 }
 
 // UpdateNodeSystemDiskPressure persists the system-disk pressure transition.
 func (h heartbeatProjection) UpdateNodeSystemDiskPressure(ctx context.Context, arg store.UpdateNodeSystemDiskPressureParams) error {
-	n, err := h.s.NodeByID(ctx, arg.ID)
-	if err != nil {
-		return err
-	}
-	n.SystemDiskPressureSince = arg.SystemDiskPressureSince
-	n.SystemDiskPressureCount = arg.SystemDiskPressureCount
-	n.UpdatedAt = time.Now().UTC()
-	return h.s.c.PutJSON(ctx, nodeKey(arg.ID), n)
+	_, err := h.s.casNodeUpdate(ctx, arg.ID, func(n *store.Node) {
+		n.SystemDiskPressureSince = arg.SystemDiskPressureSince
+		n.SystemDiskPressureCount = arg.SystemDiskPressureCount
+		n.UpdatedAt = time.Now().UTC()
+	})
+	return err
 }
 
 // FilterExistingVMIDs returns the subset of ids that reference a live vms row.

@@ -631,3 +631,100 @@ func TestHeartbeatProjectionActiveMigrationForVM(t *testing.T) {
 		t.Fatalf("projection: %v", err)
 	}
 }
+
+// TestUpdateNodeHeartbeatPreservesGatewayRole asserts a heartbeat capability
+// write never drops an operator-assigned gateway role: the role is enabled, a
+// heartbeat lands, and the bit must survive.
+func TestUpdateNodeHeartbeatPreservesGatewayRole(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	node := nodeParams(uniqueNodeName("hb-gw"))
+	if _, err := s.CreateNode(ctx, node); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	if _, err := s.SetNodeGatewayRole(ctx, node.ID, true); err != nil {
+		t.Fatalf("SetNodeGatewayRole: %v", err)
+	}
+
+	version := "test"
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{
+			ID:                      node.ID,
+			AgentVersion:            &version,
+			MigrationHost:           "10.1.1.1",
+			MigrationPortRangeStart: 49152,
+			MigrationPortRangeEnd:   49251,
+		})
+	}); err != nil {
+		t.Fatalf("RunHeartbeatProjection: %v", err)
+	}
+
+	got, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if !got.HasRole(store.NodeRoleGateway) {
+		t.Errorf("heartbeat clobbered GatewayRole: HasRole(gateway) = false, want true")
+	}
+}
+
+// TestUpdateNodeHeartbeatIngressEndpointPreserveOnEmpty pins the self-reported
+// ingress endpoint ingest: a non-empty report populates it, a later empty report
+// PRESERVES the last good value (a transient empty tick never drops a gateway out
+// of ingress selection), and the whole path never disturbs GatewayRole.
+func TestUpdateNodeHeartbeatIngressEndpointPreserveOnEmpty(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	node := nodeParams(uniqueNodeName("hb-ingress"))
+	if _, err := s.CreateNode(ctx, node); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	if _, err := s.SetNodeGatewayRole(ctx, node.ID, true); err != nil {
+		t.Fatalf("SetNodeGatewayRole: %v", err)
+	}
+
+	version := "test"
+	beat := func(endpoint string) {
+		t.Helper()
+		if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+			return hp.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{
+				ID:                        node.ID,
+				AgentVersion:              &version,
+				MigrationHost:             "10.1.1.1",
+				MigrationPortRangeStart:   49152,
+				MigrationPortRangeEnd:     49251,
+				IngressAdvertisedEndpoint: endpoint,
+			})
+		}); err != nil {
+			t.Fatalf("RunHeartbeatProjection(%q): %v", endpoint, err)
+		}
+	}
+
+	const want = "https://gw.example:9444"
+	beat(want)
+	got, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID after non-empty report: %v", err)
+	}
+	if got.IngressAdvertisedEndpoint != want {
+		t.Errorf("IngressAdvertisedEndpoint = %q, want %q", got.IngressAdvertisedEndpoint, want)
+	}
+	if !got.HasRole(store.NodeRoleGateway) {
+		t.Errorf("ingress endpoint ingest clobbered GatewayRole: HasRole(gateway) = false, want true")
+	}
+
+	// A later empty tick must not clear the stored endpoint (preserve-on-empty).
+	beat("")
+	got, err = s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID after empty report: %v", err)
+	}
+	if got.IngressAdvertisedEndpoint != want {
+		t.Errorf("empty report cleared IngressAdvertisedEndpoint: got %q, want %q (preserved)", got.IngressAdvertisedEndpoint, want)
+	}
+	if !got.HasRole(store.NodeRoleGateway) {
+		t.Errorf("empty ingress report clobbered GatewayRole: HasRole(gateway) = false, want true")
+	}
+}

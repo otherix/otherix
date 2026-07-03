@@ -1134,6 +1134,11 @@ func (h *Handler) applyMemoryPressure(ctx context.Context, hp store.HeartbeatPro
 		MemoryPressureSince: newSince,
 		MemoryPressureCount: newCount,
 	}); err != nil {
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			h.log.WarnContext(ctx, "node row contended; skipping memory pressure write this heartbeat",
+				slog.String("node_id", nodeID.String()))
+			return pressureTransitionNone, nil
+		}
 		return pressureTransitionNone, fmt.Errorf("update memory pressure: %v", err)
 	}
 	return kind, nil
@@ -1161,6 +1166,11 @@ func (h *Handler) applySystemDiskPressure(ctx context.Context, hp store.Heartbea
 		SystemDiskPressureSince: newSince,
 		SystemDiskPressureCount: newCount,
 	}); err != nil {
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			h.log.WarnContext(ctx, "node row contended; skipping system_disk pressure write this heartbeat",
+				slog.String("node_id", nodeID.String()))
+			return pressureTransitionNone, nil
+		}
 		return pressureTransitionNone, fmt.Errorf("update system_disk pressure: %v", err)
 	}
 	return kind, nil
@@ -1183,27 +1193,33 @@ func (h *Handler) applyNodeUpdate(ctx context.Context, hp store.HeartbeatProject
 	}
 
 	params := store.UpdateNodeHeartbeatParams{
-		ID:                       nodeID,
-		AgentVersion:             ptrString(body.AgentVersion),
-		MigrationHost:            migHost,
-		MigrationPortRangeStart:  migStart,
-		MigrationPortRangeEnd:    migEnd,
-		CPUCoresTotal:            ptrInt32(caps.CPUCoresTotal),
-		CPUCoresAvailable:        ptrInt32(body.Resources.CPUCoresAvailable),
-		CPUModel:                 ptrString(caps.CPUModel),
-		CpuFlags:                 nonNilStrings(caps.CPUFlags),
-		MemoryTotalMib:           ptrInt64(caps.MemoryTotalMib),
-		MemoryAvailableMib:       ptrInt64(body.Resources.MemoryAvailableMib),
-		Hugepages2mibTotal:       caps.Hugepages2MibTotal,
-		Hugepages1gibTotal:       caps.Hugepages1GibTotal,
-		KernelVersion:            ptrString(caps.KernelVersion),
-		QEMUVersion:              ptrString(caps.QEMUVersion),
-		NumaTopology:             numaBlob,
-		Capabilities:             capsBlob,
-		SystemDiskTotalBytes:     body.Resources.SystemDiskTotalBytes,
-		SystemDiskAvailableBytes: body.Resources.SystemDiskAvailableBytes,
+		ID:                        nodeID,
+		AgentVersion:              ptrString(body.AgentVersion),
+		MigrationHost:             migHost,
+		MigrationPortRangeStart:   migStart,
+		MigrationPortRangeEnd:     migEnd,
+		CPUCoresTotal:             ptrInt32(caps.CPUCoresTotal),
+		CPUCoresAvailable:         ptrInt32(body.Resources.CPUCoresAvailable),
+		CPUModel:                  ptrString(caps.CPUModel),
+		CpuFlags:                  nonNilStrings(caps.CPUFlags),
+		MemoryTotalMib:            ptrInt64(caps.MemoryTotalMib),
+		MemoryAvailableMib:        ptrInt64(body.Resources.MemoryAvailableMib),
+		Hugepages2mibTotal:        caps.Hugepages2MibTotal,
+		Hugepages1gibTotal:        caps.Hugepages1GibTotal,
+		KernelVersion:             ptrString(caps.KernelVersion),
+		QEMUVersion:               ptrString(caps.QEMUVersion),
+		NumaTopology:              numaBlob,
+		Capabilities:              capsBlob,
+		SystemDiskTotalBytes:      body.Resources.SystemDiskTotalBytes,
+		SystemDiskAvailableBytes:  body.Resources.SystemDiskAvailableBytes,
+		IngressAdvertisedEndpoint: body.IngressAdvertisedEndpoint,
 	}
 	if err := hp.UpdateNodeHeartbeat(ctx, params); err != nil {
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			h.log.WarnContext(ctx, "node row contended; skipping capability write this heartbeat",
+				slog.String("node_id", nodeID.String()))
+			return nil
+		}
 		return fmt.Errorf("update node heartbeat: %v", err)
 	}
 	return nil

@@ -354,6 +354,8 @@ func mountV1(r chi.Router, deps RouterDeps) {
 				r.With(middleware.RequirePermission(auth.PermNodeMaintenance, deps.Logger)).Post("/{id}/uncordon", nodesH.Uncordon)
 				r.With(middleware.RequirePermission(auth.PermNodeMaintenance, deps.Logger)).Post("/{id}/readmit", nodesH.Readmit)
 				r.With(middleware.RequirePermission(auth.PermNodeMaintenance, deps.Logger)).Post("/{id}/drain", nodesH.Drain)
+				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Post("/{id}/gateway/enable", nodesH.GatewayEnable)
+				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Post("/{id}/gateway/disable", nodesH.GatewayDisable)
 				r.With(middleware.RequirePermission(auth.PermNodeManage, deps.Logger)).Delete("/{id}", nodesH.Delete)
 			})
 

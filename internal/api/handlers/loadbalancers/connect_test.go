@@ -5,6 +5,7 @@ package loadbalancers_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -36,10 +37,13 @@ func (b *recordingBroker) ResolveIngress(_ context.Context, vm store.VM, port in
 	b.lastVM = vm.ID
 	b.mu.Unlock()
 	return vms.IngressResult{
-		Transport: "gateway",
-		VMID:      vm.ID,
-		VMName:    vm.Name,
-		Port:      port,
+		Transport:         "gateway",
+		VMID:              vm.ID,
+		VMName:            vm.Name,
+		Port:              port,
+		SplicerAddr:       "https://gw.test:9444",
+		SplicerServerName: "node-gw.agents.otherix.local",
+		SessionCred:       "cred",
 	}, nil
 }
 
@@ -94,6 +98,37 @@ func TestConnectBalancesOverEligibleBackends(t *testing.T) {
 		t.Errorf("chose an ineligible backend: seen=%v", seen)
 	}
 	_ = lb
+}
+
+// TestConnectSurfacesSplicerServerName proves the connect response carries the
+// gateway node's identity ServerName (node-<name>.agents.otherix.local) the
+// broker resolved, so the client pins the ingress TLS ServerName to the node
+// identity rather than the dialed ingress IP. Revert to confirm: drop the
+// SplicerServerName copy in Connect and the field goes empty, failing this test.
+func TestConnectSurfacesSplicerServerName(t *testing.T) {
+	h, st, _ := newConnectTestHandler(t)
+	owner := uuid.New()
+	st.seedLB(t, "web", owner, 8080, map[string]string{"app": "web"})
+	st.seedRunningVM(t, owner, `{"app":"web"}`)
+	u := &auth.User{ID: owner, Role: auth.RoleDeveloper}
+
+	rec := doAuthedRequest(t, h.Connect, u, http.MethodPost, "/v1/loadbalancers/web/connect", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Transport         string `json:"transport"`
+		SplicerServerName string `json:"splicer_server_name"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode connect body: %v", err)
+	}
+	if body.Transport != "gateway" {
+		t.Fatalf("transport = %q, want gateway", body.Transport)
+	}
+	if want := "node-gw.agents.otherix.local"; body.SplicerServerName != want {
+		t.Errorf("splicer_server_name = %q, want %q", body.SplicerServerName, want)
+	}
 }
 
 func TestConnectNoEligibleBackends409(t *testing.T) {

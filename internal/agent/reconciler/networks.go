@@ -44,15 +44,12 @@ type Networks struct {
 	dhcp   dhcp4.Responder // per-node DHCPv4 responder for dhcp-enabled overlays; may be nil
 	tick   time.Duration
 
-	// gatewayMode strips the overlay services plane. An ingress gateway hosts
-	// no VMs and is never an anycast first-hop router, so it brings up the
-	// overlay datapath (bridge + VTEP + FDB + its unicast tenant veth) but never
-	// the anycast gateway, NAT masquerade, DHCP responder, or DNS forwarder - the
-	// anycast services plane is simply pointless on a node that neither routes
-	// first-hop VM traffic nor serves DHCP/DNS. (The gateway's tenant identity
-	// lives on the veth host end, not the bridge hardware address, so the services
-	// plane and the veth do not contend.)
-	gatewayMode bool
+	// hostsVMs is true when this node runs the hypervisor plane: it materialises
+	// type=bridge networks and the overlay services plane (anycast/NAT/DNS) for its
+	// own VMs. A gateway-only node sets it false and materialises only the overlay
+	// transport (bridge + VTEP + FDB) plus its ingress veths. It is orthogonal to
+	// the per-network veth axis, which keys on the declared GatewayAddr.
+	hostsVMs bool
 
 	desired atomic.Pointer[networksDesired]
 	trigger chan struct{}
@@ -116,8 +113,11 @@ type networksDesired struct {
 // DefaultTickInterval. Returns ErrNilFabric when fabric is nil so
 // boot-time misconfiguration surfaces at construction, not at the first
 // reconcile. dhcp may be nil, in which case the reconciler skips DHCP
-// registration entirely (a node with no DHCP responder support).
-func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tick time.Duration) (*Networks, error) {
+// registration entirely (a node with no DHCP responder support). hostsVMs is
+// true for a hypervisor node (materialise type=bridge networks and the overlay
+// services plane for its own VMs) and false for a gateway-only node (overlay
+// transport plus ingress veths only); see the field doc.
+func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tick time.Duration, hostsVMs bool) (*Networks, error) {
 	if f == nil {
 		return nil, ErrNilFabric
 	}
@@ -129,6 +129,7 @@ func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tic
 		fabric:          f,
 		dhcp:            dhcp,
 		tick:            tick,
+		hostsVMs:        hostsVMs,
 		trigger:         make(chan struct{}, 1),
 		reports:         map[string]heartbeat.NetworkReport{},
 		sessions:        map[string]int{},
@@ -136,28 +137,6 @@ func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tic
 		dhcpRegisterErr: map[string]string{},
 	}, nil
 }
-
-// NewGatewayNetworks builds the network reconciler in gateway mode. It brings up
-// each declared overlay's datapath (bridge + VTEP + FDB + the gateway tenant
-// veth) but never runs the services plane (anycast gateway, NAT masquerade,
-// DHCP, DNS): a gateway hosts no VMs and is never an anycast first-hop router, so
-// the anycast services plane is pointless on it. The gateway's tenant identity
-// lives on the veth host end, not the bridge hardware address, so the two do not
-// contend. It takes no DHCP responder; tick==0 falls back to
-// DefaultTickInterval. Returns ErrNilFabric when fabric is nil.
-func NewGatewayNetworks(f netfabric.Fabric, log *slog.Logger, tick time.Duration) (*Networks, error) {
-	n, err := NewNetworks(f, nil, log, tick)
-	if err != nil {
-		return nil, err
-	}
-	n.gatewayMode = true
-	return n, nil
-}
-
-// GatewayMode reports whether this reconciler runs in gateway mode, that is it
-// brings up the overlay datapath without the anycast services plane. False for
-// an ordinary hypervisor-node reconciler.
-func (r *Networks) GatewayMode() bool { return r.gatewayMode }
 
 // OverlayNetworkForIP returns the veth host-end device AND the network id whose
 // CP-declared subnet contains ip, but only for an overlay this node holds a
@@ -325,13 +304,13 @@ func (r *Networks) reconcile(ctx context.Context) {
 func (r *Networks) applyNetwork(ctx context.Context, d heartbeat.DeclaredNetwork, selfOverlayIP string, fdb []heartbeat.DeclaredFDBEntry) heartbeat.NetworkReport {
 	switch d.Type {
 	case "bridge":
-		if r.gatewayMode {
-			// A gateway hosts no VMs and is never a first-hop router, so a
-			// node-local bridge has no role on it: it runs neither the L3/NAT/DHCP
-			// services plane nor even a VM-less bridge to attach taps to. Bridge VMs
-			// are reached through their owning agent, never directly through the
-			// gateway, which carries tenant traffic only over overlays. Report it
-			// reconciled so the CP sees the gateway converge on a network it
+		if !r.hostsVMs {
+			// A node that hosts no VMs (a gateway-only node) is never a first-hop
+			// router, so a node-local bridge has no role on it: it runs neither the
+			// L3/NAT/DHCP services plane nor even a VM-less bridge to attach taps to.
+			// Bridge VMs are reached through their owning agent, never directly
+			// through the gateway, which carries tenant traffic only over overlays.
+			// Report it reconciled so the CP sees the node converge on a network it
 			// correctly does nothing about, rather than stall on a failed report.
 			return ready(d.ID)
 		}

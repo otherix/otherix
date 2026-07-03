@@ -279,11 +279,17 @@ type ingressResponse struct {
 	// The VM ingress broker does not return it (DialIngress already knows the
 	// name); the load-balancer connect broker does, so the relay leg can reach
 	// the chosen backend. Optional, absent on the VM path.
-	VMName      string `json:"vm_name,omitempty"`
-	Port        int    `json:"port"`
-	SplicerAddr string `json:"splicer_addr"`
-	SessionCred string `json:"session_cred"`
-	ExpiresAt   string `json:"expires_at"`
+	VMName string `json:"vm_name,omitempty"`
+	Port   int    `json:"port"`
+	// SplicerAddr is the gateway ingress endpoint to dial. SplicerServerName is the
+	// gateway node's identity SAN to pin as the TLS ServerName; the node leaf
+	// carries that identity SAN rather than the dialed ingress host, so pinning it
+	// (not the dialed host) is what verifies a co-located gateway. Empty on an
+	// older control plane, in which case the client falls back to the dialed host.
+	SplicerAddr       string `json:"splicer_addr"`
+	SplicerServerName string `json:"splicer_server_name"`
+	SessionCred       string `json:"session_cred"`
+	ExpiresAt         string `json:"expires_at"`
 }
 
 // DialIngress brokers an L4 ingress connection to vmName's guest port and
@@ -432,12 +438,21 @@ func dialGateway(ctx context.Context, cfg Config, resp ingressResponse) (net.Con
 	}
 	// The broker reports the gateway's advertised endpoint, which is a full
 	// https URL (validated as such at node join). Derive the host:port to dial
-	// and the hostname to pin as the TLS ServerName from it.
+	// from it.
 	u, err := url.Parse(resp.SplicerAddr)
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("sshconn: parse splicer address %q: %v", resp.SplicerAddr, err)
 	}
-	tlsCfg, err := gatewayTLSConfig(cfg, u.Hostname())
+	// Pin the TLS ServerName to the gateway node's identity SAN the broker
+	// returned, not the dialed host: a co-located gateway's leaf carries only its
+	// identity SAN, never the ingress IP. Fall back to the dialed host when an
+	// older control plane omits the identity (preserves the legacy standalone
+	// contract where the ingress host is in the leaf SAN).
+	serverName := resp.SplicerServerName
+	if serverName == "" {
+		serverName = u.Hostname()
+	}
+	tlsCfg, err := gatewayTLSConfig(cfg, serverName)
 	if err != nil {
 		return nil, err
 	}
@@ -519,17 +534,17 @@ func (c *bufferedConn) CloseWrite() error {
 
 // gatewayTLSConfig builds the TLS trust for the gateway leg: it reuses the
 // connector's configured trust (the cluster CA bundle per ADR 0026) and pins the
-// ServerName to the splicer host, which is the gateway node's ingress host. The
-// node's cluster-CA-signed leaf carries that ingress host in its SAN, so the pin
-// verifies even when the ingress hostname differs from the control hostname. It
-// never disables verification on its own (only an explicit operator
-// InsecureSkipTLSVerify does).
-func gatewayTLSConfig(cfg Config, host string) (*tls.Config, error) {
+// ServerName to serverName, which the caller sets to the gateway node's identity
+// SAN (node-<name>.agents.otherix.local). Every node leaf carries that identity
+// SAN, so the pin verifies for a standalone and a co-located gateway alike,
+// whether or not the dialed ingress host is in the leaf SAN. It never disables
+// verification on its own (only an explicit operator InsecureSkipTLSVerify does).
+func gatewayTLSConfig(cfg Config, serverName string) (*tls.Config, error) {
 	base, err := resolveTLSConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	base.ServerName = host
+	base.ServerName = serverName
 	return base, nil
 }
 

@@ -236,6 +236,17 @@ func SignCSR(csr *x509.CertificateRequest, nodeName, advertisedEndpoint string, 
 	return signLeaf(csr, "node-"+nodeName, endpoints, caCert, caKey, now)
 }
 
+// NodeIdentitySAN returns the cluster-CA-signed identity SAN a node's leaf
+// carries: "node-<nodeName>.agents.otherix.local". This is the DNS name signLeaf
+// seeds from the "node-<nodeName>" CN, so it is present in every node leaf
+// (control, gateway, and co-located) regardless of which endpoints the node
+// advertised at join. Callers that dial a node by an IP but must verify its
+// identity (peer blob pull, live migration, the ingress gateway leg) pin the TLS
+// ServerName to this value rather than the dialed address.
+func NodeIdentitySAN(nodeName string) string {
+	return "node-" + nodeName + ".agents.otherix.local"
+}
+
 // signLeaf builds and signs a server-authoritative leaf cert from a validated
 // CSR. commonName is the full Subject CN (e.g. "node-foo"); it also seeds the
 // primary SAN as "<commonName>.agents.otherix.local". Each endpoint in

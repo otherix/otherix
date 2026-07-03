@@ -38,8 +38,11 @@ func TestNodeDeleteCascadeOrdering(t *testing.T) {
 	orphanOps := []clientv3.Op{
 		clientv3.OpPut("orphan-0", "v"),
 	}
+	membershipOps := []clientv3.Op{
+		clientv3.OpDelete("membership-0"),
+	}
 
-	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", cancelOps, orphanOps, nil, wgRec)
+	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", cancelOps, orphanOps, nil, membershipOps, wgRec)
 
 	if len(cascade) == 0 {
 		t.Fatalf("nodeDeleteCascade returned an empty cascade")
@@ -64,6 +67,7 @@ func TestNodeDeleteCascadeOrdering(t *testing.T) {
 	nodePutIdx := idxOf(nodeKey(nodeID))
 	wgKeyIdx := idxOf(agentWireguardKey(nodeID))
 	wgGuardIdx := idxOf(agentWireguardPubkeyGuard(pubkey))
+	membershipIdx := idxOf("membership-0")
 
 	if wgKeyIdx < 0 {
 		t.Fatalf("cascade missing agentWireguardKey delete op")
@@ -71,11 +75,17 @@ func TestNodeDeleteCascadeOrdering(t *testing.T) {
 	if wgGuardIdx < 0 {
 		t.Fatalf("cascade missing agentWireguardPubkeyGuard delete op")
 	}
+	if membershipIdx < 0 {
+		t.Fatalf("cascade missing gateway membership delete op")
+	}
 	if wgKeyIdx >= nodePutIdx {
 		t.Errorf("agentWireguardKey op at index %d, want before node soft-delete at index %d", wgKeyIdx, nodePutIdx)
 	}
 	if wgGuardIdx >= nodePutIdx {
 		t.Errorf("agentWireguardPubkeyGuard op at index %d, want before node soft-delete at index %d", wgGuardIdx, nodePutIdx)
+	}
+	if membershipIdx >= nodePutIdx {
+		t.Errorf("gateway membership op at index %d, want before node soft-delete at index %d", membershipIdx, nodePutIdx)
 	}
 }
 
@@ -86,7 +96,7 @@ func TestNodeDeleteCascadeNoWireguard(t *testing.T) {
 	nodeID := uuid.New()
 	const nodeName = "node-b"
 
-	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", nil, nil, nil, nil)
+	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", nil, nil, nil, nil, nil)
 
 	if len(cascade) != 2 {
 		t.Fatalf("nodeDeleteCascade with no wg/cancel/orphan ops = %d ops, want 2", len(cascade))

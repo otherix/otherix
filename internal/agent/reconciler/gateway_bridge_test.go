@@ -36,9 +36,9 @@ func natBridgeNet() heartbeat.DeclaredNetwork {
 // owning agent, never directly through the gateway.
 func TestGatewayManagedBridgeStripsServicesPlane(t *testing.T) {
 	f := &netfabric.FakeFabric{}
-	rec, err := NewGatewayNetworks(f, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, false)
 	if err != nil {
-		t.Fatalf("NewGatewayNetworks: %v", err)
+		t.Fatalf("NewNetworks: %v", err)
 	}
 	svc := managedBridgeDhcpNet()
 	svc.Egress = "nat"
@@ -83,7 +83,7 @@ func TestGatewayManagedBridgeStripsServicesPlane(t *testing.T) {
 func TestNonGatewayManagedBridgeRunsServicesPlane(t *testing.T) {
 	f := &netfabric.FakeFabric{}
 	fake := &dhcp4.FakeResponder{}
-	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute)
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}

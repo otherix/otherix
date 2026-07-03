@@ -39,6 +39,12 @@ type requestBody struct {
 	// balancer backends declared on this node (the observed-health up-channel).
 	// The CP folds each verdict into the backend's observed health.
 	HealthChecks []healthCheckReport `json:"health_checks,omitempty"`
+	// IngressAdvertisedEndpoint is the node's self-reported ingress splicer URL
+	// (/v1/connect), reported when the node serves the ingress plane. The CP folds
+	// it into node.IngressAdvertisedEndpoint preserve-on-empty: a non-empty value
+	// overwrites, an empty/absent value leaves the stored endpoint untouched so a
+	// transient empty tick never drops the node out of gateway selection.
+	IngressAdvertisedEndpoint string `json:"ingress_advertised_endpoint,omitempty"`
 }
 
 // healthCheckReport mirrors HealthCheckReport on the agent side (the manual-sync
