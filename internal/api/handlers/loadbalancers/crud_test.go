@@ -19,6 +19,7 @@ import (
 
 	"github.com/otherix/otherix/internal/api/handlers/loadbalancers"
 	"github.com/otherix/otherix/internal/api/handlers/vms"
+	"github.com/otherix/otherix/internal/api/validation"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -368,6 +369,23 @@ func TestCreatePublishedInvalidSourceCIDR(t *testing.T) {
 	r := do(t, router, http.MethodPost, "/v1/loadbalancers", body)
 	if r.Code != http.StatusBadRequest {
 		t.Fatalf("invalid source cidr = %d, want 400; body=%s", r.Code, r.Body.String())
+	}
+	if code := errorCode(t, r); code != "validation_failed" {
+		t.Errorf("code = %q, want validation_failed", code)
+	}
+}
+
+// TestCreatePublishedTooManySourceCIDRs asserts a source_cidrs list longer than
+// MaxSourceCIDRs is rejected with 400 rather than persisting an unbounded
+// allowlist.
+func TestCreatePublishedTooManySourceCIDRs(t *testing.T) {
+	st := newFakeStore()
+	router := newRouter(st, opUser())
+	cidrs := strings.TrimSuffix(strings.Repeat(`"10.0.0.0/8",`, validation.MaxSourceCIDRs+1), ",")
+	body := `{"name":"web","port":80,"selector":{"app":"web"},"published_port":8080,"source_cidrs":[` + cidrs + `]}`
+	r := do(t, router, http.MethodPost, "/v1/loadbalancers", body)
+	if r.Code != http.StatusBadRequest {
+		t.Fatalf("too many source cidrs = %d, want 400; body=%s", r.Code, r.Body.String())
 	}
 	if code := errorCode(t, r); code != "validation_failed" {
 		t.Errorf("code = %q, want validation_failed", code)

@@ -197,12 +197,10 @@ func applyUpdatePublish(w http.ResponseWriter, r *http.Request, user *auth.User,
 		row.Protocol = *req.Protocol
 	}
 	if req.SourceCIDRs != nil {
-		for _, c := range *req.SourceCIDRs {
-			if err := validation.ValidateSourceCIDR(c); err != nil {
-				response.WriteError(w, r, http.StatusBadRequest,
-					response.CodeValidationFailed, err.Error(), nil)
-				return false
-			}
+		if err := validation.ValidateSourceCIDRs(*req.SourceCIDRs); err != nil {
+			response.WriteError(w, r, http.StatusBadRequest,
+				response.CodeValidationFailed, err.Error(), nil)
+			return false
 		}
 		row.SourceCIDRs = *req.SourceCIDRs
 	}

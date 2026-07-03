@@ -132,12 +132,10 @@ func applyCreatePublish(w http.ResponseWriter, r *http.Request, user *auth.User,
 			response.CodeValidationFailed, err.Error(), nil)
 		return false
 	}
-	for _, c := range req.SourceCIDRs {
-		if err := validation.ValidateSourceCIDR(c); err != nil {
-			response.WriteError(w, r, http.StatusBadRequest,
-				response.CodeValidationFailed, err.Error(), nil)
-			return false
-		}
+	if err := validation.ValidateSourceCIDRs(req.SourceCIDRs); err != nil {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, err.Error(), nil)
+		return false
 	}
 	return true
 }
