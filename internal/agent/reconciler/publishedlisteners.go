@@ -35,14 +35,42 @@ func (netListenerManager) Listen(ctx context.Context, port int32) (net.Listener,
 	return lc.Listen(ctx, "tcp", ":"+strconv.Itoa(int(port)))
 }
 
+// listenerConfig is the per-connection datapath config a live published-port
+// listener serves. It is carried behind an atomic pointer on boundListener so a
+// heartbeat that changes the backend set or source allowlist reaches an already
+// bound listener without rebinding the socket: reconcile Stores a fresh config
+// and the accept goroutine Loads it per accepted connection. backendPort is the
+// guest port each backend is dialed at, sourceCIDRs the optional source
+// allowlist (empty means allow-all), backends the CP-resolved eligible set.
+type listenerConfig struct {
+	backendPort int32
+	sourceCIDRs []string
+	backends    []heartbeat.DeclaredBackend
+}
+
+// configFromLB snapshots the datapath-relevant fields of a declared load
+// balancer into a fresh listenerConfig for atomic publication. The backend
+// slice is copied so a later mutation of the caller's DeclaredLoadBalancer
+// cannot race a reader that already Loaded this config.
+func configFromLB(lb heartbeat.DeclaredLoadBalancer) *listenerConfig {
+	return &listenerConfig{
+		backendPort: lb.BackendPort,
+		sourceCIDRs: append([]string(nil), lb.SourceCIDRs...),
+		backends:    append([]heartbeat.DeclaredBackend(nil), lb.Backends...),
+	}
+}
+
 // boundListener is one open (or attempted) published-port listener. ln is
 // nil when the last bind attempt failed; err then carries the failure
 // string. lbID keys the entry back to its owning load balancer so the
-// observed up-channel report can name it.
+// observed up-channel report can name it. cfg carries the live datapath config
+// (backend set, source allowlist, backend port) refreshed in place each
+// reconcile pass; it is nil only on a failed bind (no live socket to serve).
 type boundListener struct {
 	ln   net.Listener
 	lbID uuid.UUID
 	err  string
+	cfg  *atomic.Pointer[listenerConfig]
 }
 
 // PublishedListeners is the per-resource reconciler for published load
@@ -200,7 +228,12 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 	for port, lb := range desiredByPort {
 		if bl, ok := r.bound[port]; ok && bl.ln != nil {
 			if bl.lbID == lb.LBID {
-				continue // same owner, listener already up
+				// Same owner, listener already up: refresh the live datapath
+				// config in place (no rebind). A heartbeat that changed the
+				// backend set or source allowlist reaches the running accept
+				// goroutine through the atomic pointer on the next connection.
+				bl.cfg.Store(configFromLB(lb))
+				continue
 			}
 			// Ownership changed without an intervening unpublished tick (the
 			// old LB released the port and a new LB claimed it between two
@@ -232,7 +265,9 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 			)
 			continue
 		}
-		r.bound[port] = boundListener{ln: ln, lbID: lb.LBID}
+		cfg := &atomic.Pointer[listenerConfig]{}
+		cfg.Store(configFromLB(lb))
+		r.bound[port] = boundListener{ln: ln, lbID: lb.LBID, cfg: cfg}
 		go r.accept(ln)
 		r.log.InfoContext(ctx, "published listener bound",
 			slog.Int("port", int(port)),
