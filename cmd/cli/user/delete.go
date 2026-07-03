@@ -33,7 +33,7 @@ stdin is a TTY and --force is absent.`,
 		RunE: runDelete,
 	}
 	cmd.Flags().Bool(flagForce, false, "skip the confirmation prompt")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

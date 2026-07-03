@@ -44,7 +44,7 @@ Examples:
 	cmd.Flags().Int32(flagMaxUses, 0, "consumption cap (0 = server default of 1)")
 	cmd.Flags().String(flagNodeName, "", "bind token to a specific node identity (forces single-use)")
 	cmd.Flags().String(flagKind, "node", "join kind: node|gateway (cluster tokens use `otherix cluster join-token create`)")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

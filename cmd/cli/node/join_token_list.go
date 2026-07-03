@@ -28,7 +28,7 @@ scripting.`,
 	cmd.Flags().Bool(flagIncExpired, false, "surface expired tokens")
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
 	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
-	cmd.Flags().String(flagOutput, "table", "output format: table|json")
+	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json")
 	return cmd
 }
 

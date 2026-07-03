@@ -25,7 +25,7 @@ callers see the reduced NodeSummary shape.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include the node UUID in text output")
 	return cmd
 }

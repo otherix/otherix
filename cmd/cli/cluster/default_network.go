@@ -20,7 +20,7 @@ informational line to stdout and exits 0 (parseable by tooling that
 distinguishes set/unset without inspecting exit codes).`,
 		RunE: runGetDefaultNetwork,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 
@@ -74,7 +74,7 @@ this network.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runSetDefaultNetwork,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

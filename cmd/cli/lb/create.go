@@ -34,7 +34,7 @@ Example:
 	cmd.Flags().Int(flagPort, 0, "guest TCP port ingress connections target (1..65535, required)")
 	cmd.Flags().String(flagSelector, "", "backend selector as k=v[,k=v...] (required)")
 	registerHealthCheckFlags(cmd)
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include the load balancer UUID in the text output")
 	_ = cmd.MarkFlagRequired(flagPort)
 	_ = cmd.MarkFlagRequired(flagSelector)

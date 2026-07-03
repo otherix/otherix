@@ -82,7 +82,7 @@ Example:
 	cmd.Flags().Int(flagCreateVLAN, 0, "VLAN tag (1..4094; omitted leaves the network untagged)")
 	cmd.Flags().Bool(flagCreateDhcp, false, "enable CP-IPAM + DHCP responder (overlay or managed bridge; requires --subnet)")
 	cmd.Flags().Bool(flagCreateDns, true, "advertise the anycast resolver (169.254.1.1) via DHCP option 6 (overlay or managed bridge; defaults on with --dhcp)")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include the network UUID in the text output")
 
 	return cmd

@@ -38,7 +38,7 @@ token.`,
 	}
 	cmd.Flags().Duration(flagTTL, defaultTokenTTL, "token validity duration (1m..24h)")
 	cmd.Flags().Int32(flagMaxUses, 0, "consumption cap (0 = server default of 1; max 16 for cluster tokens)")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

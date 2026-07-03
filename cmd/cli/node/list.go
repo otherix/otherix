@@ -31,7 +31,7 @@ constant and derives CORDONED from the cordoned_at timestamp.`,
 	cmd.Flags().String(flagRole, "", "filter by role (hypervisor|gateway)")
 	cmd.Flags().Int(flagLimit, defaultListLimit, "page size (1..200)")
 	cmd.Flags().String(flagCursor, "", "opaque cursor from a previous page")
-	cmd.Flags().String(flagOutput, "table", "output format: table|json")
+	cmd.Flags().StringP(flagOutput, "o", "table", "output format: table|json")
 	cmd.Flags().Bool(flagShowIDs, false, "include node UUIDs in the table output")
 	return cmd
 }

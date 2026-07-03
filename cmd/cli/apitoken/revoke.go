@@ -32,7 +32,7 @@ Revoke is immediate and idempotent.
 	}
 	cmd.Flags().String(flagUser, "", "act on this user's tokens (admin-only); default: yourself")
 	cmd.Flags().Bool(flagForce, false, "skip the confirmation prompt")
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 

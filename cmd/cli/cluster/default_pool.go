@@ -20,7 +20,7 @@ informational line to stdout and exits 0 (parseable by tooling that
 distinguishes set/unset without inspecting exit codes).`,
 		RunE: runGetDefaultPool,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 
@@ -76,7 +76,7 @@ Pass a UUID literal here and the server returns 400 pool_not_found.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runSetDefaultPool,
 	}
-	cmd.Flags().String(flagOutput, "text", "output format: text|json")
+	cmd.Flags().StringP(flagOutput, "o", "text", "output format: text|json")
 	return cmd
 }
 
