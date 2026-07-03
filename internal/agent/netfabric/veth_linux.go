@@ -9,11 +9,26 @@ package netfabric
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
+
+// vethIngressRouteMetric is the routing-table priority (metric) of the explicit
+// connected route the ingress veth host end carries to the overlay subnet. It is
+// deliberately non-zero so this route coexists with the bridge's connected route
+// to the SAME subnet on a co-located node. On such a node the reconciler runs
+// both EnsureVeth (the ingress plane) and EnsureBridgeRoute (the services plane)
+// against one overlay; EnsureBridgeRoute installs its route with
+// netlink.RouteReplace, whose kernel key is (dst, tos, metric, table) and ignores
+// the output interface, so a metric-0 veth route to the subnet would be clobbered
+// by the metric-0 bridge route. Programming the veth route at a distinct metric
+// keeps both as separate FIB entries. An SO_BINDTODEVICE ingress dial selects the
+// veth route by output interface regardless of metric, while unbound host traffic
+// (DNS, NAT return) keeps using the lower-metric bridge route.
+const vethIngressRouteMetric = 100
 
 // EnsureVeth idempotently materialises the ingress-gateway veth pair described by
 // cfg. It creates the pair when absent (adopt-and-repair re-asserts the host MAC,
@@ -64,7 +79,35 @@ func (f *linuxFabric) EnsureVeth(cfg VethConfig) error {
 	if err := netlink.LinkSetUp(host); err != nil {
 		return fmt.Errorf("netfabric: ensure veth %s: set up: %v", cfg.HostName, err)
 	}
+	if err := f.ensureVethRoute(host, cfg); err != nil {
+		return err
+	}
 	return f.enslaveVethPeer(cfg)
+}
+
+// ensureVethRoute installs the explicit connected route to the overlay subnet on
+// the veth host end at vethIngressRouteMetric, idempotently (RouteReplace at that
+// metric owns exactly that FIB entry). The route mirrors the kernel's own
+// connected route for the tenant address (link scope, source = the tenant IP) but
+// at a distinct metric so it survives EnsureBridgeRoute's metric-0 RouteReplace on
+// a co-located node - see vethIngressRouteMetric.
+func (f *linuxFabric) ensureVethRoute(host netlink.Link, cfg VethConfig) error {
+	subnet := cfg.Addr.Masked()
+	_, dst, err := net.ParseCIDR(subnet.String())
+	if err != nil {
+		return fmt.Errorf("netfabric: ensure veth %s: parse subnet %s: %v", cfg.HostName, subnet, err)
+	}
+	route := &netlink.Route{
+		LinkIndex: host.Attrs().Index,
+		Dst:       dst,
+		Src:       net.IP(cfg.Addr.Addr().AsSlice()),
+		Scope:     netlink.SCOPE_LINK,
+		Priority:  vethIngressRouteMetric,
+	}
+	if err := netlink.RouteReplace(route); err != nil {
+		return fmt.Errorf("netfabric: ensure veth %s: route %s: %v", cfg.HostName, subnet, err)
+	}
+	return nil
 }
 
 // ensureVethHostLink returns the host-end link, creating the veth pair when
