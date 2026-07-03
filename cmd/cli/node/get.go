@@ -98,6 +98,9 @@ func printNodeMigration(cmd *cobra.Command, n cpclient.Node) {
 	if n.AdvertisedEndpoint != nil {
 		printf(cmd, "advertised_endpoint: %s\n", *n.AdvertisedEndpoint)
 	}
+	if n.IngressAdvertisedEndpoint != nil {
+		printf(cmd, "ingress_advertised_endpoint: %s\n", *n.IngressAdvertisedEndpoint)
+	}
 	if n.Migration != nil {
 		printf(cmd, "migration_host: %s\n", n.Migration.Host)
 		printf(cmd, "migration_port_range: %d-%d\n",

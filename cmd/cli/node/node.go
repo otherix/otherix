@@ -28,6 +28,7 @@ admin-only fields left nil on the lighter projection.`,
 	cmd.AddCommand(newUncordonCommand())
 	cmd.AddCommand(newDeleteCommand())
 	cmd.AddCommand(newReadmitCommand())
+	cmd.AddCommand(newGatewayCommand())
 	cmd.AddCommand(newJoinTokenCommand())
 	return cmd
 }

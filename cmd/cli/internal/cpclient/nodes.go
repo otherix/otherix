@@ -36,30 +36,31 @@ type Node struct {
 
 	// Admin / operator full-view fields. Optional pointers / raw
 	// values: nil in the developer/viewer summary projection.
-	UpdatedAt                *string            `json:"updated_at,omitempty"`
-	AdvertisedEndpoint       *string            `json:"advertised_endpoint,omitempty"`
-	Migration                *MigrationCap      `json:"migration,omitempty"`
-	CPUCoresTotal            *int32             `json:"cpu_cores_total,omitempty"`
-	CPUCoresAvailable        *int32             `json:"cpu_cores_available,omitempty"`
-	CPUCoresEffective        *int32             `json:"cpu_cores_effective,omitempty"`
-	CPUModel                 *string            `json:"cpu_model,omitempty"`
-	CPUFlags                 []string           `json:"cpu_flags,omitempty"`
-	MemoryTotalMiB           *int64             `json:"memory_total_mib,omitempty"`
-	MemoryAvailableMiB       *int64             `json:"memory_available_mib,omitempty"`
-	MemoryEffectiveMiB       *int64             `json:"memory_effective_mib,omitempty"`
-	Hugepages2MiB            *int32             `json:"hugepages_2mib_total,omitempty"`
-	Hugepages1GiB            *int32             `json:"hugepages_1gib_total,omitempty"`
-	KernelVersion            *string            `json:"kernel_version,omitempty"`
-	QEMUVersion              *string            `json:"qemu_version,omitempty"`
-	NumaTopology             json.RawMessage    `json:"numa_topology,omitempty"`
-	Capabilities             json.RawMessage    `json:"capabilities,omitempty"`
-	LastHeartbeatAt          *string            `json:"last_heartbeat_at,omitempty"`
-	AgentVersion             *string            `json:"agent_version,omitempty"`
-	MemoryPressure           *PressureCondition `json:"memory_pressure,omitempty"`
-	SystemDiskTotalBytes     *int64             `json:"system_disk_total_bytes,omitempty"`
-	SystemDiskAvailableBytes *int64             `json:"system_disk_available_bytes,omitempty"`
-	SystemDiskPressure       *PressureCondition `json:"system_disk_pressure,omitempty"`
-	WireGuard                *NodeWireguard     `json:"wireguard,omitempty"`
+	UpdatedAt                 *string            `json:"updated_at,omitempty"`
+	AdvertisedEndpoint        *string            `json:"advertised_endpoint,omitempty"`
+	IngressAdvertisedEndpoint *string            `json:"ingress_advertised_endpoint,omitempty"`
+	Migration                 *MigrationCap      `json:"migration,omitempty"`
+	CPUCoresTotal             *int32             `json:"cpu_cores_total,omitempty"`
+	CPUCoresAvailable         *int32             `json:"cpu_cores_available,omitempty"`
+	CPUCoresEffective         *int32             `json:"cpu_cores_effective,omitempty"`
+	CPUModel                  *string            `json:"cpu_model,omitempty"`
+	CPUFlags                  []string           `json:"cpu_flags,omitempty"`
+	MemoryTotalMiB            *int64             `json:"memory_total_mib,omitempty"`
+	MemoryAvailableMiB        *int64             `json:"memory_available_mib,omitempty"`
+	MemoryEffectiveMiB        *int64             `json:"memory_effective_mib,omitempty"`
+	Hugepages2MiB             *int32             `json:"hugepages_2mib_total,omitempty"`
+	Hugepages1GiB             *int32             `json:"hugepages_1gib_total,omitempty"`
+	KernelVersion             *string            `json:"kernel_version,omitempty"`
+	QEMUVersion               *string            `json:"qemu_version,omitempty"`
+	NumaTopology              json.RawMessage    `json:"numa_topology,omitempty"`
+	Capabilities              json.RawMessage    `json:"capabilities,omitempty"`
+	LastHeartbeatAt           *string            `json:"last_heartbeat_at,omitempty"`
+	AgentVersion              *string            `json:"agent_version,omitempty"`
+	MemoryPressure            *PressureCondition `json:"memory_pressure,omitempty"`
+	SystemDiskTotalBytes      *int64             `json:"system_disk_total_bytes,omitempty"`
+	SystemDiskAvailableBytes  *int64             `json:"system_disk_available_bytes,omitempty"`
+	SystemDiskPressure        *PressureCondition `json:"system_disk_pressure,omitempty"`
+	WireGuard                 *NodeWireguard     `json:"wireguard,omitempty"`
 }
 
 // NodeWireguard mirrors the server's NodeWireguard schema: the node's WG
@@ -235,6 +236,20 @@ func (c *Client) DeleteNode(ctx context.Context, node string, force bool) error 
 // as *APIError (e.g. 409 conflict for a node that is not gone).
 func (c *Client) ReadmitNode(ctx context.Context, node string) error {
 	return c.nodeAction(ctx, node, "readmit")
+}
+
+// EnableGateway submits POST /v1/nodes/{node}/gateway/enable - sync (200),
+// idempotent. Assigns the ingress-gateway role to the node. Non-2xx surfaces
+// as *APIError.
+func (c *Client) EnableGateway(ctx context.Context, node string) error {
+	return c.nodeAction(ctx, node, "gateway/enable")
+}
+
+// DisableGateway submits POST /v1/nodes/{node}/gateway/disable - sync (200),
+// idempotent. Removes the ingress-gateway role from the node. Non-2xx surfaces
+// as *APIError.
+func (c *Client) DisableGateway(ctx context.Context, node string) error {
+	return c.nodeAction(ctx, node, "gateway/disable")
 }
 
 // nodeAction POSTs a sync node maintenance verb (cordon / uncordon) and
