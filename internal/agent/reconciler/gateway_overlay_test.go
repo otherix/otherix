@@ -25,10 +25,11 @@ func gatewayEgressDhcpNet() heartbeat.DeclaredNetwork {
 
 // TestGatewayOverlayStripsServicesPlane drives the gateway-mode network
 // reconciler over an overlay declared with egress=nat + DHCP and asserts it
-// brings up the datapath (bridge + VTEP + the unicast tenant gateway) but never
-// touches the anycast services plane (anycast gateway, NAT masquerade, IP
-// forwarding, DHCP). A gateway hosts no VMs and is never an anycast first-hop
-// router, so the bridge hardware address belongs to the unicast tenant MAC.
+// brings up the datapath (bridge + VTEP + the tenant veth) but never touches the
+// anycast services plane (anycast gateway, NAT masquerade, IP forwarding, DHCP).
+// A gateway hosts no VMs and is never an anycast first-hop router, so the anycast
+// services plane is pointless on it; its tenant identity lives on the veth host
+// end, not the bridge hardware address.
 func TestGatewayOverlayStripsServicesPlane(t *testing.T) {
 	f := readyGatewayFabric()
 	rec, err := NewGatewayNetworks(f, discardLogger(), time.Minute)
@@ -49,8 +50,8 @@ func TestGatewayOverlayStripsServicesPlane(t *testing.T) {
 	if len(f.EnsureVXLANCalls) == 0 {
 		t.Errorf("EnsureVXLAN not called; gateway must bring up the VTEP")
 	}
-	if len(f.UnicastGatewayCalls) != 1 {
-		t.Errorf("EnsureUnicastGateway calls = %d, want 1 (the gateway tenant addr)", len(f.UnicastGatewayCalls))
+	if len(f.EnsureVethCalls) != 1 {
+		t.Errorf("EnsureVeth calls = %d, want 1 (the gateway tenant veth)", len(f.EnsureVethCalls))
 	}
 
 	// Services plane is fully stripped.

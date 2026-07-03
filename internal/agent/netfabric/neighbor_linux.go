@@ -43,14 +43,14 @@ const (
 	neighborProbePort = "9"
 )
 
-// NeighborMAC resolves ip to its link-layer address on the named bridge.
-func (f *linuxFabric) NeighborMAC(bridge string, ip netip.Addr) (net.HardwareAddr, bool, error) {
+// NeighborMAC resolves ip to its link-layer address on the named device.
+func (f *linuxFabric) NeighborMAC(device string, ip netip.Addr) (net.HardwareAddr, bool, error) {
 	if !ip.IsValid() {
-		return nil, false, fmt.Errorf("netfabric: neighbor lookup on %s: invalid ip", bridge)
+		return nil, false, fmt.Errorf("netfabric: neighbor lookup on %s: invalid ip", device)
 	}
-	link, err := netlink.LinkByName(bridge)
+	link, err := netlink.LinkByName(device)
 	if err != nil {
-		return nil, false, fmt.Errorf("netfabric: neighbor lookup on %s: %v", bridge, err)
+		return nil, false, fmt.Errorf("netfabric: neighbor lookup on %s: %v", device, err)
 	}
 	idx := link.Attrs().Index
 
@@ -67,7 +67,7 @@ func (f *linuxFabric) NeighborMAC(bridge string, ip netip.Addr) (net.HardwareAdd
 	// unresolved lookup leaves the caller to refuse, so this never weakens the binding.
 	deadline := time.Now().Add(neighborResolveBudget)
 	for {
-		probeNeighbor(ip, bridge)
+		probeNeighbor(ip, device)
 		mac, ok, err = neighborLookup(idx, ip)
 		if err != nil || ok || !time.Now().Before(deadline) {
 			return mac, ok, err

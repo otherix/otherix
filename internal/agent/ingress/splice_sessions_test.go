@@ -69,7 +69,7 @@ func TestConnectSessionCounterBalancesOnSplice(t *testing.T) {
 	ip := netip.MustParseAddr(host)
 
 	signer, pubPEM := newTestSessionCA(t)
-	bridge := "otvb100"
+	bridge := "otvg100"
 	netID := "33333333-3333-3333-3333-333333333333"
 	spy := &spyOverlays{bridge: bridge, networkID: netID, ok: true}
 	h := &ConnectHandler{
@@ -120,7 +120,7 @@ func TestConnectSessionCounterBalancesOnSplice(t *testing.T) {
 func TestConnectSessionCounterNoLeakOnDialFailure(t *testing.T) {
 	signer, pubPEM := newTestSessionCA(t)
 	ip := netip.MustParseAddr("10.42.0.9")
-	bridge := "otvb100"
+	bridge := "otvg100"
 	netID := "44444444-4444-4444-4444-444444444444"
 	spy := &spyOverlays{bridge: bridge, networkID: netID, ok: true}
 	h := &ConnectHandler{

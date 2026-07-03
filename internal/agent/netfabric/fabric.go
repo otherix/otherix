@@ -90,19 +90,12 @@ type Fabric interface {
 	// bridge or the address is already absent.
 	RemoveAnycastGateway(bridge string, addr netip.Addr) error
 
-	// EnsureUnicastGateway pins mac as the bridge link's hardware address and
-	// assigns addr to it, idempotently. addr carries the overlay subnet's prefix
-	// length (e.g. /24) so the kernel installs an on-link route for the whole
-	// overlay subnet via the bridge, letting the gateway reach guest VMs over the
-	// overlay rather than leaking their traffic out the host default route. It is
-	// the unicast counterpart of EnsureAnycastGateway: an ingress gateway claims a
-	// distinct per-membership unicast MAC drawn from the network's address space -
-	// never the shared anycast MAC, which is identical on every node and can never
-	// be a unicast FDB target - so the host kernel originates and answers at the
-	// tenant addr and return traffic to the MAC advertised in the overlay FDB is
-	// delivered to this bridge. This method owns the bridge hardware address on a
-	// gateway, which therefore does not run the anycast services plane.
-	EnsureUnicastGateway(bridge string, addr netip.Prefix, mac net.HardwareAddr) error
+	// EnsureVeth idempotently materialises an ingress gateway's veth pair for one
+	// overlay membership (host end = tenant IP + unicast MAC, peer end enslaved to
+	// the bridge) and applies the host-end sysctls. RemoveVeth deletes the pair by
+	// its host-end name, idempotently.
+	EnsureVeth(cfg VethConfig) error
+	RemoveVeth(host string) error
 
 	// EnsureMasqueradeIface installs a masquerade rule for traffic entering via
 	// inIface and leaving via egressIface (empty = host default route),
@@ -177,16 +170,17 @@ type Fabric interface {
 	SendGARP(bridge string, mac string, ip netip.Addr) error
 
 	// NeighborMAC resolves ip to its link-layer address in the kernel neighbor
-	// (ARP/ND) table on the named bridge. It returns (mac, true, nil) for a
-	// resolved entry (REACHABLE / STALE / DELAY / PROBE / PERMANENT),
-	// (nil, false, nil) when ip has no resolved neighbor, and (nil, false, err)
-	// on a lookup error. The implementation may send a single probe datagram to
-	// provoke resolution and re-read once when the first lookup finds nothing.
-	// The ingress gateway uses it to bind a session credential's dial to the
-	// credential's NIC MAC: it refuses the dial unless the neighbor the guest IP
-	// resolves to equals the credential MAC, so a stale credential whose IP has
-	// been reassigned to a different NIC fails closed.
-	NeighborMAC(bridge string, ip netip.Addr) (net.HardwareAddr, bool, error)
+	// (ARP/ND) table on the named device (a bridge for a hypervisor node, a gateway
+	// veth host end for ingress). It returns (mac, true, nil) for a resolved entry
+	// (REACHABLE / STALE / DELAY / PROBE / PERMANENT), (nil, false, nil) when ip has
+	// no resolved neighbor, and (nil, false, err) on a lookup error. The
+	// implementation may send a single probe datagram to provoke resolution and
+	// re-read once when the first lookup finds nothing. The ingress gateway uses it
+	// to bind a session credential's dial to the credential's NIC MAC: it refuses
+	// the dial unless the neighbor the guest IP resolves to equals the credential
+	// MAC, so a stale credential whose IP has been reassigned to a different NIC
+	// fails closed.
+	NeighborMAC(device string, ip netip.Addr) (net.HardwareAddr, bool, error)
 }
 
 // VXLANConfig parametrises a VXLAN VTEP. For the single-agent N1b scaffold
@@ -197,6 +191,21 @@ type VXLANConfig struct {
 	Port   uint16     // UDP dstport (IANA VXLAN 4789)
 	MTU    int        // inner MTU (1390 for overlay)
 	Master string     // bridge to enslave the VTEP into ("" leaves it unenslaved)
+}
+
+// VethConfig describes one ingress-gateway veth pair. The root-namespace host end
+// carries the membership's tenant IP (Addr, with the overlay subnet prefix so the
+// kernel installs an on-link route to the whole subnet) and its unicast MAC; the
+// peer end is enslaved to Bridge as an ordinary bridge port. HostName / PeerName
+// are the VNI-derived otvg<vni> / otvgp<vni> so teardown and adopt need no stored
+// state.
+type VethConfig struct {
+	HostName string
+	PeerName string
+	Bridge   string
+	Addr     netip.Prefix
+	MAC      net.HardwareAddr
+	MTU      int
 }
 
 // LinkState is the observed kernel state of a network link, returned by

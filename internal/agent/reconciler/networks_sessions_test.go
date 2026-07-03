@@ -55,10 +55,11 @@ func TestNetworksSessionCounterFoldsIntoReport(t *testing.T) {
 	}
 }
 
-// TestNetworksOverlayNetworkForIP confirms the resolver returns both the overlay
-// bridge and the network id whose declared subnet contains the IP, so the
-// connect plane can key its per-network session counter the same way the report
-// does.
+// TestNetworksOverlayNetworkForIP confirms the resolver returns the overlay veth
+// host-end device and the network id whose declared subnet contains the IP for an
+// overlay this node holds a gateway membership on, so the connect plane can source
+// its dial from the veth and key its per-network session counter the same way the
+// report does.
 func TestNetworksOverlayNetworkForIP(t *testing.T) {
 	rec, err := NewGatewayNetworks(&netfabric.FakeFabric{}, discardLogger(), time.Minute)
 	if err != nil {
@@ -68,16 +69,42 @@ func TestNetworksOverlayNetworkForIP(t *testing.T) {
 	subnet := "10.50.0.0/16"
 	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
 		DeclaredNetworks: []heartbeat.DeclaredNetwork{
-			{ID: netID, Type: "overlay", BridgeName: "otvb200", Mtu: 1450, VNI: i32(200), Subnet: &subnet},
+			{
+				ID: netID, Type: "overlay", BridgeName: "otvb200", Mtu: 1450, VNI: i32(200), Subnet: &subnet,
+				GatewayAddr: &heartbeat.GatewayAddr{IP: "10.50.0.1", MAC: "02:00:0a:32:00:01"},
+			},
 		},
 	})
 
-	bridge, gotID, ok := rec.OverlayNetworkForIP(netip.MustParseAddr("10.50.0.7"))
-	if !ok || bridge != "otvb200" || gotID != netID {
-		t.Fatalf("OverlayNetworkForIP = (%q, %q, %v), want (otvb200, %s, true)", bridge, gotID, ok, netID)
+	// A gateway overlay resolves to its veth host end, not the bridge.
+	dev, gotID, ok := rec.OverlayNetworkForIP(netip.MustParseAddr("10.50.0.7"))
+	if !ok || dev != "otvg200" || gotID != netID {
+		t.Fatalf("OverlayNetworkForIP = (%q, %q, %v), want (otvg200, %s, true)", dev, gotID, ok, netID)
 	}
+	// An off-overlay IP resolves to nothing.
 	if _, _, ok := rec.OverlayNetworkForIP(netip.MustParseAddr("192.168.0.1")); ok {
 		t.Fatalf("OverlayNetworkForIP for an off-overlay IP = ok, want not ok")
+	}
+}
+
+// TestOverlayNetworkForIPRequiresMembership proves the resolver fails closed: an
+// overlay whose declared subnet contains the IP but on which this node holds no
+// gateway membership (GatewayAddr nil) must not resolve as a dial target, because
+// there is no veth to source the dial from.
+func TestOverlayNetworkForIPRequiresMembership(t *testing.T) {
+	rec, err := NewGatewayNetworks(&netfabric.FakeFabric{}, discardLogger(), time.Minute)
+	if err != nil {
+		t.Fatalf("NewGatewayNetworks: %v", err)
+	}
+	rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredNetworks: []heartbeat.DeclaredNetwork{{
+			ID: "net-x", Type: "overlay", BridgeName: "otvb300",
+			VNI: i32(300), Subnet: strptr("10.60.0.0/16"), Mtu: 1390,
+			GatewayAddr: nil,
+		}},
+	})
+	if _, _, ok := rec.OverlayNetworkForIP(netip.MustParseAddr("10.60.0.5")); ok {
+		t.Fatalf("OverlayNetworkForIP on a non-membership overlay = ok, want not ok (fail closed)")
 	}
 }
 

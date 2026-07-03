@@ -5,6 +5,7 @@ package netfabric
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"net"
 	"net/netip"
 )
@@ -40,3 +41,16 @@ func GatewayMACFromID(id string) net.HardwareAddr {
 	sum := sha256.Sum256([]byte(id))
 	return net.HardwareAddr{0x02, 0xBB, sum[0], sum[1], sum[2], sum[3]}
 }
+
+// GatewayVethHostName returns the deterministic root-namespace host-end name of
+// an ingress gateway's veth pair for an overlay VNI: otvg<vni>. The host end
+// carries the membership's tenant IP + unicast MAC and originates the gateway's
+// guest dials. Deriving it from the VNI (like otvb<vni> / otvx<vni>) lets teardown
+// and adopt-and-repair find the pair with no stored state.
+func GatewayVethHostName(vni uint32) string { return fmt.Sprintf("otvg%d", vni) }
+
+// GatewayVethPeerName returns the deterministic peer-end name of an ingress
+// gateway's veth pair for an overlay VNI: otvgp<vni>. The peer end is enslaved to
+// otvb<vni> as an ordinary bridge port. It is referenced only at creation;
+// RemoveVeth deletes the pair by its host-end name (deleting one end removes both).
+func GatewayVethPeerName(vni uint32) string { return fmt.Sprintf("otvgp%d", vni) }
