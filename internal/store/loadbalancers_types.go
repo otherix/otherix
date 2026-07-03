@@ -4,6 +4,8 @@
 package store
 
 import (
+	"net"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -159,6 +161,31 @@ type LBHealthTarget struct {
 	VMName      string
 	LBID        uuid.UUID
 	HealthCheck LoadBalancerHealthCheck
+}
+
+// PublishedLoadBalancer is a published load balancer plus its resolved backend
+// set, computed for push to gateway-role nodes. It is node-independent: every
+// gateway forwards to backends wherever they run, so the same set is pushed to
+// all gateway nodes (unlike LBHealthTarget, which filters to a node's local
+// backends). Computed, not persisted, so its fields carry no struct tags.
+type PublishedLoadBalancer struct {
+	LBID          uuid.UUID
+	PublishedPort int32
+	Protocol      string
+	BackendPort   int32 // lb.Port (the guest port)
+	SourceCIDRs   []string
+	Backends      []PublishedBackend
+}
+
+// PublishedBackend is one resolved backend of a published load balancer: the
+// backend VM plus the overlay address a gateway dials it at. Healthy is the
+// observed active-health verdict, informational only - eligibility (fail toward
+// inclusion) is already applied, so a backend appears here iff it is eligible.
+type PublishedBackend struct {
+	VMID      uuid.UUID
+	OverlayIP netip.Addr
+	MAC       net.HardwareAddr
+	Healthy   bool
 }
 
 // LBBackendHealth is the observed active-health verdict for one (load balancer,
