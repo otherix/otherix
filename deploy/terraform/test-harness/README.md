@@ -7,8 +7,11 @@ and 2 gateways (`t4g.medium`, public), in `eu-north-1`, on spot capacity
 (CP-0 is on-demand). DNS lives under the Route53 public zone `aws.otherix.dev`.
 
 Everything is driven from the repo root through `make harness-*` targets. Each
-target exports AWS credentials from the operator's 1Password `aws` item via
-`op plugin run`, so 1Password must be unlocked when you run them.
+target relies on the standard AWS credential chain (environment variables, an
+`~/.aws` profile, SSO, or an instance role); `dev/aws/ensure-aws-creds.sh`
+verifies a usable credential is present before running tofu. If your
+credentials need a wrapper to load, put a personal exporter in the gitignored
+`dev/aws/aws-creds.local.sh` (see `dev/aws/aws-creds.local.sh.example`).
 
 Bring a stand up, exercise it, and always `harness-down` when finished; the
 compute is billed by the hour.

@@ -10,8 +10,8 @@ TYPES="c6gd.metal m6g.large t4g.medium"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   echo "AWS creds not valid in this shell." >&2
-  echo "Run inside your op wrapper, e.g.:" >&2
-  echo "  eval \"\$(op plugin run -- aws configure export-credentials --format env)\" && bash $0" >&2
+  echo "Configure AWS credentials first (env vars, an ~/.aws profile, or SSO), e.g.:" >&2
+  echo "  AWS_PROFILE=<your-profile> bash $0" >&2
   exit 1
 fi
 
