@@ -1,0 +1,92 @@
+#cloud-config
+# Ingress gateway node. Runs the otherix-agent .deb in gateway mode: it hosts no
+# guest VMs (no NVMe pool), it only splices external ingress traffic to VM
+# backends. It advertises its PUBLIC IP on --advertised-endpoint because the
+# published-LB connect address derives from the node's advertised endpoint and
+# must be reachable from outside the VPC; migration/overlay traffic stays on the
+# PRIVATE IP (--migration-host) and rides the VPC.
+package_update: true
+packages:
+  - awscli
+  - jq
+  - curl
+  - ca-certificates
+runcmd:
+  - |
+    set -ex
+    export HOME=/root
+    export AWS_DEFAULT_REGION=${region}
+
+    SSM_PREFIX="/otherix/${env_name}"
+    RELEASE="https://github.com/otherix/otherix/releases/download/v${otherix_version}"
+
+    # --- Install the agent .deb (arm64). The postinstall creates the otherix
+    # system user and starts `otherix-agent serve`, which idles in State A until
+    # bootstrap writes the cert material + agent.yaml (picked up within ~5s).
+    curl -fsSL --retry 5 --retry-delay 5 -o /tmp/otherix-agent.deb "$RELEASE/otherix-agent_${otherix_version}_arm64.deb"
+    apt-get install -y /tmp/otherix-agent.deb || { dpkg -i /tmp/otherix-agent.deb || true; apt-get install -f -y; }
+
+    # Both IPs from IMDS. PUB is the externally reachable published-LB connect
+    # address; PRIV is the in-VPC migration/overlay host.
+    PUB="$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)"
+    if [ -z "$PUB" ]; then
+      echo "could not read public-ipv4 from IMDS" >&2
+      exit 1
+    fi
+    PRIV="$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
+    if [ -z "$PRIV" ]; then
+      echo "could not read local-ipv4 from IMDS" >&2
+      exit 1
+    fi
+
+    # Poll SSM until cp-0 has published the gateway join token + CA fingerprint.
+    # This MUST be the kind=gateway token: a gateway that redeems a node token
+    # would register as a plain hypervisor with the wrong role.
+    GW_TOKEN="pending"
+    for i in $(seq 1 120); do
+      GW_TOKEN="$(aws ssm get-parameter --name "$SSM_PREFIX/join_token_gateway" --with-decryption --query Parameter.Value --output text --region ${region} 2>/dev/null || true)"
+      if [ -n "$GW_TOKEN" ] && [ "$GW_TOKEN" != "pending" ]; then break; fi
+      sleep 5
+    done
+    CA_FP="pending"
+    for i in $(seq 1 120); do
+      CA_FP="$(aws ssm get-parameter --name "$SSM_PREFIX/ca_fingerprint" --with-decryption --query Parameter.Value --output text --region ${region} 2>/dev/null || true)"
+      if [ -n "$CA_FP" ] && [ "$CA_FP" != "pending" ]; then break; fi
+      sleep 5
+    done
+    if [ "$GW_TOKEN" = "pending" ] || [ -z "$GW_TOKEN" ] || [ "$CA_FP" = "pending" ] || [ -z "$CA_FP" ]; then
+      echo "gateway join token or CA fingerprint never published to SSM" >&2
+      exit 1
+    fi
+    # Normalize to exactly one sha256: prefix (--ca-fingerprint accepts it
+    # optionally; SSM carries the bare hex, but strip defensively either way).
+    CA_FP="$(printf '%s' "$CA_FP" | sed 's/^sha256://')"
+
+    # --- Bootstrap: redeem the gateway token, persist cert material + agent.yaml.
+    # --advertised-endpoint is the PUBLIC host (published-LB connect address,
+    # externally reachable); --migration-host stays PRIVATE (VPC-internal).
+    /usr/bin/otherix-agent bootstrap \
+      --token "$GW_TOKEN" \
+      --ca-fingerprint "sha256:$CA_FP" \
+      --cp-url "https://cp.${fqdn_internal}:8443" \
+      --node-name "gw-${index}" \
+      --advertised-endpoint "https://$PUB:9443" \
+      --migration-host "$PRIV" \
+      --migration-port-range-start 49152 \
+      --migration-port-range-end 49251 \
+      --listen "0.0.0.0:9443" \
+      --gateway \
+      --ingress-listen "0.0.0.0:9444" \
+      --ingress-advertised-endpoint "https://$PUB:9444" \
+      --force
+
+    # bootstrap ran as root, so hand the cert material and config to the otherix
+    # user the serve process runs under (User=otherix).
+    chown -R otherix:otherix /var/lib/otherix
+    if [ -f /etc/otherix/agent.yaml ]; then
+      chown otherix:otherix /etc/otherix/agent.yaml
+    fi
+
+    # Ensure the unit is enabled and running to pick up the fresh files.
+    systemctl enable --now otherix-agent
+    systemctl restart otherix-agent
