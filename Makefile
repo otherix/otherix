@@ -761,3 +761,31 @@ release-snapshot: ## Build a local snapshot release (.deb + archives, no publish
 	  echo ">> goreleaser not found locally, using go run goreleaser@$(GORELEASER_VERSION) (host Go toolchain)"; \
 	  $(GO) run github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION) release --snapshot --clean --skip=publish; \
 	fi
+
+# ========== Harness (AWS) ==========
+
+HARNESS_DIR := deploy/terraform/test-harness
+OP_AWS := eval "$$(op plugin run -- aws configure export-credentials --format env)"
+
+.PHONY: harness-spot-report harness-up harness-config harness-down
+
+harness-spot-report: ## Survey spot price + 90-day stability for the harness instance types
+	$(OP_AWS) && bash dev/aws/spot-report.sh && bash dev/aws/spot-stability.sh
+
+harness-up: ## Bring up a named stand: make harness-up NAME=<env> OTHERIX_VERSION=<ver>
+ifndef NAME
+	$(error NAME is required, e.g. make harness-up NAME=smoke1 OTHERIX_VERSION=0.1.0)
+endif
+	cd $(HARNESS_DIR) && ($(OP_AWS)) && (tofu workspace select $(NAME) 2>/dev/null || tofu workspace new $(NAME)) && tofu apply -var env_name=$(NAME) -var otherix_version=$(OTHERIX_VERSION)
+
+harness-config: ## Point the local CLI at a stand: make harness-config NAME=<env>
+ifndef NAME
+	$(error NAME is required)
+endif
+	cd $(HARNESS_DIR) && ($(OP_AWS)) && tofu workspace select $(NAME) && bash ../../../dev/aws/harness-config.sh $(NAME)
+
+harness-down: ## Tear a stand down: make harness-down NAME=<env> OTHERIX_VERSION=<ver>
+ifndef NAME
+	$(error NAME is required)
+endif
+	cd $(HARNESS_DIR) && ($(OP_AWS)) && tofu workspace select $(NAME) && tofu destroy -var env_name=$(NAME) -var otherix_version=$(OTHERIX_VERSION)
