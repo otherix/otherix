@@ -70,7 +70,7 @@ func TestSpliceConnsCopiesBothDirections(t *testing.T) {
 	// spliceConns bridges a2<->b1; a1 and b2 are the external endpoints.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go spliceConns(ctx, cancel, a2, b1)
+	go spliceConns(ctx, cancel, a2, b1, time.Minute)
 
 	// a1 -> a2 -> b1 -> b2
 	go func() { _, _ = a1.Write([]byte("ping")) }()
@@ -90,7 +90,7 @@ func TestSpliceConnsCloseTearsDownBoth(t *testing.T) {
 	b1, b2 := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go spliceConns(ctx, cancel, a2, b1)
+	go spliceConns(ctx, cancel, a2, b1, time.Minute)
 
 	// Closing one external endpoint makes the copy from it return, which must
 	// tear down both spliced legs so a read on the other external endpoint errors.
@@ -99,6 +99,67 @@ func TestSpliceConnsCloseTearsDownBoth(t *testing.T) {
 	_ = b2.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, err := b2.Read(make([]byte, 1)); err == nil {
 		t.Errorf("read on the far endpoint after close = nil error, want an error (both legs torn down)")
+	}
+}
+
+func TestSpliceConnsIdleTimeoutClosesBoth(t *testing.T) {
+	a1, a2 := net.Pipe()
+	b1, b2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go spliceConns(ctx, cancel, a2, b1, 100*time.Millisecond)
+
+	// No bytes flow in either direction. After the idle window elapses the
+	// idle-aware copy tears both legs down, so a read on each external endpoint
+	// unblocks (with an error). Without an idle timeout these reads block until
+	// ctx cancel, which the bounded wait catches as a failure.
+	if !readUnblocks(a1, time.Second) {
+		t.Error("a1 read still blocked after idle timeout, want the leg torn down")
+	}
+	if !readUnblocks(b2, time.Second) {
+		t.Error("b2 read still blocked after idle timeout, want the leg torn down")
+	}
+}
+
+func TestSpliceConnsActiveSessionKeepsOpen(t *testing.T) {
+	a1, a2 := net.Pipe()
+	b1, b2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	idle := 200 * time.Millisecond
+	go spliceConns(ctx, cancel, a2, b1, idle)
+
+	// Send a byte each direction at an interval shorter than idle, several
+	// rounds spanning well past a single idle window. Every byte re-arms the
+	// read deadline, so an active session must never be torn down and bytes must
+	// keep flowing.
+	for i := range 4 {
+		go func() { _, _ = a1.Write([]byte("x")) }()
+		if got := readN(t, b2, 1); got != "x" {
+			t.Fatalf("round %d a1->b2 = %q, want x (active session must stay open)", i, got)
+		}
+		go func() { _, _ = b2.Write([]byte("y")) }()
+		if got := readN(t, a1, 1); got != "y" {
+			t.Fatalf("round %d b2->a1 = %q, want y (active session must stay open)", i, got)
+		}
+		time.Sleep(idle / 2)
+	}
+}
+
+// readUnblocks issues a blocking one-byte Read on c in a goroutine and reports
+// whether it returned within d. A false result means the read never unblocked
+// (the connection was neither closed nor fed any byte in the window).
+func readUnblocks(c net.Conn, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		_, _ = c.Read(make([]byte, 1))
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
 	}
 }
 
@@ -277,12 +338,13 @@ const testBackendMAC = "02:00:00:00:00:01"
 // injected as the given fakes and deterministic single-backend selection.
 func datapathReconciler(dev *fakeDeviceResolver, nbr *fakeNeighborResolver, dialer *fakeDatapathDialer) *PublishedListeners {
 	return &PublishedListeners{
-		log:       testLogger(),
-		slots:     newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
-		rnd:       func(int) int { return 0 },
-		devices:   dev,
-		neighbors: nbr,
-		dialer:    dialer,
+		log:         testLogger(),
+		slots:       newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
+		rnd:         func(int) int { return 0 },
+		devices:     dev,
+		neighbors:   nbr,
+		dialer:      dialer,
+		idleTimeout: publishedIdleTimeout,
 	}
 }
 
@@ -577,6 +639,76 @@ func TestHandleConnNilCtxSafety(t *testing.T) {
 	if got := dialer.callCount(); got != 1 {
 		t.Errorf("dialer calls = %d, want 1 (dial step must be reached)", got)
 	}
+}
+
+// TestHandleConnIdleReclaimsSlot drives a full happy-path splice with a short
+// idle window and sends no bytes: the idle timeout must tear the splice down,
+// handleConn must return, and its deferred release must free the per-backend
+// slot. This is the end-to-end proof that an idle credential-less connection
+// cannot pin a backend's slots open indefinitely.
+func TestHandleConnIdleReclaimsSlot(t *testing.T) {
+	dev, nbr := okSeams(t)
+	upstream, testUpstream := net.Pipe()
+	t.Cleanup(func() { _ = testUpstream.Close() })
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return upstream, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+	r.idleTimeout = 100 * time.Millisecond
+
+	c, _ := newAddrConn("192.0.2.10:50000")
+	cfg := oneBackendCfg([]string{"192.0.2.0/24"})
+
+	done := make(chan struct{})
+	go func() { r.handleConn(context.Background(), c, cfg); close(done) }()
+
+	// Wait for the dial so the slot is known-held.
+	deadline := time.Now().Add(2 * time.Second)
+	for dialer.callCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("dial never happened on happy path")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := slotTotal(r.slots); got != 1 {
+		t.Fatalf("slots after dial = %d, want 1 (slot held during splice)", got)
+	}
+
+	// No bytes flow: the idle timeout must reclaim the slot.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConn did not return after idle timeout; the idle splice never tore down")
+	}
+	if got := slotTotal(r.slots); got != 0 {
+		t.Errorf("slots after idle teardown = %d, want 0 (release must free the slot)", got)
+	}
+}
+
+// TestHandleConnPanicRecovered injects a panic through the dial seam and proves
+// it does not escape handleConn (the bare accept goroutine has no recovery
+// middleware), the accepted conn is closed, and the acquired slot is released.
+func TestHandleConnPanicRecovered(t *testing.T) {
+	dev, nbr := okSeams(t)
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { panic("boom in datapath") }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	c, _ := newAddrConn("192.0.2.10:50000")
+	// A missing recover would let this panic escape the goroutine and crash the
+	// whole agent process.
+	r.handleConn(context.Background(), c, oneBackendCfg(nil))
+
+	if !c.isClosed(time.Second) {
+		t.Error("panicked conn not closed")
+	}
+	if got := slotTotal(r.slots); got != 0 {
+		t.Errorf("slots after panic = %d, want 0 (release must still run on unwind)", got)
+	}
+}
+
+// slotTotal reads the accountant's live total under its lock (race-safe).
+func slotTotal(s *slotLimiter) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.total
 }
 
 type fakeDialErr struct{}

@@ -6,7 +6,6 @@ package reconciler
 import (
 	"bytes"
 	"context"
-	"io"
 	"net"
 	"net/netip"
 	"strconv"
@@ -29,8 +28,18 @@ const (
 
 // publishedDialTimeout bounds the backend dial. It does not leak into the splice
 // (the dial context is cancelled the moment the dial returns) - a live session
-// is torn down only by the Run context or a closed leg.
+// is torn down only by the Run context, a closed leg, or the idle timeout.
 const publishedDialTimeout = 10 * time.Second
+
+// publishedIdleTimeout tears down a spliced session that has carried zero bytes
+// in either direction for this long, freeing its per-backend slot. It matches
+// the AWS-NLB idle-timeout default this feature emulates: a truly idle session
+// is reclaimed, but any activity in either direction resets the window, so a
+// long-lived but active passthrough (SSH, a database connection, a stream) is
+// never torn down. Because this listener is credential-less, reclaiming idle
+// slots is what stops an unauthenticated client from pinning a backend's slots
+// open indefinitely.
+const publishedIdleTimeout = 350 * time.Second
 
 // deviceResolver maps a backend overlay IP to the gateway veth device that
 // reaches its overlay, or reports ok=false when this node does not gateway that
@@ -96,6 +105,16 @@ func macEqual(mac net.HardwareAddr, want string) bool {
 // probes at the per-backend/gateway ceiling. Exactly one release runs, via the
 // single defer after acquire, on every subsequent path.
 func (r *PublishedListeners) handleConn(ctx context.Context, c net.Conn, cfg *listenerConfig) {
+	defer func() {
+		if p := recover(); p != nil {
+			// A bare accept goroutine has no recovery middleware; a panic here
+			// would take down the whole agent (and every VM's heartbeat on this
+			// node). Fail toward inaction: log and close the accepted socket.
+			r.log.Error("published datapath handler panic", "panic", p)
+			_ = c.Close()
+		}
+	}()
+
 	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
 	if err != nil {
 		_ = c.Close()
@@ -150,8 +169,7 @@ func (r *PublishedListeners) handleConn(ctx context.Context, c net.Conn, cfg *li
 	}
 
 	spliceCtx, spliceCancel := context.WithCancel(ctx)
-	_ = c.SetDeadline(time.Time{})
-	spliceConns(spliceCtx, spliceCancel, c, up)
+	spliceConns(spliceCtx, spliceCancel, c, up, r.idleTimeout)
 }
 
 // selectBackend picks a uniformly random backend from the CP-pushed set and
@@ -170,23 +188,24 @@ func selectBackend(backends []heartbeat.DeclaredBackend, rnd func(int) int) (hea
 	return backends[rnd(len(backends))], true
 }
 
-// spliceConns copies bytes both directions until either side closes or ctx is
-// cancelled, then tears both legs down (the kill-implies-teardown invariant: no
-// goroutine, fd, or slot survives any exit path). All copy and close errors are
-// discarded - the only outcome that matters is that both connections end closed.
+// spliceConns copies bytes both directions until either side closes, ctx is
+// cancelled, or a direction sits idle for idle, then tears both legs down (the
+// kill-implies-teardown invariant: no goroutine, fd, or slot survives any exit
+// path). All copy and close errors are discarded - the only outcome that matters
+// is that both connections end closed.
 //
 // This is a deliberate reimplementation of the sibling ingress splicer,
 // internal/agent/ingress/splice.go (spliceConns), kept local to this datapath
-// rather than shared: the /v1/connect path is load-bearing and reliability
-// beats the trivial DRY saving.
-func spliceConns(ctx context.Context, cancel context.CancelFunc, a, b net.Conn) {
+// rather than shared: the /v1/connect path is load-bearing and reliability beats
+// the trivial DRY saving. It INTENTIONALLY DIVERGES from that sibling by adding
+// the idle timeout: unlike the credential-gated /v1/connect path, this listener
+// is credential-less, so a torn-down idle session is the only thing that
+// reclaims a per-backend slot an unauthenticated client would otherwise pin open
+// indefinitely. The ingress sibling is deliberately left unchanged.
+func spliceConns(ctx context.Context, cancel context.CancelFunc, a, b net.Conn, idle time.Duration) {
 	done := make(chan struct{}, 2)
-	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
-		done <- struct{}{}
-	}
-	go cp(a, b)
-	go cp(b, a)
+	go copyIdle(a, b, idle, done)
+	go copyIdle(b, a, idle, done)
 
 	select {
 	case <-ctx.Done():
@@ -195,6 +214,28 @@ func spliceConns(ctx context.Context, cancel context.CancelFunc, a, b net.Conn) 
 	cancel()
 	_ = a.Close()
 	_ = b.Close()
+}
+
+// copyIdle copies src to dst until either end errors or src stays idle for the
+// idle window, then signals done. Before every read it re-arms src's read
+// deadline to now+idle, so any byte received resets the window and only a truly
+// idle direction (or a closed/broken leg) ends the copy. It signals done exactly
+// once on return; the caller's teardown then closes both legs.
+func copyIdle(dst, src net.Conn, idle time.Duration, done chan<- struct{}) {
+	defer func() { done <- struct{}{} }()
+	buf := make([]byte, 32*1024)
+	for {
+		_ = src.SetReadDeadline(time.Now().Add(idle))
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if rerr != nil {
+			return
+		}
+	}
 }
 
 // slotLimiter enforces the per-backend and per-gateway concurrency caps on the

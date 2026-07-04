@@ -101,6 +101,11 @@ type PublishedListeners struct {
 	slots     *slotLimiter
 	rnd       func(int) int
 
+	// idleTimeout is the per-connection idle window handed to the splice. It is
+	// always set to publishedIdleTimeout by the constructor; tests shrink it to
+	// exercise the reclaim path. Production behavior is unchanged.
+	idleTimeout time.Duration
+
 	desired atomic.Pointer[[]heartbeat.DeclaredLoadBalancer]
 	trigger chan struct{}
 
@@ -126,16 +131,17 @@ func NewPublishedListeners(mgr ListenerManager, devices deviceResolver, neighbor
 		tick = DefaultTickInterval
 	}
 	return &PublishedListeners{
-		log:       log,
-		mgr:       mgr,
-		tick:      tick,
-		devices:   devices,
-		neighbors: neighbors,
-		dialer:    dialer,
-		slots:     newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
-		rnd:       rand.IntN,
-		trigger:   make(chan struct{}, 1),
-		bound:     map[int32]boundListener{},
+		log:         log,
+		mgr:         mgr,
+		tick:        tick,
+		devices:     devices,
+		neighbors:   neighbors,
+		dialer:      dialer,
+		slots:       newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
+		rnd:         rand.IntN,
+		idleTimeout: publishedIdleTimeout,
+		trigger:     make(chan struct{}, 1),
+		bound:       map[int32]boundListener{},
 	}
 }
 
