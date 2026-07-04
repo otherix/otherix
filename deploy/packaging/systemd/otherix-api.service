@@ -15,6 +15,10 @@ ExecStart=/usr/bin/otherix-api serve --config /etc/otherix/api.yaml
 Restart=on-failure
 RestartSec=5s
 StateDirectory=otherix
+# Allow the non-root otherix user to bind privileged ports (e.g. 443) when the
+# API is configured to listen there. Bounded to just this capability.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 StandardOutput=journal
 StandardError=journal
 

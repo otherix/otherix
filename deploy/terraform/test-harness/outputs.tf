@@ -1,6 +1,6 @@
 output "cp_url" {
   description = "Operator CLI target for the control plane."
-  value       = "https://cp.${local.fqdn_public}:8080"
+  value       = "https://cp.${local.fqdn_public}${var.cp_api_port == 443 ? "" : ":${var.cp_api_port}"}"
 }
 
 output "gateway_fqdn" {

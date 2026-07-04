@@ -37,6 +37,7 @@ resource "aws_instance" "cp" {
       fqdn_public     = local.fqdn_public
       fqdn_internal   = local.fqdn_internal
       node_name       = each.key
+      cp_api_port     = var.cp_api_port
     }
   )
 

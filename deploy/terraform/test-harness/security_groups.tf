@@ -56,8 +56,8 @@ resource "aws_vpc_security_group_ingress_rule" "cp_api_operator" {
   security_group_id = aws_security_group.cp.id
   cidr_ipv4         = each.value
   ip_protocol       = "tcp"
-  from_port         = 8080
-  to_port           = 8080
+  from_port         = var.cp_api_port
+  to_port           = var.cp_api_port
   description       = "Operator control-plane API."
 }
 

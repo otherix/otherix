@@ -20,6 +20,12 @@ variable "operator_cidr" {
   default     = ["0.0.0.0/0"]
 }
 
+variable "cp_api_port" {
+  description = "Port the control-plane user API listens on and the operator CLI targets. 443 is omitted from the CLI URL (https implies it)."
+  type        = number
+  default     = 443
+}
+
 variable "otherix_version" {
   description = "The .deb release tag installed by cloud-init (without the leading v). harness-up resolves the latest release when unset; empty is accepted so teardown never needs a value."
   type        = string
