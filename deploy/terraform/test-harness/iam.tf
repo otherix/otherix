@@ -64,6 +64,57 @@ data "aws_iam_policy_document" "worker_ssm" {
   }
 }
 
+# SSM core messaging + RunCommand permissions, replicating
+# AmazonSSMManagedInstanceCore but WITHOUT ssm:GetParameter / ssm:GetParameters -
+# the managed policy grants those on Resource "*", so attaching it to a worker
+# role would let it read every SSM parameter (including jwt_secret and the admin
+# credentials), defeating the scoped worker_ssm policy. This trimmed version keeps
+# SSM RunCommand working (used by the chaos latency primitive) while leaving
+# parameter access solely to the explicit cp_ssm / worker_ssm policies.
+data "aws_iam_policy_document" "ssm_core" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "ssm:DescribeAssociation",
+      "ssm:GetDeployablePatchSnapshotForInstance",
+      "ssm:GetDocument",
+      "ssm:DescribeDocument",
+      "ssm:GetManifest",
+      "ssm:ListAssociations",
+      "ssm:ListInstanceAssociations",
+      "ssm:PutInventory",
+      "ssm:PutComplianceItems",
+      "ssm:PutConfigurePackageResult",
+      "ssm:UpdateAssociationStatus",
+      "ssm:UpdateInstanceAssociationStatus",
+      "ssm:UpdateInstanceInformation",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "ssmmessages:CreateControlChannel",
+      "ssmmessages:CreateDataChannel",
+      "ssmmessages:OpenControlChannel",
+      "ssmmessages:OpenDataChannel",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2messages:AcknowledgeMessage",
+      "ec2messages:DeleteMessage",
+      "ec2messages:FailMessage",
+      "ec2messages:GetEndpoint",
+      "ec2messages:GetMessages",
+      "ec2messages:SendReply",
+    ]
+    resources = ["*"]
+  }
+}
+
 # CP role and profile.
 resource "aws_iam_role" "cp" {
   name               = "otherix-${var.env_name}-cp-${local.iam_suffix}"
@@ -76,9 +127,10 @@ resource "aws_iam_role_policy" "cp_ssm" {
   policy = data.aws_iam_policy_document.cp_ssm.json
 }
 
-resource "aws_iam_role_policy_attachment" "cp_ssm_core" {
-  role       = aws_iam_role.cp.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+resource "aws_iam_role_policy" "cp_ssm_core" {
+  name   = "ssm-core"
+  role   = aws_iam_role.cp.id
+  policy = data.aws_iam_policy_document.ssm_core.json
 }
 
 resource "aws_iam_instance_profile" "cp" {
@@ -98,9 +150,10 @@ resource "aws_iam_role_policy" "agent_ssm" {
   policy = data.aws_iam_policy_document.worker_ssm.json
 }
 
-resource "aws_iam_role_policy_attachment" "agent_ssm_core" {
-  role       = aws_iam_role.agent.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+resource "aws_iam_role_policy" "agent_ssm_core" {
+  name   = "ssm-core"
+  role   = aws_iam_role.agent.id
+  policy = data.aws_iam_policy_document.ssm_core.json
 }
 
 resource "aws_iam_instance_profile" "agent" {
@@ -120,9 +173,10 @@ resource "aws_iam_role_policy" "gateway_ssm" {
   policy = data.aws_iam_policy_document.worker_ssm.json
 }
 
-resource "aws_iam_role_policy_attachment" "gateway_ssm_core" {
-  role       = aws_iam_role.gateway.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+resource "aws_iam_role_policy" "gateway_ssm_core" {
+  name   = "ssm-core"
+  role   = aws_iam_role.gateway.id
+  policy = data.aws_iam_policy_document.ssm_core.json
 }
 
 resource "aws_iam_instance_profile" "gateway" {
