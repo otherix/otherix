@@ -43,6 +43,11 @@ type fakeStore struct {
 	// healthErr injects a transient ListLBBackendHealth failure per lb id.
 	lbHealth  map[uuid.UUID]map[uuid.UUID]store.LBBackendHealth
 	healthErr map[uuid.UUID]error
+
+	// lbListeners holds observed published-listener status rows keyed by lb id;
+	// listenerErr injects a transient ListLBPublishedListenerStatus failure.
+	lbListeners map[uuid.UUID][]store.LBPublishedListenerStatus
+	listenerErr map[uuid.UUID]error
 }
 
 func newFakeStore() *fakeStore {
@@ -57,7 +62,27 @@ func newFakeStore() *fakeStore {
 		runtimeErr:      map[uuid.UUID]error{},
 		lbHealth:        map[uuid.UUID]map[uuid.UUID]store.LBBackendHealth{},
 		healthErr:       map[uuid.UUID]error{},
+		lbListeners:     map[uuid.UUID][]store.LBPublishedListenerStatus{},
+		listenerErr:     map[uuid.UUID]error{},
 	}
+}
+
+// ListLBPublishedListenerStatus returns a copy of the seeded per-gateway
+// listener status rows for the load balancer, or an injected transient error.
+func (f *fakeStore) ListLBPublishedListenerStatus(_ context.Context, lbID uuid.UUID) ([]store.LBPublishedListenerStatus, error) {
+	if err := f.listenerErr[lbID]; err != nil {
+		return nil, err
+	}
+	src := f.lbListeners[lbID]
+	out := make([]store.LBPublishedListenerStatus, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+// seedListenerStatus records an observed published-listener status for one
+// (lb, node) pair.
+func (f *fakeStore) seedListenerStatus(lbID uuid.UUID, s store.LBPublishedListenerStatus) {
+	f.lbListeners[lbID] = append(f.lbListeners[lbID], s)
 }
 
 // ListLBBackendHealth returns a copy of the seeded verdicts for the load

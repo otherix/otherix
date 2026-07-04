@@ -45,6 +45,12 @@ type Store interface {
 	// subtract confirmed-not-healthy backends; an absent or stale record leaves a
 	// running backend included (health is advisory, per ADR 0027).
 	ListLBBackendHealth(ctx context.Context, lbID uuid.UUID) (map[uuid.UUID]store.LBBackendHealth, error)
+
+	// ListLBPublishedListenerStatus returns the observed bind status of a
+	// published load balancer's public listener, one record per reporting gateway
+	// node. The get view surfaces it (freshness-floored); an empty slice means no
+	// gateway has reported yet.
+	ListLBPublishedListenerStatus(ctx context.Context, lbID uuid.UUID) ([]store.LBPublishedListenerStatus, error)
 }
 
 // IngressBroker resolves connect coordinates for a (vm, port). It is held so

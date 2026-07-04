@@ -51,7 +51,56 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	backends := h.buildBackends(ctx, row, vms)
 	view.Backends = backends
 	view.Health = summarizeBackends(backends)
+	if row.PublishedPort != nil {
+		view.Listeners = h.buildListeners(ctx, row)
+	}
 	response.WriteJSON(w, r, http.StatusOK, view)
+}
+
+// listenerStalenessWindow is the fixed freshness window for an observed
+// published-listener status. Unlike backend health - whose window scales with
+// the effective probe interval - a listener status has no per-listener probe
+// cadence: it is CP-stamped on heartbeat receipt, so it cannot refresh faster
+// than the agent heartbeat. The window is the heartbeat floor times the
+// staleness factor (30s x 3 = 90s); a status older than that is treated as
+// absent, so a dead gateway's last-reported row does not render as a live
+// listener.
+const listenerStalenessWindow = time.Duration(store.HealthCheckHeartbeatFloorSeconds*store.HealthCheckStalenessFactor) * time.Second
+
+// buildListeners resolves the observed per-gateway bind status of a published
+// load balancer's public listener. It is best-effort: a failure to list the
+// status degrades to no listeners rather than failing the read, since the
+// config view is the primary payload. Only a FRESH status renders; a row older
+// than listenerStalenessWindow is treated as absent. Callers pass only published
+// load balancers (the caller gates on PublishedPort).
+func (h *Handler) buildListeners(ctx context.Context, row store.LoadBalancer) []listenerStatusView {
+	statuses, err := h.store.ListLBPublishedListenerStatus(ctx, row.ID)
+	if err != nil {
+		h.log.WarnContext(ctx, "list lb published listener status",
+			"loadbalancer_id", row.ID.String(), "error", err.Error())
+		return nil
+	}
+	now := time.Now()
+	out := make([]listenerStatusView, 0, len(statuses))
+	for _, s := range statuses {
+		if now.Sub(s.ReportedAt) > listenerStalenessWindow {
+			continue
+		}
+		out = append(out, listenerStatusView{
+			NodeID:     s.NodeID.String(),
+			Port:       s.Port,
+			Bound:      s.Bound,
+			Error:      s.Error,
+			ReportedAt: s.ReportedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].NodeID != out[j].NodeID {
+			return out[i].NodeID < out[j].NodeID
+		}
+		return out[i].Port < out[j].Port
+	})
+	return out
 }
 
 // buildBackends resolves the load balancer's currently-matched backends and
