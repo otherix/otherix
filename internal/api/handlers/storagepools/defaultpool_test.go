@@ -75,6 +75,33 @@ func TestEnsureDefaultPoolsFunc_CreatesForReadyNode(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultPoolsFunc_SkipsGatewayNode(t *testing.T) {
+	// A dedicated gateway hosts no guest VMs, so it must NOT receive the
+	// default storage pool: owning a pool is exactly what derives the
+	// hypervisor role (EffectiveRoles), and a gateway-only node must stay
+	// gateway-only. In a mixed promotion batch only the non-gateway node
+	// gets a pool.
+	f := &defaultPoolStoreFake{settings: store.ClusterSetting{DefaultPoolName: ptr("default")}}
+	hook := EnsureDefaultPoolsFunc(f, "/var/lib/otherix/pools/", discardLogger())
+
+	gatewayID := uuid.New()
+	hyperID := uuid.New()
+	rows := []store.PromoteHealthyNodesRow{
+		{ID: gatewayID, Name: "gw-0", GatewayRole: true},
+		{ID: hyperID, Name: "agent-0", GatewayRole: false},
+	}
+	if err := hook(context.Background(), rows); err != nil {
+		t.Fatalf("hook returned error: %v", err)
+	}
+
+	if len(f.created) != 1 {
+		t.Fatalf("CreateStoragePool called %d times, want 1 (gateway skipped)", len(f.created))
+	}
+	if got := f.created[0].NodeID; got != hyperID {
+		t.Errorf("default pool created for node %v, want the hypervisor node %v", got, hyperID)
+	}
+}
+
 func TestEnsureDefaultPoolsFunc_IdempotentOnNameExists(t *testing.T) {
 	f := &defaultPoolStoreFake{
 		settings:  store.ClusterSetting{DefaultPoolName: ptr("default")},

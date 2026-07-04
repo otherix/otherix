@@ -274,6 +274,43 @@ func TestPromoteHealthyNodes(t *testing.T) {
 	}
 }
 
+// TestPromoteHealthyNodes_CarriesGatewayRole is the seam guard for the default-
+// pool ready-hook: the promotion row must carry the node's committed gateway
+// role bit so EnsureDefaultPoolsFunc can skip a gateway-only node (owning a pool
+// is exactly what derives the hypervisor role, so a gateway must own none).
+func TestPromoteHealthyNodes_CarriesGatewayRole(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	gw := nodeParams(uniqueNodeName("promote-gw"))
+	gw.Gateway = true
+	if _, err := s.CreateNode(ctx, gw); err != nil {
+		t.Fatalf("CreateNode gateway: %v", err)
+	}
+	hyper := nodeParams(uniqueNodeName("promote-hyper"))
+	if _, err := s.CreateNode(ctx, hyper); err != nil {
+		t.Fatalf("CreateNode hypervisor: %v", err)
+	}
+	bumpHeartbeat(t, s, gw.ID)
+	bumpHeartbeat(t, s, hyper.ID)
+
+	rows, err := s.PromoteHealthyNodes(ctx, time.Now().UTC().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("PromoteHealthyNodes: %v", err)
+	}
+
+	got := map[uuid.UUID]bool{}
+	for _, r := range rows {
+		got[r.ID] = r.GatewayRole
+	}
+	if role, ok := got[gw.ID]; !ok || !role {
+		t.Errorf("gateway node row GatewayRole = %v (present=%v), want true", role, ok)
+	}
+	if role, ok := got[hyper.ID]; !ok || role {
+		t.Errorf("hypervisor node row GatewayRole = %v (present=%v), want false", role, ok)
+	}
+}
+
 func TestMarkNodesUnreachable(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
