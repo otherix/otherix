@@ -23,6 +23,15 @@ case "${ROLE}" in
 esac
 NODE_NAME="${PREFIX}-${INDEX}"
 
+# Guard against acting on the wrong stand: tofu output reads whatever workspace
+# is currently selected, so a direct invocation that bypasses the make target
+# (which selects the workspace) must match the requested env.
+SELECTED="$(tofu workspace show)"
+if [ "${SELECTED}" != "${ENV_NAME}" ]; then
+  echo "selected tofu workspace '${SELECTED}' != requested env '${ENV_NAME}'; run via the make target or 'tofu workspace select ${ENV_NAME}'" >&2
+  exit 1
+fi
+
 INSTANCE_ID="$(tofu output -json instance_ids | jq -r --arg k "${NODE_NAME}" '.[$k] // empty')"
 if [ -z "${INSTANCE_ID}" ]; then
   echo "no instance id for node '${NODE_NAME}' in env '${ENV_NAME}': is the workspace selected and applied?" >&2

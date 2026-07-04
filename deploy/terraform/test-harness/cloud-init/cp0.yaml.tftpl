@@ -24,6 +24,10 @@ runcmd:
     # that does not exist yet.
     mkdir -p /etc/otherix
     ln -sf /dev/null /etc/systemd/system/otherix-api.service
+    # Unmask on any exit path: a failure between mask and the intended unmask
+    # (an SSM read, an apt step) would otherwise leave the unit permanently
+    # masked, and cloud-init runcmd runs once per instance with no re-apply.
+    trap 'rm -f /etc/systemd/system/otherix-api.service' EXIT
 
     # Install the control-plane API package (arm64) and the operator CLI.
     curl -fsSL --retry 5 --retry-delay 5 -o /tmp/otherix-api.deb "$RELEASE/otherix-api_${otherix_version}_arm64.deb"
@@ -84,15 +88,20 @@ runcmd:
       sleep 2
     done
 
-    # Authenticate the local CLI, trusting the on-disk cluster CA.
+    # Authenticate the local CLI, trusting the on-disk cluster CA. Silence xtrace
+    # so the admin password does not land in the persisted cloud-init log.
+    set +x
     otherix config add cluster --name harness \
       --server https://localhost:8080 \
       --login "$ADMIN_USER" --password "$ADMIN_PASS" \
       --ca-file /var/lib/otherix/ca/cluster-ca.crt \
       --force
+    set -x
 
     # Mint the fleet bootstrap tokens. --max-uses 2 matches the harness
-    # topology: 2 joining replicas, 2 agents, 2 gateways.
+    # topology: 2 joining replicas, 2 agents, 2 gateways. Silence xtrace across
+    # the mint + publish region so token plaintext never reaches the log.
+    set +x
     CLUSTER_JSON="$(otherix cluster join-token create --max-uses 2 --ttl 60m --output json)"
     NODE_JSON="$(otherix node join-token create --max-uses 2 --ttl 60m --output json)"
     GATEWAY_JSON="$(otherix node join-token create --kind gateway --max-uses 2 --ttl 60m --output json)"
@@ -107,3 +116,4 @@ runcmd:
     aws ssm put-parameter --overwrite --type SecureString --name "$SSM_PREFIX/join_token_node" --value "$NODE_TOKEN" --region ${region}
     aws ssm put-parameter --overwrite --type SecureString --name "$SSM_PREFIX/join_token_gateway" --value "$GATEWAY_TOKEN" --region ${region}
     aws ssm put-parameter --overwrite --type SecureString --name "$SSM_PREFIX/ca_fingerprint" --value "$CA_FP" --region ${region}
+    set -x

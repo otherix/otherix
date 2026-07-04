@@ -101,6 +101,16 @@ resource "aws_vpc_security_group_ingress_rule" "gateway_published_operator" {
   description       = "Operator published load-balancer ports."
 }
 
+resource "aws_vpc_security_group_ingress_rule" "gateway_ingress_operator" {
+  for_each          = toset(var.operator_cidr)
+  security_group_id = aws_security_group.gateway.id
+  cidr_ipv4         = each.value
+  ip_protocol       = "tcp"
+  from_port         = 9444
+  to_port           = 9444
+  description       = "Operator/external ingress splicer connect plane."
+}
+
 # Intra-cluster ingress: source is a referenced security group, never a CIDR.
 
 resource "aws_vpc_security_group_ingress_rule" "cp_agent_join" {
@@ -121,6 +131,15 @@ resource "aws_vpc_security_group_ingress_rule" "cp_gateway_join" {
   description                  = "Gateway-to-CP mutual-TLS join/heartbeat."
 }
 
+resource "aws_vpc_security_group_ingress_rule" "cp_cluster_join" {
+  security_group_id            = aws_security_group.cp.id
+  referenced_security_group_id = aws_security_group.cp.id
+  ip_protocol                  = "tcp"
+  from_port                    = 8443
+  to_port                      = 8443
+  description                  = "CP replica cluster-join redemption (/v1/cluster/join)."
+}
+
 resource "aws_vpc_security_group_ingress_rule" "cp_peer_raft" {
   security_group_id            = aws_security_group.cp.id
   referenced_security_group_id = aws_security_group.cp.id
@@ -139,6 +158,11 @@ resource "aws_vpc_security_group_ingress_rule" "agent_cp_callback" {
   description                  = "CP-to-agent control channel."
 }
 
+# The gateway advertises its PUBLIC host on --advertised-endpoint (:9443), and
+# SG-reference rules only match private-IP intra-VPC traffic, so this rule is
+# latent today: nothing dials a gateway on 9443 (gateways host no VMs). If a
+# CP-to-gateway control call over the advertised endpoint is ever added it would
+# need an operator/public-CIDR rule instead.
 resource "aws_vpc_security_group_ingress_rule" "gateway_cp_callback" {
   security_group_id            = aws_security_group.gateway.id
   referenced_security_group_id = aws_security_group.cp.id

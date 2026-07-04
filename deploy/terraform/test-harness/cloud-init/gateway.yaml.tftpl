@@ -65,6 +65,8 @@ runcmd:
     # --- Bootstrap: redeem the gateway token, persist cert material + agent.yaml.
     # --advertised-endpoint is the PUBLIC host (published-LB connect address,
     # externally reachable); --migration-host stays PRIVATE (VPC-internal).
+    # Silence xtrace so the join token plaintext does not land in the persisted log.
+    set +x
     /usr/bin/otherix-agent bootstrap \
       --token "$GW_TOKEN" \
       --ca-fingerprint "sha256:$CA_FP" \
@@ -79,6 +81,7 @@ runcmd:
       --ingress-listen "0.0.0.0:9444" \
       --ingress-advertised-endpoint "https://$PUB:9444" \
       --force
+    set -x
 
     # bootstrap ran as root, so hand the cert material and config to the otherix
     # user the serve process runs under (User=otherix).

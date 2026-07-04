@@ -90,7 +90,9 @@ runcmd:
     CA_FP="$(printf '%s' "$CA_FP" | sed 's/^sha256://')"
 
     # --- Bootstrap: redeem the token, persist cert material + agent.yaml. The
-    # running serve loop transitions State A -> State B on the next tick.
+    # running serve loop transitions State A -> State B on the next tick. Silence
+    # xtrace so the join token plaintext does not land in the persisted log.
+    set +x
     /usr/bin/otherix-agent bootstrap \
       --token "$NODE_TOKEN" \
       --ca-fingerprint "sha256:$CA_FP" \
@@ -102,6 +104,7 @@ runcmd:
       --migration-port-range-end 49251 \
       --listen "0.0.0.0:9443" \
       --force
+    set -x
 
     # bootstrap ran as root, so hand the cert material, config, and pool mounts
     # to the otherix user the serve process runs under (User=otherix).
