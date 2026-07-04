@@ -58,11 +58,19 @@ wireguard:
   # runs) a hypervisor agent never adopts that agent's key, which the control plane
   # would reject as a duplicate public key.
   private_key_path: "/var/lib/otherix/wg-gateway/private.key"
+{{- if .WireGuardAdvertisedEndpoint}}
+  advertised_endpoint: "{{.WireGuardAdvertisedEndpoint}}" # bootstrap --wireguard-advertised-endpoint
+{{- end}}
 
 gateway:
   enabled: true
   listen: "{{.GatewayListen}}"                       # bootstrap --ingress-listen
   advertised_endpoint: "{{.GatewayAdvertisedEndpoint}}" # bootstrap --ingress-advertised-endpoint
+{{- else if .WireGuardAdvertisedEndpoint}}
+wireguard:
+  # host:port overlay peers dial to reach this node. Required for a multi-node
+  # mesh; empty (omitted) is valid only for a single-node fabric.
+  advertised_endpoint: "{{.WireGuardAdvertisedEndpoint}}" # bootstrap --wireguard-advertised-endpoint
 {{- end}}
 `
 
