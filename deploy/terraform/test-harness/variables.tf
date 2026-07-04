@@ -7,6 +7,7 @@ variable "region" {
 variable "env_name" {
   description = "Stand name; isolates one harness deployment (used in tags, DNS, workspace)."
   type        = string
+  default     = "test"
   validation {
     condition     = can(regex("^[a-z0-9-]{1,20}$", var.env_name))
     error_message = "env_name must be lowercase alphanumeric plus hyphen, length 1..20."
@@ -20,8 +21,9 @@ variable "operator_cidr" {
 }
 
 variable "otherix_version" {
-  description = "The .deb release tag installed by cloud-init."
+  description = "The .deb release tag installed by cloud-init (without the leading v). harness-up resolves the latest release when unset; empty is accepted so teardown never needs a value."
   type        = string
+  default     = ""
 }
 
 variable "cp_instance_type" {

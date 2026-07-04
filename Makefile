@@ -777,9 +777,9 @@ AWS_ENV := . dev/aws/ensure-aws-creds.sh
 harness-spot-report: ## Survey spot price + 90-day stability for the harness instance types
 	$(AWS_ENV) && bash dev/aws/spot-report.sh && bash dev/aws/spot-stability.sh
 
-harness-up: ## Bring up a named stand: make harness-up NAME=<env> OTHERIX_VERSION=<ver>
+harness-up: ## Bring up a named stand: make harness-up NAME=<env> [OTHERIX_VERSION=<ver>] (empty = latest release, resolved at node boot)
 ifndef NAME
-	$(error NAME is required, e.g. make harness-up NAME=smoke1 OTHERIX_VERSION=0.1.0)
+	$(error NAME is required, e.g. make harness-up NAME=smoke1)
 endif
 	$(AWS_ENV) && cd $(HARNESS_DIR) && (tofu workspace select $(NAME) 2>/dev/null || tofu workspace new $(NAME)) && tofu apply -var env_name=$(NAME) -var otherix_version=$(OTHERIX_VERSION)
 
@@ -789,11 +789,11 @@ ifndef NAME
 endif
 	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && bash ../../../dev/aws/harness-config.sh $(NAME)
 
-harness-down: ## Tear a stand down: make harness-down NAME=<env> OTHERIX_VERSION=<ver>
+harness-down: ## Tear a stand down: make harness-down NAME=<env>
 ifndef NAME
 	$(error NAME is required)
 endif
-	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && tofu destroy -var env_name=$(NAME) -var otherix_version=$(OTHERIX_VERSION)
+	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && tofu destroy -var env_name=$(NAME)
 
 harness-chaos-kill: ## Permanently terminate a node: make harness-chaos-kill NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n]
 ifndef NAME
