@@ -51,6 +51,11 @@ type Store interface {
 	// node. The get view surfaces it (freshness-floored); an empty slice means no
 	// gateway has reported yet.
 	ListLBPublishedListenerStatus(ctx context.Context, lbID uuid.UUID) ([]store.LBPublishedListenerStatus, error)
+
+	// NodeByID resolves a node row (or store.ErrNotFound). The published-listener
+	// view uses it to render a status row's gateway by name and to build the
+	// connect address from the node's advertised endpoint.
+	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 }
 
 // IngressBroker resolves connect coordinates for a (vm, port). It is held so

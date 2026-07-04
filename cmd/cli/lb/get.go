@@ -84,6 +84,16 @@ func renderGet(cmd *cobra.Command, lb cpclient.LoadBalancer) error {
 			printf(cmd, "  - %s  healthy=%s  last_probed=%s\n", b.VMName, healthyLabel(b.Healthy), reportedLabel(b.ReportedAt))
 		}
 	}
+	if len(lb.Listeners) > 0 {
+		printf(cmd, "listeners:\n")
+		for _, l := range lb.Listeners {
+			printf(cmd, "  - node: %s  address: %s  bound=%t", l.Node, l.Address, l.Bound)
+			if l.Error != "" {
+				printf(cmd, "  error=%s", l.Error)
+			}
+			printf(cmd, "\n")
+		}
+	}
 	printf(cmd, "created_at: %s\n", lb.CreatedAt)
 	printf(cmd, "updated_at: %s\n", lb.UpdatedAt)
 	return nil

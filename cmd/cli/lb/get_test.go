@@ -69,6 +69,70 @@ func TestRenderGet_HealthCheckAndBackends(t *testing.T) {
 	}
 }
 
+// TestRenderGet_Listeners asserts the text render lists the observed per-gateway
+// listeners of a published load balancer, each line showing the gateway node
+// name, the connect address, and the bound state.
+func TestRenderGet_Listeners(t *testing.T) {
+	t.Parallel()
+	published := int32(30080)
+	lb := cpclient.LoadBalancer{
+		ID:            "id-1",
+		Name:          "web",
+		OwnerID:       "owner-1",
+		Port:          80,
+		Selector:      map[string]string{"app": "web"},
+		PublishedPort: &published,
+		Protocol:      "tcp",
+		Listeners: []cpclient.Listener{
+			{Node: "gw-1", Address: "10.77.0.1:30080", Bound: true, ReportedAt: "2026-07-01T10:00:00Z"},
+			{Node: "gw-2", Address: "10.77.0.2:30080", Bound: false, Error: "bind: address already in use", ReportedAt: "2026-07-01T10:00:00Z"},
+		},
+		CreatedAt: "2026-07-01T10:00:00Z",
+		UpdatedAt: "2026-07-01T10:00:00Z",
+	}
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := renderGet(cmd, lb); err != nil {
+		t.Fatalf("renderGet: %v", err)
+	}
+	got := out.String()
+
+	for _, want := range []string{
+		"listeners:",
+		"- node: gw-1  address: 10.77.0.1:30080  bound=true",
+		"- node: gw-2  address: 10.77.0.2:30080  bound=false  error=bind: address already in use",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("render missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestRenderGet_UnpublishedNoListeners asserts an unpublished load balancer (no
+// listeners) renders no listeners section.
+func TestRenderGet_UnpublishedNoListeners(t *testing.T) {
+	t.Parallel()
+	lb := cpclient.LoadBalancer{
+		ID:       "id-1",
+		Name:     "web",
+		OwnerID:  "owner-1",
+		Port:     80,
+		Selector: map[string]string{"app": "web"},
+	}
+
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := renderGet(cmd, lb); err != nil {
+		t.Fatalf("renderGet: %v", err)
+	}
+	if strings.Contains(out.String(), "listeners:") {
+		t.Errorf("unpublished LB rendered a listeners section:\n%s", out.String())
+	}
+}
+
 // TestRenderGet_HealthSummary locks the one-line aggregate health summary the
 // text render prints when the view carries one.
 func TestRenderGet_HealthSummary(t *testing.T) {

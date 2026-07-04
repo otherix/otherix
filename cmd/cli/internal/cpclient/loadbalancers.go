@@ -65,6 +65,19 @@ type Backend struct {
 	ReportedAt *string `json:"reported_at"`
 }
 
+// Listener is one entry in a published load balancer's observed listeners:
+// the bind status of the public listener on one gateway node. Node is the
+// gateway node name and Address is the client connect target
+// (host:published_port). Error carries the bind failure only when Bound is
+// false.
+type Listener struct {
+	Node       string `json:"node"`
+	Address    string `json:"address"`
+	Bound      bool   `json:"bound"`
+	Error      string `json:"error,omitempty"`
+	ReportedAt string `json:"reported_at,omitempty"`
+}
+
 // LoadBalancerHealthSummary is the aggregate active-health rollup of a load
 // balancer's currently-matched backends. It is present only on the get and list
 // projections (which have live-health context); create/update responses omit
@@ -98,6 +111,9 @@ type LoadBalancer struct {
 	// empty means the listener accepts every source.
 	SourceCIDRs []string  `json:"source_cidrs,omitempty"`
 	Backends    []Backend `json:"backends"`
+	// Listeners is the observed per-gateway bind status of the published listener,
+	// present only on the get of a published load balancer (omitted otherwise).
+	Listeners []Listener `json:"listeners,omitempty"`
 	// Health is the aggregate active-health rollup, present only on get and list.
 	Health    *LoadBalancerHealthSummary `json:"health,omitempty"`
 	CreatedAt string                     `json:"created_at"`

@@ -82,10 +82,13 @@ type backendView struct {
 
 // listenerStatusView is one entry in a published load balancer's listeners
 // array: the observed bind status of the public listener on one gateway node.
-// Error carries the failure string only when Bound is false (omitted otherwise).
+// Node is the gateway node name and Address is the client connect target
+// (host of the node's advertised endpoint joined with the published port), so
+// an operator can act on the entry without a UUID->name lookup. Error carries
+// the failure string only when Bound is false (omitted otherwise).
 type listenerStatusView struct {
-	NodeID     string `json:"node_id"`
-	Port       int32  `json:"port"`
+	Node       string `json:"node"`
+	Address    string `json:"address"`
 	Bound      bool   `json:"bound"`
 	Error      string `json:"error,omitempty"`
 	ReportedAt string `json:"reported_at"`

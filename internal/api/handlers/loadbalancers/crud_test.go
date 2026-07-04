@@ -48,6 +48,10 @@ type fakeStore struct {
 	// listenerErr injects a transient ListLBPublishedListenerStatus failure.
 	lbListeners map[uuid.UUID][]store.LBPublishedListenerStatus
 	listenerErr map[uuid.UUID]error
+
+	// nodes backs NodeByID; the get view resolves a listener status row's node to
+	// its name and advertised endpoint through it.
+	nodes map[uuid.UUID]store.Node
 }
 
 func newFakeStore() *fakeStore {
@@ -64,7 +68,24 @@ func newFakeStore() *fakeStore {
 		healthErr:       map[uuid.UUID]error{},
 		lbListeners:     map[uuid.UUID][]store.LBPublishedListenerStatus{},
 		listenerErr:     map[uuid.UUID]error{},
+		nodes:           map[uuid.UUID]store.Node{},
 	}
+}
+
+// NodeByID returns the seeded node row, or store.ErrNotFound when the id was
+// never seeded (modeling a node gone mid-window).
+func (f *fakeStore) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
+	n, ok := f.nodes[id]
+	if !ok {
+		return store.Node{}, store.ErrNotFound
+	}
+	return n, nil
+}
+
+// seedNode records a gateway node's identity so a listener status row keyed by
+// its id resolves to a name and advertised endpoint.
+func (f *fakeStore) seedNode(id uuid.UUID, name, advertisedEndpoint string) {
+	f.nodes[id] = store.Node{ID: id, Name: name, AdvertisedEndpoint: advertisedEndpoint}
 }
 
 // ListLBPublishedListenerStatus returns a copy of the seeded per-gateway

@@ -6,8 +6,11 @@ package loadbalancers
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -80,27 +83,52 @@ func (h *Handler) buildListeners(ctx context.Context, row store.LoadBalancer) []
 			"loadbalancer_id", row.ID.String(), "error", err.Error())
 		return nil
 	}
+	published := *row.PublishedPort
 	now := time.Now()
 	out := make([]listenerStatusView, 0, len(statuses))
 	for _, s := range statuses {
 		if now.Sub(s.ReportedAt) > listenerStalenessWindow {
 			continue
 		}
+		// Resolve the gateway to its name and advertised endpoint. On any resolve
+		// error (node gone mid-window / transient) skip the entry rather than
+		// emit a half-populated one or fail the read; listeners are advisory.
+		node, err := h.store.NodeByID(ctx, s.NodeID)
+		if err != nil {
+			h.log.WarnContext(ctx, "resolve listener status node",
+				"loadbalancer_id", row.ID.String(), "node_id", s.NodeID.String(), "error", err.Error())
+			continue
+		}
 		out = append(out, listenerStatusView{
-			NodeID:     s.NodeID.String(),
-			Port:       s.Port,
+			Node:       node.Name,
+			Address:    gatewayListenerAddress(node.AdvertisedEndpoint, published),
 			Bound:      s.Bound,
 			Error:      s.Error,
 			ReportedAt: s.ReportedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].NodeID != out[j].NodeID {
-			return out[i].NodeID < out[j].NodeID
-		}
-		return out[i].Port < out[j].Port
-	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Node < out[j].Node })
 	return out
+}
+
+// gatewayListenerAddress builds the client connect target for a published
+// listener: the host of the gateway node's advertised endpoint joined with the
+// published port. It strips the endpoint's scheme (the advertised endpoint is a
+// URL like https://host:port) and falls back to a bare host:port or the raw
+// string when the endpoint does not parse as a URL.
+func gatewayListenerAddress(advertisedEndpoint string, publishedPort int32) string {
+	var host string
+	switch u, err := url.Parse(advertisedEndpoint); {
+	case err == nil && u.Host != "":
+		host = u.Hostname()
+	default:
+		if h, _, splitErr := net.SplitHostPort(advertisedEndpoint); splitErr == nil {
+			host = h
+		} else {
+			host = advertisedEndpoint
+		}
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(publishedPort)))
 }
 
 // buildBackends resolves the load balancer's currently-matched backends and
