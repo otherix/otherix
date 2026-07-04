@@ -26,6 +26,12 @@ resource "aws_instance" "gateway" {
     index           = trimprefix(each.key, "gw-")
   })
 
+  # cloud-init is the whole node bootstrap, and its runcmd only runs on first
+  # boot of a given instance-id. A user_data edit must therefore recreate the
+  # instance, not just update the attribute in place (which never re-runs
+  # cloud-init). Without this a cloud-init fix silently no-ops on re-apply.
+  user_data_replace_on_change = true
+
   tags = {
     Name           = "otherix-${var.env_name}-${each.key}"
     "otherix:role" = "gateway"
