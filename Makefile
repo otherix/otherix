@@ -761,3 +761,72 @@ release-snapshot: ## Build a local snapshot release (.deb + archives, no publish
 	  echo ">> goreleaser not found locally, using go run goreleaser@$(GORELEASER_VERSION) (host Go toolchain)"; \
 	  $(GO) run github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION) release --snapshot --clean --skip=publish; \
 	fi
+
+# ========== Harness (AWS) ==========
+
+HARNESS_DIR := deploy/terraform/test-harness
+
+# The harness uses the standard AWS credential chain (environment variables,
+# ~/.aws profiles, SSO, or an instance role). ensure-aws-creds.sh verifies a
+# usable credential is present before each run. It is sourced from the repo
+# root, so it must run before any `cd`.
+AWS_ENV := . dev/aws/ensure-aws-creds.sh
+
+.PHONY: harness-spot-report harness-up harness-config harness-down harness-chaos-kill harness-chaos-partition harness-chaos-heal harness-chaos-latency
+
+harness-spot-report: ## Survey spot price + 90-day stability for the harness instance types
+	$(AWS_ENV) && bash dev/aws/spot-report.sh && bash dev/aws/spot-stability.sh
+
+harness-up: ## Bring up a named stand: make harness-up NAME=<env> OTHERIX_VERSION=<ver>
+ifndef NAME
+	$(error NAME is required, e.g. make harness-up NAME=smoke1 OTHERIX_VERSION=0.1.0)
+endif
+	$(AWS_ENV) && cd $(HARNESS_DIR) && (tofu workspace select $(NAME) 2>/dev/null || tofu workspace new $(NAME)) && tofu apply -var env_name=$(NAME) -var otherix_version=$(OTHERIX_VERSION)
+
+harness-config: ## Point the local CLI at a stand: make harness-config NAME=<env>
+ifndef NAME
+	$(error NAME is required)
+endif
+	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && bash ../../../dev/aws/harness-config.sh $(NAME)
+
+harness-down: ## Tear a stand down: make harness-down NAME=<env> OTHERIX_VERSION=<ver>
+ifndef NAME
+	$(error NAME is required)
+endif
+	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && tofu destroy -var env_name=$(NAME) -var otherix_version=$(OTHERIX_VERSION)
+
+harness-chaos-kill: ## Permanently terminate a node: make harness-chaos-kill NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n]
+ifndef NAME
+	$(error NAME is required, e.g. make harness-chaos-kill NAME=smoke1 ROLE=agent)
+endif
+ifndef ROLE
+	$(error ROLE is required (cp|agent|gateway), e.g. make harness-chaos-kill NAME=smoke1 ROLE=agent)
+endif
+	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && bash ../../../dev/chaos/kill.sh $(NAME) $(ROLE) $(INDEX)
+
+harness-chaos-partition: ## Network-isolate a node: make harness-chaos-partition NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n]
+ifndef NAME
+	$(error NAME is required, e.g. make harness-chaos-partition NAME=smoke1 ROLE=agent)
+endif
+ifndef ROLE
+	$(error ROLE is required (cp|agent|gateway), e.g. make harness-chaos-partition NAME=smoke1 ROLE=agent)
+endif
+	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && bash ../../../dev/chaos/partition.sh $(NAME) $(ROLE) $(INDEX)
+
+harness-chaos-heal: ## Reverse partition/latency on a node: make harness-chaos-heal NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n]
+ifndef NAME
+	$(error NAME is required, e.g. make harness-chaos-heal NAME=smoke1 ROLE=agent)
+endif
+ifndef ROLE
+	$(error ROLE is required (cp|agent|gateway), e.g. make harness-chaos-heal NAME=smoke1 ROLE=agent)
+endif
+	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && bash ../../../dev/chaos/heal.sh $(NAME) $(ROLE) $(INDEX)
+
+harness-chaos-latency: ## Add latency/loss to a node: make harness-chaos-latency NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n] [DELAY=ms] [LOSS=pct]
+ifndef NAME
+	$(error NAME is required, e.g. make harness-chaos-latency NAME=smoke1 ROLE=agent)
+endif
+ifndef ROLE
+	$(error ROLE is required (cp|agent|gateway), e.g. make harness-chaos-latency NAME=smoke1 ROLE=agent)
+endif
+	$(AWS_ENV) && cd $(HARNESS_DIR) && tofu workspace select $(NAME) && bash ../../../dev/chaos/latency.sh $(NAME) $(ROLE) $(INDEX) $(DELAY) $(LOSS)

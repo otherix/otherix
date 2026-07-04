@@ -1,0 +1,119 @@
+#cloud-config
+# Control-plane seed (cp-0). Boots a single-member etcd cluster, seeds the
+# bootstrap admin, then mints the fleet join tokens and publishes them (plus
+# the cluster CA fingerprint) to SSM for the joining replicas, agents, and
+# gateways to redeem.
+package_update: true
+packages:
+  - awscli
+  - jq
+  - curl
+  - ca-certificates
+runcmd:
+  - |
+    set -ex
+    export HOME=/root
+    export AWS_DEFAULT_REGION=${region}
+
+    SSM_PREFIX="/otherix/${env_name}"
+    RELEASE="https://github.com/otherix/otherix/releases/download/v${otherix_version}"
+
+    # Mask the unit before install so the package postinstall does not start
+    # otherix-api with the packaged single-node defaults (name otherix-0)
+    # before the harness config lands. A symlink to /dev/null masks a unit
+    # that does not exist yet.
+    mkdir -p /etc/otherix
+    ln -sf /dev/null /etc/systemd/system/otherix-api.service
+    # Unmask on any exit path: a failure between mask and the intended unmask
+    # (an SSM read, an apt step) would otherwise leave the unit permanently
+    # masked, and cloud-init runcmd runs once per instance with no re-apply.
+    trap 'rm -f /etc/systemd/system/otherix-api.service' EXIT
+
+    # Install the control-plane API package (arm64) and the operator CLI.
+    curl -fsSL --retry 5 --retry-delay 5 -o /tmp/otherix-api.deb "$RELEASE/otherix-api_${otherix_version}_arm64.deb"
+    apt-get install -y /tmp/otherix-api.deb || { dpkg -i /tmp/otherix-api.deb || true; apt-get install -f -y; }
+    curl -fsSL --retry 5 --retry-delay 5 -o /tmp/otherix-cli.tgz "$RELEASE/otherix_${otherix_version}_linux_arm64.tar.gz"
+    tar -xzf /tmp/otherix-cli.tgz -C /tmp otherix
+    install -m 0755 /tmp/otherix /usr/local/bin/otherix
+
+    # Fetch bootstrap secrets from SSM (instance profile grants read).
+    ADMIN_USER="$(aws ssm get-parameter --name "$SSM_PREFIX/admin_username" --with-decryption --query Parameter.Value --output text --region ${region})"
+    ADMIN_PASS="$(aws ssm get-parameter --name "$SSM_PREFIX/admin_password" --with-decryption --query Parameter.Value --output text --region ${region})"
+    JWT="$(aws ssm get-parameter --name "$SSM_PREFIX/jwt_secret" --with-decryption --query Parameter.Value --output text --region ${region})"
+
+    # EnvironmentFile: heredoc body MUST stay flush-left (no leading spaces),
+    # or systemd mis-parses the VAR=value lines.
+    umask 077
+    cat > /etc/otherix/api.env <<EOF
+    OTHERIX_BOOTSTRAP_ADMIN_USERNAME=$ADMIN_USER
+    OTHERIX_BOOTSTRAP_ADMIN_PASSWORD=$ADMIN_PASS
+    OTHERIX_AUTH__JWT_SECRET=$JWT
+    EOF
+
+    cat > /etc/otherix/api.yaml <<'YAML'
+    server:
+      listen: "0.0.0.0:8080"
+    agent_server:
+      enabled: true
+      listen: "0.0.0.0:8443"
+    agent_client:
+      enabled: true
+    etcd:
+      mode: "single"
+      name: "cp-0"
+      peer_url: "auto"
+    logger:
+      level: "info"
+      format: "json"
+    cp_cert:
+      additional_sans:
+        - "cp.${fqdn_public}"
+        - "cp.${fqdn_internal}"
+        - "cp-0.${fqdn_internal}"
+    YAML
+
+    # The otherix system user is created by the package postinstall; hand it
+    # the config files it runs under.
+    chown otherix:otherix /etc/otherix/api.env /etc/otherix/api.yaml
+    chmod 0640 /etc/otherix/api.env
+
+    # Unmask and start with the harness config.
+    rm -f /etc/systemd/system/otherix-api.service
+    systemctl daemon-reload
+    systemctl enable --now otherix-api
+
+    # Wait for the user API (HTTPS via the self-signed cluster-CA leaf, so -k).
+    for i in $(seq 1 90); do
+      if curl -fsSk https://localhost:8080/healthz >/dev/null 2>&1; then break; fi
+      sleep 2
+    done
+
+    # Authenticate the local CLI, trusting the on-disk cluster CA. Silence xtrace
+    # so the admin password does not land in the persisted cloud-init log.
+    set +x
+    otherix config add cluster --name harness \
+      --server https://localhost:8080 \
+      --login "$ADMIN_USER" --password "$ADMIN_PASS" \
+      --ca-file /var/lib/otherix/ca/cluster-ca.crt \
+      --force
+    set -x
+
+    # Mint the fleet bootstrap tokens. --max-uses 2 matches the harness
+    # topology: 2 joining replicas, 2 agents, 2 gateways. Silence xtrace across
+    # the mint + publish region so token plaintext never reaches the log.
+    set +x
+    CLUSTER_JSON="$(otherix cluster join-token create --max-uses 2 --ttl 60m --output json)"
+    NODE_JSON="$(otherix node join-token create --max-uses 2 --ttl 60m --output json)"
+    GATEWAY_JSON="$(otherix node join-token create --kind gateway --max-uses 2 --ttl 60m --output json)"
+
+    CLUSTER_TOKEN="$(printf '%s' "$CLUSTER_JSON" | jq -r .token)"
+    NODE_TOKEN="$(printf '%s' "$NODE_JSON" | jq -r .token)"
+    GATEWAY_TOKEN="$(printf '%s' "$GATEWAY_JSON" | jq -r .token)"
+    CA_FP="$(printf '%s' "$CLUSTER_JSON" | jq -r .ca_fingerprint_sha256)"
+
+    # Publish tokens + CA fingerprint for the rest of the fleet to redeem.
+    aws ssm put-parameter --overwrite --type SecureString --name "$SSM_PREFIX/join_token_cluster" --value "$CLUSTER_TOKEN" --region ${region}
+    aws ssm put-parameter --overwrite --type SecureString --name "$SSM_PREFIX/join_token_node" --value "$NODE_TOKEN" --region ${region}
+    aws ssm put-parameter --overwrite --type SecureString --name "$SSM_PREFIX/join_token_gateway" --value "$GATEWAY_TOKEN" --region ${region}
+    aws ssm put-parameter --overwrite --type SecureString --name "$SSM_PREFIX/ca_fingerprint" --value "$CA_FP" --region ${region}
+    set -x
