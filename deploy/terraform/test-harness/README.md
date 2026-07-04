@@ -61,13 +61,15 @@ bring a stand up.
 Bring up a named stand (each `NAME` is its own tofu workspace):
 
 ```
-make harness-up NAME=<env> OTHERIX_VERSION=<ver>
+make harness-up NAME=<env> [OTHERIX_VERSION=<ver>]
 ```
 
-`OTHERIX_VERSION` is the published release tag WITHOUT a leading `v`
-(goreleaser strips it). Cloud-init reconstructs `v${OTHERIX_VERSION}` for the
-GitHub release URL and `otherix-api_${OTHERIX_VERSION}_arm64.deb` for the
-artifact name, so pass e.g. `0.1.0`, not `v0.1.0`.
+`OTHERIX_VERSION` is optional. Leave it unset and each node resolves the latest
+published GitHub release at boot; pass it (the release tag WITHOUT a leading
+`v`, e.g. `0.1.0`) to pin a specific version. Cloud-init reconstructs the
+release URL and detects the node architecture with `dpkg --print-architecture`,
+so the same templates install the right `arm64` or `amd64` artifacts if you
+change the instance type.
 
 Point the local `otherix` CLI at the stand (fetches the cluster CA over
 trust-on-first-use and registers a CLI cluster profile):
@@ -92,7 +94,7 @@ Tear the stand down (instances and DNS records gone; the state bucket and
 Route53 zone persist):
 
 ```
-make harness-down NAME=<env> OTHERIX_VERSION=<ver>
+make harness-down NAME=<env>
 ```
 
 ## 4. Storage pool on the fast NVMe
@@ -175,7 +177,7 @@ were never seeded. Recover by re-running bring-up so tofu re-creates the missing
 instance:
 
 ```
-make harness-up NAME=<env> OTHERIX_VERSION=<ver>
+make harness-up NAME=<env>
 ```
 
 If that does not clear it, do a full `harness-down` followed by `harness-up`.
