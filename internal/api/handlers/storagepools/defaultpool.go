@@ -65,6 +65,18 @@ func EnsureDefaultPoolsFunc(st DefaultPoolStore, pathPrefix string, log *slog.Lo
 		}
 
 		for _, node := range ready {
+			// A dedicated gateway hosts no guest VMs. Owning a pool is exactly
+			// what derives the hypervisor role (EffectiveRoles), so provisioning
+			// a default pool here would silently make every gateway a co-located
+			// hypervisor and expose it to VM placement it cannot satisfy. A
+			// gateway that should also be a hypervisor gets a pool the explicit
+			// way (join as an agent, or `pool create`), never by this auto-hook.
+			if node.GatewayRole {
+				log.DebugContext(ctx, "skipping default pool for gateway node",
+					slog.String("node_id", node.ID.String()),
+					slog.String("name", name))
+				continue
+			}
 			_, err := st.CreateStoragePool(ctx, store.CreateStoragePoolParams{
 				ID:     uuid.New(),
 				NodeID: node.ID,

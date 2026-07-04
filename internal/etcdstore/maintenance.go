@@ -362,14 +362,17 @@ func (s *Store) PromoteHealthyNodes(ctx context.Context, freshAfter time.Time) (
 		if n.LastHeartbeatAt == nil || n.LastHeartbeatAt.Before(freshAfter) {
 			continue
 		}
-		written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusReady)
+		committed, written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusReady)
 		if err != nil {
 			return nil, err
 		}
 		if !written {
 			continue
 		}
-		rows = append(rows, store.PromoteHealthyNodesRow{ID: n.ID, Name: n.Name, Status: store.NodeStatusReady})
+		// GatewayRole is sourced from the committed node (casNodeStatus re-reads
+		// fresh), not the pre-CAS snapshot, so the default-pool ready-hook keys
+		// its gateway skip on the just-written role bit.
+		rows = append(rows, store.PromoteHealthyNodesRow{ID: n.ID, Name: n.Name, Status: store.NodeStatusReady, GatewayRole: committed.GatewayRole})
 	}
 	return rows, nil
 }
@@ -398,7 +401,7 @@ func (s *Store) MarkNodesUnreachable(ctx context.Context, staleBefore time.Time)
 		if n.LastHeartbeatAt != nil && !n.LastHeartbeatAt.Before(staleBefore) {
 			continue
 		}
-		written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusUnreachable)
+		_, written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusUnreachable)
 		if err != nil {
 			return nil, err
 		}
@@ -431,7 +434,7 @@ func (s *Store) MarkNodesGone(ctx context.Context, goneBefore time.Time) ([]stor
 		if n.LastHeartbeatAt != nil && !n.LastHeartbeatAt.Before(goneBefore) {
 			continue
 		}
-		written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusGone)
+		_, written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusGone)
 		if err != nil {
 			return nil, err
 		}
@@ -444,40 +447,46 @@ func (s *Store) MarkNodesGone(ctx context.Context, goneBefore time.Time) ([]stor
 }
 
 // casNodeStatus flips a single node to status under a ModRevision CAS, returning
-// whether the write committed. It re-reads the row fresh (so the write rides the
-// row's current revision) and refuses - reporting false, no write - when the
-// node now carries an active drain (DrainTaskID set): a heartbeat-reconcile
-// demotion must never overwrite a live drain, which would drop the drain_task_id
-// and strand the saga. A lost CAS (concurrent mutation) or a vanished node also
-// reports false. The caller skips a false result and retries on the next sweep,
-// so one node's refusal never aborts the batch. The node's prior status is not
-// re-validated here; the caller already filtered the source status from its
-// snapshot, and the CAS rejects any write that races a status change.
-func (s *Store) casNodeStatus(ctx context.Context, id uuid.UUID, status store.NodeStatus) (bool, error) {
+// the committed node and whether the write committed. It re-reads the row fresh
+// (so the write rides the row's current revision) and refuses - reporting a zero
+// node and false, no write - when the node now carries an active drain
+// (DrainTaskID set): a heartbeat-reconcile demotion must never overwrite a live
+// drain, which would drop the drain_task_id and strand the saga. A lost CAS
+// (concurrent mutation) or a vanished node also reports false. The caller skips a
+// false result and retries on the next sweep, so one node's refusal never aborts
+// the batch. The node's prior status is not re-validated here; the caller already
+// filtered the source status from its snapshot, and the CAS rejects any write
+// that races a status change. The returned node carries the fresh, just-committed
+// field values (e.g. the gateway role bit), so a caller keying a decision on them
+// reads the committed state, not its pre-CAS snapshot.
+func (s *Store) casNodeStatus(ctx context.Context, id uuid.UUID, status store.NodeStatus) (store.Node, bool, error) {
 	n, modRev, err := s.nodeWithRev(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
+			return store.Node{}, false, nil
 		}
-		return false, err
+		return store.Node{}, false, err
 	}
 	if n.DrainTaskID != nil {
-		return false, nil
+		return store.Node{}, false, nil
 	}
 	n.Status = status
 	n.UpdatedAt = time.Now().UTC()
 	val, err := etcd.Marshal(n)
 	if err != nil {
-		return false, err
+		return store.Node{}, false, err
 	}
 	resp, err := s.c.Raw().Txn(ctx).
 		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
 		Then(clientv3.OpPut(nodeKey(id), string(val))).
 		Commit()
 	if err != nil {
-		return false, fmt.Errorf("set node status txn: %v", err)
+		return store.Node{}, false, fmt.Errorf("set node status txn: %v", err)
 	}
-	return resp.Succeeded, nil
+	if !resp.Succeeded {
+		return store.Node{}, false, nil
+	}
+	return n, true, nil
 }
 
 // liveNodes loads every non-deleted node row.

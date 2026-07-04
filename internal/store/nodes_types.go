@@ -68,9 +68,10 @@ type MarkNodesGoneRow struct {
 }
 
 type PromoteHealthyNodesRow struct {
-	ID     uuid.UUID
-	Name   string
-	Status NodeStatus
+	ID          uuid.UUID
+	Name        string
+	Status      NodeStatus
+	GatewayRole bool
 }
 
 type UpdateNodeHeartbeatParams struct {
