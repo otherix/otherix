@@ -1,0 +1,7 @@
+# OpenTofu / Terraform working artifacts
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
