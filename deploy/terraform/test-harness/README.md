@@ -84,7 +84,7 @@ bootstrap admin seeded into the stand). See the header of
 `dev/aws/harness-config.sh`.
 
 Now drive the stand from your laptop. The CLI target is
-`https://cp.<env>.aws.otherix.dev:8080`. A healthy stand shows all seven nodes:
+`https://cp.<env>.aws.otherix.dev`. A healthy stand shows all seven nodes:
 
 ```
 otherix node list    # 3 cp + 2 agent + 2 gateway

@@ -63,7 +63,7 @@ runcmd:
 
     cat > /etc/otherix/api.yaml <<'YAML'
     server:
-      listen: "0.0.0.0:8080"
+      listen: "0.0.0.0:${cp_api_port}"
     agent_server:
       enabled: true
       listen: "0.0.0.0:8443"
@@ -95,7 +95,7 @@ runcmd:
 
     # Wait for the user API (HTTPS via the self-signed cluster-CA leaf, so -k).
     for i in $(seq 1 90); do
-      if curl -fsSk https://localhost:8080/healthz >/dev/null 2>&1; then break; fi
+      if curl -fsSk https://localhost:${cp_api_port}/healthz >/dev/null 2>&1; then break; fi
       sleep 2
     done
 
@@ -103,7 +103,7 @@ runcmd:
     # so the admin password does not land in the persisted cloud-init log.
     set +x
     otherix config add cluster --name harness \
-      --server https://localhost:8080 \
+      --server https://localhost:${cp_api_port} \
       --login "$ADMIN_USER" --password "$ADMIN_PASS" \
       --ca-file /var/lib/otherix/ca/cluster-ca.crt \
       --force

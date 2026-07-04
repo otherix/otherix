@@ -83,7 +83,7 @@ runcmd:
     # $${...} tokens are Terraform-interpolated at render time.
     cat > /etc/otherix/api.yaml <<EOF
     server:
-      listen: "0.0.0.0:8080"
+      listen: "0.0.0.0:${cp_api_port}"
     agent_server:
       enabled: true
       listen: "0.0.0.0:8443"
