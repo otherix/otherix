@@ -9,9 +9,9 @@ and 2 gateways (`t4g.medium`, public), in `eu-north-1`, on spot capacity
 Everything is driven from the repo root through `make harness-*` targets. Each
 target relies on the standard AWS credential chain (environment variables, an
 `~/.aws` profile, SSO, or an instance role); `dev/aws/ensure-aws-creds.sh`
-verifies a usable credential is present before running tofu. If your
-credentials need a wrapper to load, put a personal exporter in the gitignored
-`dev/aws/aws-creds.local.sh` (see `dev/aws/aws-creds.local.sh.example`).
+verifies a usable credential is present before running tofu. Configure
+credentials however you like (for example `export AWS_PROFILE=<profile>` or
+`aws sso login`).
 
 Bring a stand up, exercise it, and always `harness-down` when finished; the
 compute is billed by the hour.

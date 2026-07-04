@@ -768,9 +768,8 @@ HARNESS_DIR := deploy/terraform/test-harness
 
 # The harness uses the standard AWS credential chain (environment variables,
 # ~/.aws profiles, SSO, or an instance role). ensure-aws-creds.sh verifies a
-# usable credential is present before each run and applies an optional personal
-# hook (dev/aws/aws-creds.local.sh, gitignored) when one is configured. It is
-# sourced from the repo root, so it must run before any `cd`.
+# usable credential is present before each run. It is sourced from the repo
+# root, so it must run before any `cd`.
 AWS_ENV := . dev/aws/ensure-aws-creds.sh
 
 .PHONY: harness-spot-report harness-up harness-config harness-down harness-chaos-kill harness-chaos-partition harness-chaos-heal harness-chaos-latency

@@ -60,6 +60,3 @@ deploy/config/*.local.yaml
 
 # Python bytecode (mkdocs build hooks)
 __pycache__/
-
-# Harness personal AWS credential hook (see dev/aws/aws-creds.local.sh.example)
-dev/aws/aws-creds.local.sh
