@@ -5,9 +5,11 @@ package etcdstore
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/store"
@@ -25,6 +27,12 @@ func lbPublishedListenerStatusKey(lbID, nodeID uuid.UUID) string {
 
 func lbPublishedListenerStatusPrefix(lbID uuid.UUID) string {
 	return etcd.Key("lb_published_listener_status", lbID.String()) + "/"
+}
+
+// lbPublishedListenerStatusRootPrefix is the prefix over every LB's listener
+// status records, used by the node-scoped reap (there is no per-node index).
+func lbPublishedListenerStatusRootPrefix() string {
+	return etcd.Key("lb_published_listener_status") + "/"
 }
 
 // UpsertLBPublishedListenerStatus writes the observed listener bind state for
@@ -75,4 +83,27 @@ func (s *Store) deleteLBPublishedListenerStatusPrefix(ctx context.Context, lbID 
 		}
 	}
 	return firstErr
+}
+
+// collectLBPublishedListenerStatusOpsForNode returns delete ops for every
+// published-listener status record keyed on the given node, so a deleted node
+// leaks no rows (there is no per-node index and no other reaper). The key is
+// lb_published_listener_status/<lbID>/<nodeID>, so it ranges the whole root
+// prefix and matches keys whose last path segment equals nodeID; the match is
+// keys-only (no value decode) so an undecodable value for the deleted node is
+// still reaped and the exact UUID suffix cannot over-delete another node's rows.
+// A full-prefix scan is acceptable because node delete is rare.
+func (s *Store) collectLBPublishedListenerStatusOpsForNode(ctx context.Context, nodeID uuid.UUID) ([]clientv3.Op, error) {
+	items, err := s.c.Range(ctx, lbPublishedListenerStatusRootPrefix())
+	if err != nil {
+		return nil, err
+	}
+	want := nodeID.String()
+	var ops []clientv3.Op
+	for _, kv := range items {
+		if idx := strings.LastIndex(kv.Key, "/"); idx >= 0 && kv.Key[idx+1:] == want {
+			ops = append(ops, clientv3.OpDelete(kv.Key))
+		}
+	}
+	return ops, nil
 }
