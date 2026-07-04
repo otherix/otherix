@@ -5,7 +5,7 @@
 # gateways to redeem.
 package_update: true
 packages:
-  - awscli
+  - unzip
   - jq
   - curl
   - ca-certificates
@@ -28,6 +28,15 @@ runcmd:
     # Match the running instance architecture (arm64/amd64) so changing
     # the instance type still installs the right artifact.
     ARCH="$(dpkg --print-architecture)"
+
+    # AWS CLI v2: the awscli apt package was dropped from Ubuntu 24.04, so
+    # install it explicitly before any aws use. uname -m (aarch64/x86_64)
+    # matches the official installer archive name.
+    if ! command -v aws >/dev/null 2>&1; then
+      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip
+      unzip -q /tmp/awscliv2.zip -d /tmp
+      /tmp/aws/install
+    fi
 
     # Mask the unit before install so the package postinstall does not start
     # otherix-api with the packaged single-node defaults (name otherix-0)

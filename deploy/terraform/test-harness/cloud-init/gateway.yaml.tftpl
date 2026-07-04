@@ -7,7 +7,7 @@
 # PRIVATE IP (--migration-host) and rides the VPC.
 package_update: true
 packages:
-  - awscli
+  - unzip
   - jq
   - curl
   - ca-certificates
@@ -30,6 +30,15 @@ runcmd:
     # Match the running instance architecture (arm64/amd64) so changing
     # the instance type still installs the right artifact.
     ARCH="$(dpkg --print-architecture)"
+
+    # AWS CLI v2: the awscli apt package was dropped from Ubuntu 24.04, so
+    # install it explicitly before any aws use. uname -m (aarch64/x86_64)
+    # matches the official installer archive name.
+    if ! command -v aws >/dev/null 2>&1; then
+      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip
+      unzip -q /tmp/awscliv2.zip -d /tmp
+      /tmp/aws/install
+    fi
 
     # --- Install the agent .deb (arm64). The postinstall creates the otherix
     # system user and starts `otherix-agent serve`, which idles in State A until
