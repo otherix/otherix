@@ -125,6 +125,7 @@ runcmd:
       --migration-host "$PRIV" \
       --migration-port-range-start 49152 \
       --migration-port-range-end 49251 \
+      --wireguard-advertised-endpoint "$PRIV:51820" \
       --listen "0.0.0.0:9443" \
       --force
     set -x
