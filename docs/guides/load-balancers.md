@@ -156,6 +156,105 @@ connection is brokered independently to a healthy backend, a long-lived listener
 load-balances on its own - every new connection re-brokers and may land on a
 different VM.
 
+## Publish a public port
+
+`lb connect` is the private path: a client runs `otherix lb connect` and the CLI
+brokers a credentialed session. A **published port** is the opposite - a
+persistent **public** L4 (TCP) listener that accepts plain traffic with **no
+Otherix tooling and no per-connection credential**, and forwards it into the pool.
+It is the analog of an AWS Network Load Balancer: gateway-role nodes are the data
+plane, the control plane stays out of the path, and the listener is bound on every
+gateway node (connect to any of them).
+
+### Prerequisite: gateway-role nodes
+
+The public listener runs on nodes that hold the **gateway** role. Give at least one
+node the role before you publish:
+
+```bash
+otherix node gateway enable node-3
+```
+
+See [Ingress gateways](ingress-gateways.md) for the gateway role in full. You also
+need the `loadbalancer:publish` permission (in addition to normal LB management).
+
+### Publish on create or update
+
+Add `--publish` (with an optional explicit public port) to expose the pool:
+
+```bash
+otherix lb create web-lb \
+  --port 8080 \                 # backend port inside each VM
+  --selector app=web \
+  --publish --publish-port 30080   # public TCP port on the gateways
+```
+
+- **`--publish`** turns on the public listener. `--publish-port` or `--source-cidr`
+  imply it, so `--publish` alone is only needed when you want the published port to
+  default to `--port`.
+- **`--publish-port`** (1..65535) is the public port. It must be **unique across the
+  cluster**. Omit it to reuse the backend `--port`.
+- **`--source-cidr`** (repeatable) restricts the listener to client source ranges.
+  With no `--source-cidr` the port is open to every source that can reach it
+  (published means public). A non-empty allowlist **fails closed**: a client outside
+  every range is dropped with no data.
+- Published ports are **TCP only** in this release.
+
+Change or remove the public listener later with `lb update`:
+
+```bash
+otherix lb update web-lb --publish-port 30080          # publish / change the port
+otherix lb update web-lb --source-cidr 203.0.113.0/24  # replace the client allowlist
+otherix lb update web-lb --no-publish                  # remove the public listener
+```
+
+`--source-cidr` on update **replaces** the whole allowlist (an empty list opens the
+port to all). `--no-publish` clears the published port, protocol, and CIDRs.
+
+### Find the public address
+
+The listener binds on every gateway node, so the endpoint is the set of gateway
+addresses on the published port. `otherix lb get` shows exactly which gateways are
+bound and the address to connect to:
+
+```bash
+otherix lb get web-lb
+```
+
+```
+name: web-lb
+port: 8080
+selector: app=web
+published_port: 30080
+protocol: tcp
+source_cidrs: 203.0.113.0/24
+listeners:
+  - node: node-3  address: 10.77.0.3:30080  bound=true
+  - node: node-5  address: 10.77.0.5:30080  bound=false  error=listen tcp :30080: bind: address already in use
+...
+```
+
+Each `listeners` entry is one gateway's observed status: `node` (the gateway name),
+`address` (the `host:published_port` to connect to), `bound` (whether it is
+currently accepting), and an `error` when a gateway cannot bind. Connect a plain
+client to the `address` of any `bound=true` gateway:
+
+```bash
+curl http://10.77.0.3:30080/
+```
+
+For a single stable public endpoint, front the gateway addresses with your own DNS
+round-robin or an external load balancer - Otherix does not allocate a cluster-wide
+virtual IP (the NLB model: the gateways themselves are the endpoints). The listener
+status is observed state, so it appears in `lb get` (text) and `-o json`, but not in
+the `-o yaml` manifest, which stays a round-trippable desired-state spec.
+
+!!! note "Published port vs `lb connect`"
+    Use a **published port** for external clients that speak plain TCP and cannot
+    run Otherix tooling. Use **`lb connect`** when the client can authenticate and
+    you do not want a public listener - it brokers a credentialed session and needs
+    no gateway role or public port.
+
 ## Update and delete
 
 `otherix lb update` changes a load balancer in place. `--selector` **replaces the
@@ -188,6 +287,10 @@ spec:
   port: 80                 # guest TCP port (required)
   selector:                # required, one or more entries; VMs selected by these labels
     app: web
+  publishedPort: 30080     # optional; public TCP port on gateway nodes (omit = no public listener)
+  protocol: tcp            # optional; only tcp is supported
+  sourceCIDRs:             # optional; client-IP allowlist (omit/empty = open to all)
+    - 203.0.113.0/24
   healthCheck:             # optional; omitted keys take server defaults
     port: 8080             # optional; omit = follow spec.port
     intervalSeconds: 10

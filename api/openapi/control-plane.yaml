@@ -7482,6 +7482,36 @@ components:
             When the control plane received the latest verdict, or null when
             none has been reported.
 
+    LoadBalancerListener:
+      type: object
+      description: |
+        Observed bind status of a published load balancer's public listener on
+        one gateway node. `node` is the gateway node name and `address` is the
+        client connect target (host:published_port). `error` carries the bind
+        failure reason only when `bound` is false.
+      required:
+        - node
+        - address
+        - bound
+        - reported_at
+      properties:
+        node:
+          type: string
+          description: Gateway node name reporting this listener status.
+        address:
+          type: string
+          description: Client connect target, host:published_port.
+        bound:
+          type: boolean
+          description: Whether the gateway is currently accepting on the port.
+        error:
+          type: string
+          description: Bind failure reason, present only when bound is false.
+        reported_at:
+          type: string
+          format: date-time
+          description: When the gateway last reported this status.
+
     LoadBalancerHealthSummary:
       type: object
       description: |
@@ -7512,8 +7542,11 @@ components:
         A named L4 load balancer. `selector` is a set of label key/value
         pairs; a VM is an eligible backend when its labels match every
         entry. `connect` brokers a fresh ingress connection to one such
-        backend on the load balancer's `port`. `backends` is enumerated on
-        the single-resource get; the list projection returns it empty.
+        backend on the load balancer's `port`. `backends` and `listeners`
+        are get-only observed status: `backends` is enumerated on the
+        single-resource get (the list projection returns it empty), and
+        `listeners` reports the published listener's per-gateway bind status
+        (present only on a published load balancer's get).
       required:
         - id
         - name
@@ -7564,6 +7597,15 @@ components:
             array (backends are not enumerated per row in a list).
           items:
             $ref: "#/components/schemas/LoadBalancerBackend"
+        listeners:
+          type: array
+          description: |
+            Observed per-gateway published-listener status: one entry per
+            reporting gateway node, each carrying the node name and the client
+            connect address (host:published_port). Present only on a published
+            load balancer's get; omitted otherwise.
+          items:
+            $ref: "#/components/schemas/LoadBalancerListener"
         health:
           allOf:
             - $ref: "#/components/schemas/LoadBalancerHealthSummary"
