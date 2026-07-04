@@ -7,7 +7,7 @@
 # PRIVATE IP (--migration-host) and rides the VPC.
 package_update: true
 packages:
-  - awscli
+  - unzip
   - jq
   - curl
   - ca-certificates
@@ -31,20 +31,34 @@ runcmd:
     # the instance type still installs the right artifact.
     ARCH="$(dpkg --print-architecture)"
 
+    # AWS CLI v2: the awscli apt package was dropped from Ubuntu 24.04, so
+    # install it explicitly before any aws use. uname -m (aarch64/x86_64)
+    # matches the official installer archive name.
+    if ! command -v aws >/dev/null 2>&1; then
+      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip
+      unzip -q /tmp/awscliv2.zip -d /tmp
+      /tmp/aws/install
+    fi
+
     # --- Install the agent .deb (arm64). The postinstall creates the otherix
     # system user and starts `otherix-agent serve`, which idles in State A until
     # bootstrap writes the cert material + agent.yaml (picked up within ~5s).
+    # --no-install-recommends skips the qemu-system-* / qemu-utils Recommends:
+    # a dedicated gateway hosts no guest VMs, so it needs no hypervisor stack.
     curl -fsSL --retry 5 --retry-delay 5 -o /tmp/otherix-agent.deb "$RELEASE/otherix-agent_$${VER}_$${ARCH}.deb"
-    apt-get install -y /tmp/otherix-agent.deb || { dpkg -i /tmp/otherix-agent.deb || true; apt-get install -f -y; }
+    apt-get install -y --no-install-recommends /tmp/otherix-agent.deb || { dpkg -i /tmp/otherix-agent.deb || true; apt-get install -f -y --no-install-recommends; }
 
     # Both IPs from IMDS. PUB is the externally reachable published-LB connect
-    # address; PRIV is the in-VPC migration/overlay host.
-    PUB="$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)"
+    # address; PRIV is the in-VPC migration/overlay host. The AMI enforces
+    # IMDSv2 (http_tokens=required), so fetch a session token first; a bare
+    # IMDSv1 GET returns 401/empty and would fail the reads below.
+    IMDS_TOKEN="$(curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')"
+    PUB="$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)"
     if [ -z "$PUB" ]; then
       echo "could not read public-ipv4 from IMDS" >&2
       exit 1
     fi
-    PRIV="$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
+    PRIV="$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)"
     if [ -z "$PRIV" ]; then
       echo "could not read local-ipv4 from IMDS" >&2
       exit 1
@@ -87,6 +101,7 @@ runcmd:
       --migration-host "$PRIV" \
       --migration-port-range-start 49152 \
       --migration-port-range-end 49251 \
+      --wireguard-advertised-endpoint "$PRIV:51820" \
       --listen "0.0.0.0:9443" \
       --gateway \
       --ingress-listen "0.0.0.0:9444" \

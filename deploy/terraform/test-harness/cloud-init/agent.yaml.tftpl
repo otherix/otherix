@@ -6,7 +6,7 @@
 # VM operations, and peer agents dial it for live-migration ingress.
 package_update: true
 packages:
-  - awscli
+  - unzip
   - jq
   - curl
   - ca-certificates
@@ -30,6 +30,15 @@ runcmd:
     # Match the running instance architecture (arm64/amd64) so changing
     # the instance type still installs the right artifact.
     ARCH="$(dpkg --print-architecture)"
+
+    # AWS CLI v2: the awscli apt package was dropped from Ubuntu 24.04, so
+    # install it explicitly before any aws use. uname -m (aarch64/x86_64)
+    # matches the official installer archive name.
+    if ! command -v aws >/dev/null 2>&1; then
+      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip
+      unzip -q /tmp/awscliv2.zip -d /tmp
+      /tmp/aws/install
+    fi
 
     # --- Storage pool on the local NVMe instance-store -----------------------
     # Instance-store volumes report model "Amazon EC2 NVMe Instance Storage";
@@ -72,8 +81,11 @@ runcmd:
     apt-get install -y /tmp/otherix-agent.deb || { dpkg -i /tmp/otherix-agent.deb || true; apt-get install -f -y; }
 
     # Private IPv4 (no public IP on agents) used as the advertised + migration
-    # host so the CP and peer agents can reach this node.
-    PRIV="$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
+    # host so the CP and peer agents can reach this node. The AMI enforces
+    # IMDSv2 (http_tokens=required), so fetch a session token first; a bare
+    # IMDSv1 GET returns 401/empty and would fail the read below.
+    IMDS_TOKEN="$(curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')"
+    PRIV="$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)"
     if [ -z "$PRIV" ]; then
       echo "could not read local-ipv4 from IMDS" >&2
       exit 1
@@ -113,6 +125,7 @@ runcmd:
       --migration-host "$PRIV" \
       --migration-port-range-start 49152 \
       --migration-port-range-end 49251 \
+      --wireguard-advertised-endpoint "$PRIV:51820" \
       --listen "0.0.0.0:9443" \
       --force
     set -x
