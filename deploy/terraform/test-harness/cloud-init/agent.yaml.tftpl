@@ -81,8 +81,11 @@ runcmd:
     apt-get install -y /tmp/otherix-agent.deb || { dpkg -i /tmp/otherix-agent.deb || true; apt-get install -f -y; }
 
     # Private IPv4 (no public IP on agents) used as the advertised + migration
-    # host so the CP and peer agents can reach this node.
-    PRIV="$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
+    # host so the CP and peer agents can reach this node. The AMI enforces
+    # IMDSv2 (http_tokens=required), so fetch a session token first; a bare
+    # IMDSv1 GET returns 401/empty and would fail the read below.
+    IMDS_TOKEN="$(curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')"
+    PRIV="$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)"
     if [ -z "$PRIV" ]; then
       echo "could not read local-ipv4 from IMDS" >&2
       exit 1
