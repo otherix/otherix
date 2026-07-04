@@ -103,6 +103,7 @@ Examples:
 	// Optional knobs.
 	flags.Int("migration-port-range-start", defaultMigrationPortStart, "migration port range lower bound")
 	flags.Int("migration-port-range-end", defaultMigrationPortEnd, "migration port range upper bound")
+	flags.String("wireguard-advertised-endpoint", "", "host:port overlay peers dial to reach this node (baked into agent.yaml wireguard.advertised_endpoint); required for a multi-node mesh")
 	flags.String("listen", defaultListenAddr, "agent HTTPS bind address (baked into agent.yaml)")
 	flags.Duration("heartbeat-interval", defaultHeartbeatInterval, "heartbeat cadence (baked into agent.yaml)")
 	flags.String("cert-dir", defaultCertDir, "directory for cert material (key/cert/CA atomic writes)")
@@ -123,23 +124,24 @@ Examples:
 // `bootstrap.Bootstrap()` library call. Architecture comes from
 // runtime.GOARCH.
 type bootstrapInputs struct {
-	token                     string
-	caFingerprint             string
-	cpURL                     string
-	nodeName                  string
-	advertisedEndpoint        string
-	migrationHost             string
-	migrationPortRangeStart   int
-	migrationPortRangeEnd     int
-	listenAddr                string
-	heartbeatInterval         time.Duration
-	certDir                   string
-	configPath                string
-	force                     bool
-	requestTimeout            time.Duration
-	gateway                   bool
-	ingressAdvertisedEndpoint string
-	ingressListen             string
+	token                       string
+	caFingerprint               string
+	cpURL                       string
+	nodeName                    string
+	advertisedEndpoint          string
+	migrationHost               string
+	migrationPortRangeStart     int
+	migrationPortRangeEnd       int
+	wireguardAdvertisedEndpoint string
+	listenAddr                  string
+	heartbeatInterval           time.Duration
+	certDir                     string
+	configPath                  string
+	force                       bool
+	requestTimeout              time.Duration
+	gateway                     bool
+	ingressAdvertisedEndpoint   string
+	ingressListen               string
 }
 
 func runBootstrap(cmd *cobra.Command, _ []string) error {
@@ -220,18 +222,19 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	wroteConfig := false
 	if !fileExists(in.configPath) {
 		if err := writeAgentConfig(in.configPath, agentConfigInputs{
-			CPURL:                     in.cpURL,
-			HeartbeatInterval:         in.heartbeatInterval,
-			ListenAddr:                in.listenAddr,
-			CertPath:                  certPath,
-			KeyPath:                   keyPath,
-			CAPath:                    caPath,
-			MigrationHost:             in.migrationHost,
-			MigrationPortRangeStart:   in.migrationPortRangeStart,
-			MigrationPortRangeEnd:     in.migrationPortRangeEnd,
-			Gateway:                   in.gateway,
-			GatewayListen:             in.ingressListen,
-			GatewayAdvertisedEndpoint: in.ingressAdvertisedEndpoint,
+			CPURL:                       in.cpURL,
+			HeartbeatInterval:           in.heartbeatInterval,
+			ListenAddr:                  in.listenAddr,
+			CertPath:                    certPath,
+			KeyPath:                     keyPath,
+			CAPath:                      caPath,
+			MigrationHost:               in.migrationHost,
+			MigrationPortRangeStart:     in.migrationPortRangeStart,
+			MigrationPortRangeEnd:       in.migrationPortRangeEnd,
+			WireGuardAdvertisedEndpoint: in.wireguardAdvertisedEndpoint,
+			Gateway:                     in.gateway,
+			GatewayListen:               in.ingressListen,
+			GatewayAdvertisedEndpoint:   in.ingressAdvertisedEndpoint,
 		}); err != nil {
 			return fmt.Errorf("write agent.yaml: %w", err)
 		}
@@ -270,6 +273,7 @@ func readBootstrapInputs(cmd *cobra.Command) (bootstrapInputs, error) {
 	in.migrationHost, _ = flags.GetString("migration-host")
 	in.migrationPortRangeStart, _ = flags.GetInt("migration-port-range-start")
 	in.migrationPortRangeEnd, _ = flags.GetInt("migration-port-range-end")
+	in.wireguardAdvertisedEndpoint, _ = flags.GetString("wireguard-advertised-endpoint")
 	in.listenAddr, _ = flags.GetString("listen")
 	in.heartbeatInterval, _ = flags.GetDuration("heartbeat-interval")
 	in.certDir, _ = flags.GetString("cert-dir")
@@ -399,6 +403,10 @@ type agentConfigInputs struct {
 	MigrationHost           string
 	MigrationPortRangeStart int
 	MigrationPortRangeEnd   int
+	// WireGuardAdvertisedEndpoint is the host:port overlay peers dial to reach
+	// this node. Emitted as wireguard.advertised_endpoint for both hypervisor
+	// and gateway configs; empty omits the field (valid single-node fabric).
+	WireGuardAdvertisedEndpoint string
 	// Gateway, when true, renders a gateway block into the agent.yaml so
 	// serve boots the gateway-only runtime. GatewayListen and
 	// GatewayAdvertisedEndpoint are ignored when Gateway is false.

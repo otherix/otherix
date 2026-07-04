@@ -148,6 +148,66 @@ func TestWriteAgentConfigNonGatewayHasNoGatewayBlock(t *testing.T) {
 	}
 }
 
+func TestWriteAgentConfigEmitsWireGuardAdvertisedEndpoint(t *testing.T) {
+	dir := t.TempDir()
+
+	// A non-gateway agent with an explicit WG endpoint round-trips to
+	// WireGuard.AdvertisedEndpoint so overlay peers can dial this node - the
+	// generated config was previously mesh-incapable (no endpoint emitted).
+	hypDest := filepath.Join(dir, "hyp.yaml")
+	hypIn := baseGatewayConfigInputs()
+	hypIn.WireGuardAdvertisedEndpoint = "10.0.0.5:51820"
+	if err := writeAgentConfig(hypDest, hypIn); err != nil {
+		t.Fatalf("writeAgentConfig() hypervisor error = %v", err)
+	}
+	hypCfg, err := config.LoadAgent(hypDest)
+	if err != nil {
+		t.Fatalf("LoadAgent() hypervisor error = %v", err)
+	}
+	if hypCfg.WireGuard.AdvertisedEndpoint != "10.0.0.5:51820" {
+		t.Errorf("hypervisor WireGuard.AdvertisedEndpoint = %q, want %q", hypCfg.WireGuard.AdvertisedEndpoint, "10.0.0.5:51820")
+	}
+
+	// A gateway with an explicit WG endpoint round-trips too, added alongside
+	// the gateway-distinct private key path (both must survive).
+	gwDest := filepath.Join(dir, "gw.yaml")
+	gwIn := baseGatewayConfigInputs()
+	gwIn.Gateway = true
+	gwIn.GatewayListen = "0.0.0.0:9444"
+	gwIn.GatewayAdvertisedEndpoint = "https://gw-1:9444"
+	gwIn.WireGuardAdvertisedEndpoint = "10.0.0.6:51820"
+	if err := writeAgentConfig(gwDest, gwIn); err != nil {
+		t.Fatalf("writeAgentConfig() gateway error = %v", err)
+	}
+	gwCfg, err := config.LoadAgent(gwDest)
+	if err != nil {
+		t.Fatalf("LoadAgent() gateway error = %v", err)
+	}
+	if gwCfg.WireGuard.AdvertisedEndpoint != "10.0.0.6:51820" {
+		t.Errorf("gateway WireGuard.AdvertisedEndpoint = %q, want %q", gwCfg.WireGuard.AdvertisedEndpoint, "10.0.0.6:51820")
+	}
+	if gwCfg.WireGuard.PrivateKeyPath != "/var/lib/otherix/wg-gateway/private.key" {
+		t.Errorf("gateway WireGuard.PrivateKeyPath = %q, want the gateway-distinct path (must survive the added endpoint line)", gwCfg.WireGuard.PrivateKeyPath)
+	}
+}
+
+func TestWriteAgentConfigOmitsEmptyWireGuardEndpoint(t *testing.T) {
+	// An unset WG endpoint (single-node fabric) must not emit an
+	// advertised_endpoint, leaving WireGuard.AdvertisedEndpoint empty.
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "agent.yaml")
+	if err := writeAgentConfig(dest, baseGatewayConfigInputs()); err != nil {
+		t.Fatalf("writeAgentConfig() error = %v", err)
+	}
+	cfg, err := config.LoadAgent(dest)
+	if err != nil {
+		t.Fatalf("LoadAgent() error = %v", err)
+	}
+	if cfg.WireGuard.AdvertisedEndpoint != "" {
+		t.Errorf("WireGuard.AdvertisedEndpoint = %q, want empty for a single-node config", cfg.WireGuard.AdvertisedEndpoint)
+	}
+}
+
 func TestReadBootstrapInputsGatewayRequiresIngressEndpoint(t *testing.T) {
 	cmd := newBootstrapCommand()
 	if err := cmd.Flags().Set("token", "otx_join_test"); err != nil {

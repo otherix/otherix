@@ -1,7 +1,15 @@
 # Build artifacts
+# /bin/ ignores the ENTIRE build-output directory (all `make build` binaries).
 /bin/
 /dist/
 *.test
+# Stray binaries left by `go build ./cmd/<x>` (no -o) at the repo root.
+# `api` is intentionally omitted: the api/ source dir (OpenAPI specs) occupies
+# that name, so `go build ./cmd/api` cannot leave a root binary there, and
+# ignoring /api would wrongly swallow new files under api/.
+/agent
+/scheduler
+/reconciler
 
 # Docs site build output (mkdocs)
 /site/
@@ -50,9 +58,6 @@ vendor/
 # Per-environment local config overrides (never commit secrets)
 *.local.yaml
 deploy/config/*.local.yaml
-
-# Bin output names
-/bin/otherix-*
 
 
 # rendered per-arch demo manifest (dev/manifests/demo-vm.yaml.tmpl is the source)
