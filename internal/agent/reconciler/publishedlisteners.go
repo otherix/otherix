@@ -6,6 +6,7 @@ package reconciler
 import (
 	"context"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"strconv"
 	"sync"
@@ -35,14 +36,42 @@ func (netListenerManager) Listen(ctx context.Context, port int32) (net.Listener,
 	return lc.Listen(ctx, "tcp", ":"+strconv.Itoa(int(port)))
 }
 
+// listenerConfig is the per-connection datapath config a live published-port
+// listener serves. It is carried behind an atomic pointer on boundListener so a
+// heartbeat that changes the backend set or source allowlist reaches an already
+// bound listener without rebinding the socket: reconcile Stores a fresh config
+// and the accept goroutine Loads it per accepted connection. backendPort is the
+// guest port each backend is dialed at, sourceCIDRs the optional source
+// allowlist (empty means allow-all), backends the CP-resolved eligible set.
+type listenerConfig struct {
+	backendPort int32
+	sourceCIDRs []string
+	backends    []heartbeat.DeclaredBackend
+}
+
+// configFromLB snapshots the datapath-relevant fields of a declared load
+// balancer into a fresh listenerConfig for atomic publication. The backend
+// slice is copied so a later mutation of the caller's DeclaredLoadBalancer
+// cannot race a reader that already Loaded this config.
+func configFromLB(lb heartbeat.DeclaredLoadBalancer) *listenerConfig {
+	return &listenerConfig{
+		backendPort: lb.BackendPort,
+		sourceCIDRs: append([]string(nil), lb.SourceCIDRs...),
+		backends:    append([]heartbeat.DeclaredBackend(nil), lb.Backends...),
+	}
+}
+
 // boundListener is one open (or attempted) published-port listener. ln is
 // nil when the last bind attempt failed; err then carries the failure
 // string. lbID keys the entry back to its owning load balancer so the
-// observed up-channel report can name it.
+// observed up-channel report can name it. cfg carries the live datapath config
+// (backend set, source allowlist, backend port) refreshed in place each
+// reconcile pass; it is nil only on a failed bind (no live socket to serve).
 type boundListener struct {
 	ln   net.Listener
 	lbID uuid.UUID
 	err  string
+	cfg  *atomic.Pointer[listenerConfig]
 }
 
 // PublishedListeners is the per-resource reconciler for published load
@@ -51,13 +80,31 @@ type boundListener struct {
 // kernel sockets: it binds a raw TCP listener for every declared published
 // port and releases them all on shutdown.
 //
-// The datapath is a stub: an accepted connection is immediately closed
-// (RST). Source-CIDR enforcement and backend splicing arrive later; this
-// reconciler only opens and closes the public ports.
+// Each accepted connection is served by the raw datapath (handleConn): a
+// source-IP ACL, a backend selection, a slot acquire, an overlay-device
+// resolve, an anti-SSRF neighbor-MAC pin, an SO_BINDTODEVICE dial, and a
+// bidirectional splice. Every uncertain step closes the connection (fail toward
+// inaction).
 type PublishedListeners struct {
 	log  *slog.Logger
 	mgr  ListenerManager
 	tick time.Duration
+
+	// Datapath seams. slots and rnd are always set (safe defaults in the
+	// constructor). devices, neighbors, and dialer are the production overlay
+	// wiring, injected by the agent server; they are exercised only once a
+	// listener has an eligible backend, so an empty-backend LB closes at the
+	// select step before any is touched.
+	devices   deviceResolver
+	neighbors neighborResolver
+	dialer    datapathDialer
+	slots     *slotLimiter
+	rnd       func(int) int
+
+	// idleTimeout is the per-connection idle window handed to the splice. It is
+	// always set to publishedIdleTimeout by the constructor; tests shrink it to
+	// exercise the reclaim path. Production behavior is unchanged.
+	idleTimeout time.Duration
 
 	desired atomic.Pointer[[]heartbeat.DeclaredLoadBalancer]
 	trigger chan struct{}
@@ -67,21 +114,34 @@ type PublishedListeners struct {
 }
 
 // NewPublishedListeners builds the published-listener reconciler. A nil mgr
-// falls back to the production net-backed binder; tests pass a fake. tick==0
-// falls back to DefaultTickInterval.
-func NewPublishedListeners(mgr ListenerManager, log *slog.Logger, tick time.Duration) *PublishedListeners {
+// falls back to the production net-backed binder; tests pass a fake. A nil dialer
+// falls back to the production overlay dialer (SO_BINDTODEVICE via
+// netfabric.BindToDeviceControl); tests inject a fake. devices and neighbors are
+// the overlay-device resolver and neighbor-MAC resolver the datapath consumes
+// (the agent server passes the real *Networks and netfabric.Fabric). slots and
+// rnd always get safe defaults. tick==0 falls back to DefaultTickInterval.
+func NewPublishedListeners(mgr ListenerManager, devices deviceResolver, neighbors neighborResolver, dialer datapathDialer, log *slog.Logger, tick time.Duration) *PublishedListeners {
 	if mgr == nil {
 		mgr = netListenerManager{}
+	}
+	if dialer == nil {
+		dialer = overlayDialer{}
 	}
 	if tick <= 0 {
 		tick = DefaultTickInterval
 	}
 	return &PublishedListeners{
-		log:     log,
-		mgr:     mgr,
-		tick:    tick,
-		trigger: make(chan struct{}, 1),
-		bound:   map[int32]boundListener{},
+		log:         log,
+		mgr:         mgr,
+		tick:        tick,
+		devices:     devices,
+		neighbors:   neighbors,
+		dialer:      dialer,
+		slots:       newSlotLimiter(publishedPerBackendCap, publishedGatewayCap),
+		rnd:         rand.IntN,
+		idleTimeout: publishedIdleTimeout,
+		trigger:     make(chan struct{}, 1),
+		bound:       map[int32]boundListener{},
 	}
 }
 
@@ -200,13 +260,18 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 	for port, lb := range desiredByPort {
 		if bl, ok := r.bound[port]; ok && bl.ln != nil {
 			if bl.lbID == lb.LBID {
-				continue // same owner, listener already up
+				// Same owner, listener already up: refresh the live datapath
+				// config in place (no rebind). A heartbeat that changed the
+				// backend set or source allowlist reaches the running accept
+				// goroutine through the atomic pointer on the next connection.
+				bl.cfg.Store(configFromLB(lb))
+				continue
 			}
 			// Ownership changed without an intervening unpublished tick (the
 			// old LB released the port and a new LB claimed it between two
 			// heartbeats). Close the stale listener and fall through to rebind
-			// under the new LB, so the observed report re-keys and a later
-			// slice's per-port config follows the new owner rather than
+			// under the new LB, so the observed report re-keys and, later, the
+			// per-port datapath config follows the new owner rather than
 			// serving the old owner's ACL/backends on this port.
 			if err := bl.ln.Close(); err != nil {
 				r.log.WarnContext(ctx, "published listener close failed (rebind on owner change)",
@@ -232,8 +297,10 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 			)
 			continue
 		}
-		r.bound[port] = boundListener{ln: ln, lbID: lb.LBID}
-		go r.accept(ln)
+		cfg := &atomic.Pointer[listenerConfig]{}
+		cfg.Store(configFromLB(lb))
+		r.bound[port] = boundListener{ln: ln, lbID: lb.LBID, cfg: cfg}
+		go r.accept(ctx, ln, cfg)
 		r.log.InfoContext(ctx, "published listener bound",
 			slog.Int("port", int(port)),
 			slog.String("lb_id", lb.LBID.String()),
@@ -241,20 +308,24 @@ func (r *PublishedListeners) reconcile(ctx context.Context) {
 	}
 }
 
-// accept runs one per-listener goroutine. Stub datapath: accept a
-// connection and immediately close it (RST); no read, no splice, no ACL.
+// accept runs one per-listener goroutine, dispatching each accepted connection
+// to the raw datapath (handleConn). ctx is the reconciler's Run context and the
+// atomic cfg pointer is the owning listener's live config, both PASSED in (not
+// read off a shared struct field or the mutex-guarded bound map): cfg is Loaded
+// per accepted connection so a heartbeat that refreshes the backend set or
+// source allowlist reaches this loop without a rebind.
 //
 // It MUST return on the first Accept error. A closed listener makes Accept
 // return an error on every call, so a continue-on-error loop would busy-spin
 // a goroutine after Close. Returning on error lets the goroutine exit when
 // reconcile (or closeAll) closes the listener.
-func (r *PublishedListeners) accept(ln net.Listener) {
+func (r *PublishedListeners) accept(ctx context.Context, ln net.Listener, cfg *atomic.Pointer[listenerConfig]) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		_ = c.Close()
+		go r.handleConn(ctx, c, cfg.Load())
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/heartbeat"
@@ -129,6 +130,20 @@ func (r *PublishedListeners) boundPorts() []int32 {
 	return out
 }
 
+// listenerConfig returns the atomically-published datapath config for a bound
+// port, or nil if the port is not bound (or carries no config pointer). The
+// bound-map read is mutex-guarded; the returned *listenerConfig is loaded from
+// the per-listener atomic pointer.
+func (r *PublishedListeners) listenerConfig(port int32) *listenerConfig {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	bl, ok := r.bound[port]
+	if !ok || bl.cfg == nil {
+		return nil
+	}
+	return bl.cfg.Load()
+}
+
 // TestPublishedListenersBindsThenClosesAndGoroutineExits drives the
 // core desired-vs-observed diff through the fake seam: one declared LB
 // binds its published port and spawns an accept goroutine; a later
@@ -136,7 +151,7 @@ func (r *PublishedListeners) boundPorts() []int32 {
 // on the first Accept error (no busy-spin).
 func TestPublishedListenersBindsThenClosesAndGoroutineExits(t *testing.T) {
 	mgr := newFakeListenerManager()
-	r := NewPublishedListeners(mgr, testLogger(), time.Hour)
+	r := NewPublishedListeners(mgr, nil, nil, nil, testLogger(), time.Hour)
 	ctx := context.Background()
 
 	const port int32 = 40000
@@ -196,7 +211,7 @@ func TestPublishedListenersBindsThenClosesAndGoroutineExits(t *testing.T) {
 func TestPublishedListenersRebindsOnOwnershipChange(t *testing.T) {
 	lbA, lbB := uuid.New(), uuid.New()
 	mgr := newFakeListenerManager()
-	r := NewPublishedListeners(mgr, testLogger(), time.Hour)
+	r := NewPublishedListeners(mgr, nil, nil, nil, testLogger(), time.Hour)
 	ctx := context.Background()
 
 	const port int32 = 40002
@@ -233,12 +248,69 @@ func TestPublishedListenersRebindsOnOwnershipChange(t *testing.T) {
 	}
 }
 
+// TestPublishedListenersRefreshesConfigInPlace proves a heartbeat that changes
+// a live listener's backend set / source allowlist reaches the listener through
+// the atomic config pointer WITHOUT rebinding the socket: the same owning LB on
+// the same port keeps its one listener while cfg.Load() reports the new backends
+// and CIDRs. The accept goroutine reads cfg per connection, so the datapath sees
+// the refreshed set on the next accepted connection with no bind churn.
+func TestPublishedListenersRefreshesConfigInPlace(t *testing.T) {
+	lbA := uuid.New()
+	b1 := heartbeat.DeclaredBackend{VMID: uuid.New(), OverlayIP: "10.0.0.1", MAC: "02:00:00:00:00:01", Healthy: true}
+	b2 := heartbeat.DeclaredBackend{VMID: uuid.New(), OverlayIP: "10.0.0.2", MAC: "02:00:00:00:00:02", Healthy: true}
+	mgr := newFakeListenerManager()
+	r := NewPublishedListeners(mgr, nil, nil, nil, testLogger(), time.Hour)
+	ctx := context.Background()
+
+	const port int32 = 40003
+
+	// First heartbeat: LB-A on port with a single backend b1, no source CIDRs.
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{
+		{LBID: lbA, PublishedPort: port, Protocol: "tcp", BackendPort: 22, Backends: []heartbeat.DeclaredBackend{b1}},
+	}})
+	r.reconcile(ctx)
+
+	cfg := r.listenerConfig(port)
+	if cfg == nil {
+		t.Fatalf("listenerConfig(%d) = nil after first bind, want config", port)
+	}
+	if got := len(cfg.backends); got != 1 {
+		t.Fatalf("cfg.backends len = %d, want 1", got)
+	}
+	if cfg.backendPort != 22 {
+		t.Errorf("cfg.backendPort = %d, want 22", cfg.backendPort)
+	}
+
+	// Second heartbeat: SAME LB-A, SAME port, but two backends and a source
+	// allowlist. This must refresh the live listener's config, not rebind.
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{
+		{LBID: lbA, PublishedPort: port, Protocol: "tcp", BackendPort: 22, SourceCIDRs: []string{"192.0.2.0/24"}, Backends: []heartbeat.DeclaredBackend{b1, b2}},
+	}})
+	r.reconcile(ctx)
+
+	// No rebind: still exactly one Listen call for this port.
+	if got := mgr.listenCount(); got != 1 {
+		t.Errorf("Listen calls = %d, want 1 (config refresh must not rebind)", got)
+	}
+	cfg2 := r.listenerConfig(port)
+	if cfg2 == nil {
+		t.Fatalf("listenerConfig(%d) = nil after refresh, want config", port)
+	}
+	if got := len(cfg2.backends); got != 2 {
+		t.Errorf("cfg.backends len after refresh = %d, want 2", got)
+	}
+	wantCIDRs := []string{"192.0.2.0/24"}
+	if diff := cmp.Diff(wantCIDRs, cfg2.sourceCIDRs); diff != "" {
+		t.Errorf("cfg.sourceCIDRs mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestPublishedListenersNilDesiredBindsNothing proves the pointer-vs-length
 // guard: before any heartbeat response the desired pointer is nil and a
 // reconcile pass binds nothing (fail toward inaction).
 func TestPublishedListenersNilDesiredBindsNothing(t *testing.T) {
 	mgr := newFakeListenerManager()
-	r := NewPublishedListeners(mgr, testLogger(), time.Hour)
+	r := NewPublishedListeners(mgr, nil, nil, nil, testLogger(), time.Hour)
 
 	r.reconcile(context.Background())
 
@@ -254,7 +326,7 @@ func TestPublishedListenersNilDesiredBindsNothing(t *testing.T) {
 // cancel and releases every bound socket on the way out.
 func TestPublishedListenersRunClosesOnCtxCancel(t *testing.T) {
 	mgr := newFakeListenerManager()
-	r := NewPublishedListeners(mgr, testLogger(), 50*time.Millisecond)
+	r := NewPublishedListeners(mgr, nil, nil, nil, testLogger(), 50*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	const port int32 = 40001
@@ -295,7 +367,7 @@ func TestPublishedListenersRunClosesOnCtxCancel(t *testing.T) {
 // unpublished the port stops accepting.
 func TestPublishedListenersRealAcceptThenClose(t *testing.T) {
 	port := freeTCPPort(t)
-	r := NewPublishedListeners(nil, testLogger(), time.Hour) // nil mgr -> real binder
+	r := NewPublishedListeners(nil, nil, nil, nil, testLogger(), time.Hour) // nil mgr -> real binder
 	ctx := context.Background()
 
 	r.HandleHeartbeatResponse(ctx, lbResponse(port))
@@ -328,6 +400,55 @@ func TestPublishedListenersRealAcceptThenClose(t *testing.T) {
 	}
 }
 
+// TestNewPublishedListenersWiresDatapathDeps proves the constructor threads the
+// device resolver, neighbor resolver, and dialer seams all the way to the live
+// datapath: a real accepted connection on a bound listener reaches the injected
+// dialer with the device+addr the resolvers produced. It drives the wiring end
+// to end (accept goroutine -> handleConn -> devices -> neighbors -> dialer), not
+// just field presence. nil mgr uses the real binder so the connection travels
+// the production accept path.
+func TestNewPublishedListenersWiresDatapathDeps(t *testing.T) {
+	dev := &fakeDeviceResolver{device: "otvg1", netID: "net-1", ok: true}
+	nbr := &fakeNeighborResolver{mac: mustParseMAC(t, testBackendMAC), ok: true}
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return nil, errFakeDial }}
+
+	port := freeTCPPort(t)
+	r := NewPublishedListeners(nil, dev, nbr, dialer, testLogger(), time.Hour) // nil mgr -> real binder
+	ctx := context.Background()
+
+	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{{
+		LBID:          uuid.New(),
+		PublishedPort: port,
+		Protocol:      "tcp",
+		BackendPort:   8080,
+		Backends: []heartbeat.DeclaredBackend{
+			{VMID: uuid.New(), OverlayIP: "10.0.0.5", MAC: testBackendMAC, Healthy: true},
+		},
+	}}})
+	r.reconcile(ctx)
+
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial published port: %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for dialer.callCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("accepted connection never reached the injected dialer (datapath deps not wired)")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if dialer.lastDevice != "otvg1" {
+		t.Errorf("dial device = %q, want otvg1 (deviceResolver not wired)", dialer.lastDevice)
+	}
+	if dialer.lastAddr != "10.0.0.5:8080" {
+		t.Errorf("dial addr = %q, want 10.0.0.5:8080 (neighbor pin / backend port not wired)", dialer.lastAddr)
+	}
+}
+
 func freeTCPPort(t *testing.T) int32 {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -345,7 +466,7 @@ func freeTCPPort(t *testing.T) int32 {
 func TestPublishedListenerReports(t *testing.T) {
 	lbA, lbB := uuid.New(), uuid.New()
 	mgr := newFakeListenerManager()
-	r := NewPublishedListeners(mgr, testLogger(), time.Hour)
+	r := NewPublishedListeners(mgr, nil, nil, nil, testLogger(), time.Hour)
 	ctx := context.Background()
 
 	// First pass: port 8080 (lbA) binds cleanly.
@@ -387,7 +508,7 @@ func TestPublishedListenerReports(t *testing.T) {
 func TestPublishedListenerReportsPrunesUnpublished(t *testing.T) {
 	lbA := uuid.New()
 	mgr := newFakeListenerManager()
-	r := NewPublishedListeners(mgr, testLogger(), time.Hour)
+	r := NewPublishedListeners(mgr, nil, nil, nil, testLogger(), time.Hour)
 	ctx := context.Background()
 
 	r.HandleHeartbeatResponse(ctx, &heartbeat.Response{DeclaredLoadBalancers: []heartbeat.DeclaredLoadBalancer{

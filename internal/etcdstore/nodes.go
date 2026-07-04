@@ -761,11 +761,13 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	}
 	out.CertsRevoked = certsRevoked
 
-	// Purge the node's gateway memberships + their tenant-IP reservations so a
-	// deleted gateway leaks neither membership rows nor addresses. Ordered ahead
-	// of the node soft-delete (see nodeDeleteCascade) so a crash+retry can re-run
-	// them; the periodic gateway reconcile is a backstop, not the primary path.
-	membershipOps, err := s.gatewayMembershipDeleteOps(ctx, id)
+	// Reap the node's per-node leaf state that carries no per-node index and no
+	// backstop reaper: gateway memberships + their tenant-IP reservations, and
+	// the node's observed published-listener status rows. Ordered ahead of the
+	// node soft-delete (see nodeDeleteCascade) so a crash+retry can re-run them;
+	// the periodic gateway reconcile is a backstop for memberships, not the
+	// primary path.
+	reapOps, err := s.nodeDeleteReapOps(ctx, id)
 	if err != nil {
 		return store.NodeDeleteOutcome{}, err
 	}
@@ -777,7 +779,7 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		return store.NodeDeleteOutcome{}, err
 	}
 
-	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, certOps, membershipOps, wgRec)
+	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, certOps, reapOps, wgRec)
 	if err := s.commitInChunks(ctx, cascade); err != nil {
 		return store.NodeDeleteOutcome{}, fmt.Errorf("force-delete node cascade: %v", err)
 	}
@@ -801,8 +803,8 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 // can never re-run (the gone node short-circuits at NodeByID). There is no
 // backstop reaper for agent_wireguard, so the leaked pubkey guard would later
 // fail a node re-bootstrap with ErrAgentWireguardPubkeyInUse.
-func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps, certOps, membershipOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
-	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+len(certOps)+len(membershipOps)+4)
+func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps, certOps, reapOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
+	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+len(certOps)+len(reapOps)+4)
 	cascade = append(cascade, cancelOps...)
 	cascade = append(cascade, orphanOps...)
 	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
@@ -818,10 +820,11 @@ func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, or
 	// re-runs them (the gone node short-circuits at NodeByID once soft-deleted).
 	cascade = append(cascade, certOps...)
 	// Reap the node's gateway memberships (row + per-network index + tenant-IP
-	// reservation) before the node soft-delete, for the same crash+retry reason:
-	// a chunk boundary falling after the node-put plus a crash would leak the
-	// membership rows and their reserved addresses.
-	cascade = append(cascade, membershipOps...)
+	// reservation) and its published-listener status rows before the node
+	// soft-delete, for the same crash+retry reason: a chunk boundary falling
+	// after the node-put plus a crash would leak those rows and reserved addresses
+	// the gone node can never re-derive.
+	cascade = append(cascade, reapOps...)
 	// The name-guard delete precedes the nodePut so the nodePut (which flips the
 	// row's DeletedAt and thus makes NodeByID short-circuit) is the genuine LAST
 	// op: a crash before it leaves the node row present and a retry re-runs the
@@ -847,6 +850,22 @@ func (s *Store) agentWireguardRecordForDelete(ctx context.Context, id uuid.UUID)
 	default:
 		return nil, fmt.Errorf("load agent_wireguard for node delete: %v", err)
 	}
+}
+
+// nodeDeleteReapOps returns the delete ops that purge the node's leaf state that
+// has no per-node index and no backstop reaper: its gateway memberships and its
+// published-listener status rows. They share the same ordering slot in
+// nodeDeleteCascade (ahead of the node soft-delete) so a crash+retry re-runs them.
+func (s *Store) nodeDeleteReapOps(ctx context.Context, id uuid.UUID) ([]clientv3.Op, error) {
+	membershipOps, err := s.gatewayMembershipDeleteOps(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	listenerOps, err := s.collectLBPublishedListenerStatusOpsForNode(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return append(membershipOps, listenerOps...), nil
 }
 
 // gatewayMembershipDeleteOps returns the delete ops that purge every gateway

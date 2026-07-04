@@ -204,7 +204,7 @@ smoke-lb-health: ## Load-balancer active-health smoke: a warming LB still serves
 	bash dev/smoke/lb-health/run.sh
 
 .PHONY: smoke-published-port
-smoke-published-port: ## Published-LB-port smoke: `otherix lb ... --publish` makes a gateway-role node bind a real public port (a peer's raw connect is accepted-then-closed), a never-published control port stays refused, and `--no-publish` reaps the listener (run after local-dev-deploy)
+smoke-published-port: ## Published-LB-port traffic smoke: a raw peer client reaches a backend guest THROUGH `otherix lb ... --publish` on a gateway-role node, a source-CIDR ACL excluding the client fails closed, a powered-off backend is never mis-routed, and `--no-publish` reaps the listener (run after local-dev-deploy)
 	bash dev/smoke/published-port/run.sh
 
 .PHONY: smoke-vm-create-redelivery

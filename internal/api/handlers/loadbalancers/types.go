@@ -80,6 +80,17 @@ type backendView struct {
 	ReportedAt *string `json:"reported_at"`
 }
 
+// listenerStatusView is one entry in a published load balancer's listeners
+// array: the observed bind status of the public listener on one gateway node.
+// Error carries the failure string only when Bound is false (omitted otherwise).
+type listenerStatusView struct {
+	NodeID     string `json:"node_id"`
+	Port       int32  `json:"port"`
+	Bound      bool   `json:"bound"`
+	Error      string `json:"error,omitempty"`
+	ReportedAt string `json:"reported_at"`
+}
+
 // healthSummaryView is the aggregate active-health rollup of a load balancer's
 // currently-matched backends: an overall Status plus the healthy/total target
 // counts. It lets an operator read load-balancer health at a glance without
@@ -105,6 +116,11 @@ type loadBalancerView struct {
 	Protocol      string        `json:"protocol"`
 	SourceCIDRs   []string      `json:"source_cidrs"`
 	Backends      []backendView `json:"backends"`
+	// Listeners is the observed per-gateway bind status of the published
+	// listener, present only when the load balancer is published (get only). A
+	// status older than the heartbeat-floored freshness window is omitted, so a
+	// dead gateway's last-reported row does not read as a live listener.
+	Listeners []listenerStatusView `json:"listeners,omitempty"`
 	// Health is the aggregate active-health rollup, populated only by get and
 	// list (which have live-health context). toView leaves it nil, so
 	// create/update responses omit it.
