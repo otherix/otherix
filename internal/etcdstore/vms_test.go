@@ -40,6 +40,12 @@ func seedVM(t *testing.T, cli *etcd.Client, v store.VM) {
 		if err := cli.Put(ctx, etcd.Key("uniq", "vms", "name", lower(v.Name)), []byte(v.ID.String())); err != nil {
 			t.Fatalf("seed vm guard: %v", err)
 		}
+		// Mirror CreateVM's owner index so index-authoritative lookups
+		// (ListVMsByOwner) resolve the seed. A soft-deleted seed gets no
+		// index entry, matching production where delete removes it.
+		if err := cli.Put(ctx, etcd.Key("index", "vms", "owner", v.OwnerID.String(), v.ID.String()), []byte(v.ID.String())); err != nil {
+			t.Fatalf("seed vm owner index: %v", err)
+		}
 	}
 }
 

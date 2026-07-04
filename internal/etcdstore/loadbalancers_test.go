@@ -279,6 +279,13 @@ func TestListVMsByOwnerFilters(t *testing.T) {
 		if err := cli.PutJSON(ctx, etcd.Key("vms", id.String()), vm); err != nil {
 			t.Fatalf("seed vm: %v", err)
 		}
+		// Mirror CreateVM's owner index for live seeds so the index-authoritative
+		// ListVMsByOwner resolves them; deleted seeds get none (delete removes it).
+		if deletedAt == nil {
+			if err := cli.Put(ctx, etcd.Key("index", "vms", "owner", owner.String(), id.String()), []byte(id.String())); err != nil {
+				t.Fatalf("seed vm owner index: %v", err)
+			}
+		}
 		return id
 	}
 	a1 := seed(ownerA, nil)
@@ -298,6 +305,44 @@ func TestListVMsByOwnerFilters(t *testing.T) {
 		if !want[vm.ID] {
 			t.Errorf("ListVMsByOwner returned unexpected vm %v (owner %v, deleted %v)", vm.ID, vm.OwnerID, vm.DeletedAt)
 		}
+	}
+}
+
+// TestListVMsByOwnerUsesIndex proves ListVMsByOwner resolves through the
+// index/vms/owner secondary index rather than a full VM scan: a VM row seeded
+// without its owner-index entry is excluded, while an indexed row is returned.
+func TestListVMsByOwnerUsesIndex(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	owner := uuid.New()
+	now := time.Now().UTC()
+
+	// Indexed VM: row + owner-index entry, exactly as CreateVM writes it.
+	indexed := store.VM{ID: uuid.New(), OwnerID: owner, Name: uniqueLBName("vm"), CreatedAt: now, UpdatedAt: now}
+	if err := cli.PutJSON(ctx, etcd.Key("vms", indexed.ID.String()), indexed); err != nil {
+		t.Fatalf("seed indexed vm: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "vms", "owner", owner.String(), indexed.ID.String()), []byte(indexed.ID.String())); err != nil {
+		t.Fatalf("seed owner index: %v", err)
+	}
+
+	// Index-less VM: row only, no owner-index entry. Index-authoritative
+	// resolution must exclude it; a full scan would wrongly return it.
+	orphan := store.VM{ID: uuid.New(), OwnerID: owner, Name: uniqueLBName("vm"), CreatedAt: now, UpdatedAt: now}
+	if err := cli.PutJSON(ctx, etcd.Key("vms", orphan.ID.String()), orphan); err != nil {
+		t.Fatalf("seed index-less vm: %v", err)
+	}
+
+	got, err := s.ListVMsByOwner(ctx, owner)
+	if err != nil {
+		t.Fatalf("ListVMsByOwner: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListVMsByOwner len = %d, want 1 (index-authoritative, index-less vm excluded)", len(got))
+	}
+	if got[0].ID != indexed.ID {
+		t.Errorf("ListVMsByOwner returned %v, want indexed vm %v", got[0].ID, indexed.ID)
 	}
 }
 

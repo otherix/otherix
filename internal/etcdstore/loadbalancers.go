@@ -417,22 +417,31 @@ func (s *Store) DeleteLoadBalancer(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// ListVMsByOwner returns all of the owner's non-deleted VMs. This is a full
-// unpaginated scan intended for internal load-balancer selector resolution (the
-// connect path needs every match, not a page); it is distinct from the dormant,
-// currently-unused store.ListVMsByOwnerParams cursor type.
+// ListVMsByOwner returns all of the owner's non-deleted VMs, resolved through
+// the index/vms/owner secondary index (written by CreateVM and removed on
+// delete) rather than a full VM scan. It is an unpaginated lookup intended for
+// internal load-balancer selector resolution (the connect path needs every
+// match, not a page); it is distinct from the dormant store.ListVMsByOwnerParams
+// cursor type.
 func (s *Store) ListVMsByOwner(ctx context.Context, ownerID uuid.UUID) ([]store.VM, error) {
-	items, err := s.c.Range(ctx, vmPrefix())
+	items, err := s.c.Range(ctx, vmsOwnerPrefix(ownerID))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]store.VM, 0, len(items))
 	for _, kv := range items {
-		var vm store.VM
-		if err := json.Unmarshal(kv.Value, &vm); err != nil {
-			return nil, fmt.Errorf("unmarshal vm %q: %v", kv.Key, err)
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			continue
 		}
-		if vm.DeletedAt != nil || vm.OwnerID != ownerID {
+		var vm store.VM
+		found, gerr := s.c.GetJSON(ctx, vmKey(id), &vm)
+		if gerr != nil {
+			return nil, gerr
+		}
+		// The index already excludes deleted VMs; the filter is defensive,
+		// mirroring ListVMNicsByVM.
+		if !found || vm.DeletedAt != nil {
 			continue
 		}
 		out = append(out, vm)
