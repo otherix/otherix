@@ -146,6 +146,36 @@ func TestSpliceConnsActiveSessionKeepsOpen(t *testing.T) {
 	}
 }
 
+func TestSpliceConnsOneDirectionalStreamKeepsOpen(t *testing.T) {
+	a1, a2 := net.Pipe()
+	b1, b2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	idle := 150 * time.Millisecond
+	go spliceConns(ctx, cancel, a2, b1, idle)
+
+	// One direction streams continuously (a1 -> b2) while the reverse direction
+	// stays silent (b2 sends nothing but ACKs). Activity in either direction must
+	// reset BOTH legs' idle windows, so the silent reverse leg must not time out
+	// and tear an actively-streaming session down. The stream spans several rounds
+	// well past 2*idle: on a per-leg-only impl the silent leg fires at idle and
+	// kills the live stream mid-flight.
+	const rounds = 5
+	for i := range rounds {
+		go func() { _, _ = a1.Write([]byte("x")) }()
+		if got := readN(t, b2, 1); got != "x" {
+			t.Fatalf("round %d a1->b2 = %q, want x (one-directional stream must stay open)", i, got)
+		}
+		time.Sleep(idle / 2)
+	}
+
+	// Both endpoints must still be open after the full run.
+	go func() { _, _ = a1.Write([]byte("z")) }()
+	if got := readN(t, b2, 1); got != "z" {
+		t.Errorf("post-stream a1->b2 = %q, want z (session must survive a one-directional stream)", got)
+	}
+}
+
 // readUnblocks issues a blocking one-byte Read on c in a goroutine and reports
 // whether it returned within d. A false result means the read never unblocked
 // (the connection was neither closed nor fed any byte in the window).

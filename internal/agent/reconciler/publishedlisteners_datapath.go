@@ -216,11 +216,13 @@ func spliceConns(ctx context.Context, cancel context.CancelFunc, a, b net.Conn, 
 	_ = b.Close()
 }
 
-// copyIdle copies src to dst until either end errors or src stays idle for the
-// idle window, then signals done. Before every read it re-arms src's read
-// deadline to now+idle, so any byte received resets the window and only a truly
-// idle direction (or a closed/broken leg) ends the copy. It signals done exactly
-// once on return; the caller's teardown then closes both legs.
+// copyIdle copies src to dst until either end errors or the session stays idle
+// in both directions for the idle window, then signals done. Before every read
+// it re-arms src's read deadline to now+idle, and after every successful write it
+// re-arms dst's read deadline (dst is the peer leg's src), so a byte in EITHER
+// direction resets both legs' windows and only a session idle in both directions
+// (or a closed/broken leg) ends the copy. It signals done exactly once on return;
+// the caller's teardown then closes both legs.
 func copyIdle(dst, src net.Conn, idle time.Duration, done chan<- struct{}) {
 	defer func() { done <- struct{}{} }()
 	buf := make([]byte, 32*1024)
@@ -231,6 +233,11 @@ func copyIdle(dst, src net.Conn, idle time.Duration, done chan<- struct{}) {
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return
 			}
+			// Activity in this direction must also reset the peer leg's idle
+			// window: dst is the peer leg's src, so pushing dst's read deadline
+			// forward keeps a session alive whenever bytes flow in EITHER
+			// direction. Only a session idle in both directions is torn down.
+			_ = dst.SetReadDeadline(time.Now().Add(idle))
 		}
 		if rerr != nil {
 			return
