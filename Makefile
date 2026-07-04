@@ -767,7 +767,7 @@ release-snapshot: ## Build a local snapshot release (.deb + archives, no publish
 HARNESS_DIR := deploy/terraform/test-harness
 OP_AWS := eval "$$(op plugin run -- aws configure export-credentials --format env)"
 
-.PHONY: harness-spot-report harness-up harness-config harness-down
+.PHONY: harness-spot-report harness-up harness-config harness-down harness-chaos-kill harness-chaos-partition harness-chaos-heal harness-chaos-latency
 
 harness-spot-report: ## Survey spot price + 90-day stability for the harness instance types
 	$(OP_AWS) && bash dev/aws/spot-report.sh && bash dev/aws/spot-stability.sh
@@ -789,3 +789,39 @@ ifndef NAME
 	$(error NAME is required)
 endif
 	cd $(HARNESS_DIR) && ($(OP_AWS)) && tofu workspace select $(NAME) && tofu destroy -var env_name=$(NAME) -var otherix_version=$(OTHERIX_VERSION)
+
+harness-chaos-kill: ## Permanently terminate a node: make harness-chaos-kill NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n]
+ifndef NAME
+	$(error NAME is required, e.g. make harness-chaos-kill NAME=smoke1 ROLE=agent)
+endif
+ifndef ROLE
+	$(error ROLE is required (cp|agent|gateway), e.g. make harness-chaos-kill NAME=smoke1 ROLE=agent)
+endif
+	cd $(HARNESS_DIR) && ($(OP_AWS)) && tofu workspace select $(NAME) && bash ../../../dev/chaos/kill.sh $(NAME) $(ROLE) $(INDEX)
+
+harness-chaos-partition: ## Network-isolate a node: make harness-chaos-partition NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n]
+ifndef NAME
+	$(error NAME is required, e.g. make harness-chaos-partition NAME=smoke1 ROLE=agent)
+endif
+ifndef ROLE
+	$(error ROLE is required (cp|agent|gateway), e.g. make harness-chaos-partition NAME=smoke1 ROLE=agent)
+endif
+	cd $(HARNESS_DIR) && ($(OP_AWS)) && tofu workspace select $(NAME) && bash ../../../dev/chaos/partition.sh $(NAME) $(ROLE) $(INDEX)
+
+harness-chaos-heal: ## Reverse partition/latency on a node: make harness-chaos-heal NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n]
+ifndef NAME
+	$(error NAME is required, e.g. make harness-chaos-heal NAME=smoke1 ROLE=agent)
+endif
+ifndef ROLE
+	$(error ROLE is required (cp|agent|gateway), e.g. make harness-chaos-heal NAME=smoke1 ROLE=agent)
+endif
+	cd $(HARNESS_DIR) && ($(OP_AWS)) && tofu workspace select $(NAME) && bash ../../../dev/chaos/heal.sh $(NAME) $(ROLE) $(INDEX)
+
+harness-chaos-latency: ## Add latency/loss to a node: make harness-chaos-latency NAME=<env> ROLE=<cp|agent|gateway> [INDEX=n] [DELAY=ms] [LOSS=pct]
+ifndef NAME
+	$(error NAME is required, e.g. make harness-chaos-latency NAME=smoke1 ROLE=agent)
+endif
+ifndef ROLE
+	$(error ROLE is required (cp|agent|gateway), e.g. make harness-chaos-latency NAME=smoke1 ROLE=agent)
+endif
+	cd $(HARNESS_DIR) && ($(OP_AWS)) && tofu workspace select $(NAME) && bash ../../../dev/chaos/latency.sh $(NAME) $(ROLE) $(INDEX) $(DELAY) $(LOSS)
