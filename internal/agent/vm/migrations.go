@@ -323,6 +323,23 @@ type OutgoingSpec struct {
 // immediately (202 semantics). Every failure path leaves the VM on this node
 // (fail-safe) and marks the migration failed.
 func (m *Manager) StartOutgoing(ctx context.Context, s OutgoingSpec) (*AgentTask, error) {
+	// Idempotent resume: the CP persists the agent_task_id only AFTER this call
+	// returns (run.go), so a crash / job redelivery in that window re-POSTs the
+	// outgoing start for the same migration. A second StartOutgoing must NOT mint
+	// a new task, Put-overwrite the source record, and spawn a second concurrent
+	// push against the same guest QMP (split-brain). If this node already started
+	// this migration as source, replay the original task - mirroring the
+	// StartIncoming / startIncomingLive resumption guard - so the CP re-persists
+	// the same agent_task_id instead of double-driving the saga.
+	if rec, ok := m.migrations.Get(s.MigrationID); ok && rec.Role == migration.RoleSource {
+		if task := m.tasks.Get(rec.AgentTaskID); task != nil {
+			return task, nil
+		}
+		// Source record exists but its task was reaped: still refuse to spawn a
+		// second saga. Surface a retryable error rather than double-starting.
+		return nil, fmt.Errorf("migration %s already started on this node; original task unavailable", s.MigrationID)
+	}
+
 	v, err := m.Get(s.VMUUID)
 	if err != nil {
 		return nil, fmt.Errorf("vm %s: %v", s.VMUUID, err)
