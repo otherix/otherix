@@ -151,6 +151,12 @@ func runSnapshotCreate(ctx context.Context, st WorkerStore, exec SnapshotExecuto
 	// projection runs first: a finalize without the manifest would leave a "success"
 	// task pointing at an empty-manifest snapshot.
 	if err := st.SnapshotManifestApplied(ctx, args.SnapshotID, nodeID, res.Disks, res.VMStateAtSnapshot); err != nil {
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			// Transient CAS contention on the snapshot row (a concurrent delete
+			// racing this projection): retry the job rather than failing a capture
+			// that actually succeeded on the agent.
+			return fmt.Errorf("apply manifest (retryable): %w", err)
+		}
 		return failCreateTask(ctx, st, log, "snapshots.create", taskID, args.SnapshotID, errCodeSnapshotFailed, fmt.Errorf("apply manifest: %v", err))
 	}
 	result, err := json.Marshal(struct {
