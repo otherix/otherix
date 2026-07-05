@@ -431,7 +431,17 @@ func (s *Store) MarkNodesGone(ctx context.Context, goneBefore time.Time) ([]stor
 		if n.Status != store.NodeStatusUnreachable {
 			continue
 		}
-		if n.LastHeartbeatAt != nil && !n.LastHeartbeatAt.Before(goneBefore) {
+		// A node that has never sent a heartbeat is measured from when it joined
+		// (created_at), not treated as infinitely stale. Otherwise a freshly
+		// joined node still finishing its bootstrap would be advanced straight to
+		// the terminal 'gone' before it ever reports in - a slow first heartbeat
+		// must get the full grace window, and this transition fails toward
+		// inaction (the node lingers in the reversible 'unreachable' instead).
+		staleSince := n.LastHeartbeatAt
+		if staleSince == nil {
+			staleSince = &n.CreatedAt
+		}
+		if !staleSince.Before(goneBefore) {
 			continue
 		}
 		_, written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusGone)

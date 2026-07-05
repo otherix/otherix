@@ -385,6 +385,56 @@ func TestMarkNodesGone(t *testing.T) {
 	}
 }
 
+// TestMarkNodesGoneNeverHeartbeated pins the grace window for a node that has
+// never sent a heartbeat: its gone-eligibility is measured from created_at, not
+// treated as infinitely stale. A freshly-joined node that is slow to send its
+// first heartbeat must stay in the reversible 'unreachable' state until the full
+// grace window elapses from creation - never reaped straight to the terminal
+// 'gone' before it has had a chance to report in.
+func TestMarkNodesGoneNeverHeartbeated(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	seedAt := func(name string, status store.NodeStatus, createdAt time.Time) uuid.UUID {
+		id := uuid.New()
+		n := store.Node{
+			ID:                 id,
+			Name:               uniqueNodeName(name),
+			Architecture:       store.CpuArchAmd64,
+			AdvertisedEndpoint: "https://node.example:9443",
+			MigrationHost:      "10.0.0.1",
+			Status:             status,
+			LastHeartbeatAt:    nil, // never heartbeated
+			CreatedAt:          createdAt,
+			UpdatedAt:          createdAt,
+		}
+		if err := cli.PutJSON(ctx, etcd.Key("nodes", id.String()), n); err != nil {
+			t.Fatalf("seed node %q: %v", name, err)
+		}
+		return id
+	}
+
+	// unreachable, never heartbeated, created inside the grace window -> stays.
+	fresh := seedAt("n-fresh", store.NodeStatusUnreachable, time.Now().Add(-30*time.Second))
+	// unreachable, never heartbeated, created before the grace window -> gone.
+	old := seedAt("n-old", store.NodeStatusUnreachable, time.Now().Add(-10*time.Minute))
+
+	goneBefore := time.Now().Add(-5 * time.Minute)
+	rows, err := s.MarkNodesGone(ctx, goneBefore)
+	if err != nil {
+		t.Fatalf("MarkNodesGone: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != old {
+		t.Fatalf("rows = %+v, want exactly the old node %s", rows, old)
+	}
+	if n, _ := s.NodeByID(ctx, fresh); n.Status != store.NodeStatusUnreachable {
+		t.Errorf("fresh never-heartbeated node status = %v, want unreachable (within grace)", n.Status)
+	}
+	if n, _ := s.NodeByID(ctx, old); n.Status != store.NodeStatusGone {
+		t.Errorf("old never-heartbeated node status = %v, want gone (past grace)", n.Status)
+	}
+}
+
 // seedNodeRow writes a node row directly, so a test controls status,
 // last_heartbeat_at, and drain_task_id precisely.
 func seedNodeRow(t *testing.T, cli etcdPutter, name string, status store.NodeStatus, hb *time.Time, drainTaskID *uuid.UUID) uuid.UUID {
