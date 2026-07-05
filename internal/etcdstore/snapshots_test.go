@@ -867,3 +867,48 @@ func TestSnapshotManifestAppliedVsDelete_NoTornState(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateSnapshotMeta_SoftDeletedNoResurrect pins the third writer closed by
+// the CAS class fix: a metadata patch must NOT resurrect a snapshot a concurrent
+// delete already soft-deleted. Sequentially: delete, then patch -> ErrNotFound,
+// and the row stays soft-deleted (never blind-put back to a live ready row with
+// its owner index already dropped).
+func TestUpdateSnapshotMeta_SoftDeletedNoResurrect(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snapmetadel")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-metadel-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "daily")
+	if _, err := s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+
+	// A rename patch (guard-move branch) on the deleted row must not resurrect it.
+	newName := "weekly"
+	if _, err := s.UpdateSnapshotMeta(ctx, store.UpdateSnapshotMetaParams{ID: snap.ID, Name: &newName}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateSnapshotMeta(rename) on a soft-deleted row = %v, want ErrNotFound (no resurrect)", err)
+	}
+	// A description patch (plain-put branch) likewise.
+	desc := "note"
+	if _, err := s.UpdateSnapshotMeta(ctx, store.UpdateSnapshotMetaParams{ID: snap.ID, Description: &desc}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateSnapshotMeta(description) on a soft-deleted row = %v, want ErrNotFound (no resurrect)", err)
+	}
+
+	if _, err := s.SnapshotByID(ctx, snap.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SnapshotByID after patch-on-deleted = %v, want ErrNotFound (row stays deleted)", err)
+	}
+	deleted, err := s.SnapshotByIDIncludingDeleted(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByIDIncludingDeleted: %v", err)
+	}
+	if deleted.DeletedAt == nil {
+		t.Errorf("row resurrected: DeletedAt = nil, want still soft-deleted")
+	}
+}

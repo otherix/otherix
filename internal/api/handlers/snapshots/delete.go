@@ -89,6 +89,15 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 			writeSnapshotNotFound(w, r)
 			return
 		}
+		if errors.Is(err, store.ErrConcurrentUpdate) {
+			// Transient: the snapshot row changed concurrently (a racing projection
+			// or delete) and the CAS retries were exhausted. Ask the client to retry
+			// rather than reporting a permanent 500.
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeConflict, "snapshot changed concurrently; retry",
+				map[string]any{"retry_after_seconds": 1})
+			return
+		}
 		h.log.ErrorContext(r.Context(), "snapshots.delete failed",
 			"snapshot_id", id.String(), "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,

@@ -265,10 +265,50 @@ func (s *Store) snapshotsByPrimaryPrefix(ctx context.Context) ([]store.Snapshot,
 // guard being free; a collision returns store.ErrSnapshotNameExists. A
 // description-only change is a plain put. Nil fields are left unchanged.
 func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMetaParams) (store.Snapshot, error) {
-	existing, err := s.SnapshotByID(ctx, p.ID)
-	if err != nil {
-		return store.Snapshot{}, err
+	const maxAttempts = 3
+	for attempt := 0; ; attempt++ {
+		updated, retry, err := s.tryUpdateSnapshotMeta(ctx, p)
+		if err != nil {
+			return store.Snapshot{}, err
+		}
+		if !retry {
+			return updated, nil
+		}
+		// CAS lost: the row moved between read and commit. Re-read and retry a
+		// bounded number of times before surfacing the conflict.
+		if attempt+1 >= maxAttempts {
+			return store.Snapshot{}, store.ErrConcurrentUpdate
+		}
 	}
+}
+
+// tryUpdateSnapshotMeta runs one CAS-guarded attempt of UpdateSnapshotMeta. It
+// returns (updated, false, nil) on commit, (_, false, err) on a terminal error
+// (ErrNotFound / ErrSnapshotNameExists / store fault), and (_, true, nil) when
+// the row's ModRevision CAS lost and the caller should re-read and retry.
+func (s *Store) tryUpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMetaParams) (store.Snapshot, bool, error) {
+	// Read the row + its ModRevision so the meta put CAS-guards on it. A blind put
+	// here can resurrect a row a concurrent DeleteSnapshot soft-deleted between this
+	// read and this commit (writing the pre-delete value back with DeletedAt
+	// cleared) - a guardless "ready" row whose owner index the delete already
+	// dropped, pointing at blobs the delete's GC may have removed.
+	resp, err := s.c.Raw().Get(ctx, snapshotKey(p.ID))
+	if err != nil {
+		return store.Snapshot{}, false, fmt.Errorf("read snapshot %s: %v", p.ID, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return store.Snapshot{}, false, store.ErrNotFound
+	}
+	rev := resp.Kvs[0].ModRevision
+	var existing store.Snapshot
+	if err := json.Unmarshal(resp.Kvs[0].Value, &existing); err != nil {
+		return store.Snapshot{}, false, fmt.Errorf("unmarshal snapshot %s: %v", p.ID, err)
+	}
+	if existing.DeletedAt != nil {
+		// Soft-deleted: never resurrect it via a metadata patch.
+		return store.Snapshot{}, false, store.ErrNotFound
+	}
+
 	updated := existing
 	if p.Description != nil {
 		updated.Description = *p.Description
@@ -277,28 +317,33 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 		updated.Name = *p.Name
 	}
 	updated.UpdatedAt = time.Now().UTC()
-
 	val, err := etcd.Marshal(updated)
 	if err != nil {
-		return store.Snapshot{}, err
+		return store.Snapshot{}, false, err
 	}
 
-	// Detect a true rename by guard inequality (the guard is lowercased), not by
-	// a raw name compare: a case-only change ("daily" -> "Daily") yields the same
-	// guard key, so it must take the plain-put branch rather than a guard-move
-	// txn that would OpPut+OpDelete the same key (etcd rejects that as a duplicate
-	// key). The plain put still persists the new display-case name.
+	// Detect a true rename by guard inequality (the guard is lowercased), not by a
+	// raw name compare: a case-only change ("daily" -> "Daily") yields the same
+	// guard key, so it must take the plain-put branch rather than a guard-move txn
+	// that would OpPut+OpDelete the same key (etcd rejects that as a duplicate key).
+	// The plain put still persists the new display-case name.
 	oldGuard := snapshotVMNameGuard(existing.VmID, existing.Name)
 	newGuard := snapshotVMNameGuard(existing.VmID, updated.Name)
+	rowUnchanged := clientv3.Compare(clientv3.ModRevision(snapshotKey(p.ID)), "=", rev)
+
 	if oldGuard == newGuard {
-		if err := s.c.Put(ctx, snapshotKey(p.ID), val); err != nil {
-			return store.Snapshot{}, err
+		txnResp, err := s.c.Raw().Txn(ctx).
+			If(rowUnchanged).
+			Then(clientv3.OpPut(snapshotKey(p.ID), string(val))).
+			Commit()
+		if err != nil {
+			return store.Snapshot{}, false, fmt.Errorf("update snapshot meta txn: %v", err)
 		}
-		return updated, nil
+		return updated, !txnResp.Succeeded, nil
 	}
 
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0)).
+	txnResp, err := s.c.Raw().Txn(ctx).
+		If(rowUnchanged, clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0)).
 		Then(
 			clientv3.OpPut(newGuard, p.ID.String()),
 			clientv3.OpDelete(oldGuard),
@@ -306,12 +351,22 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 		).
 		Commit()
 	if err != nil {
-		return store.Snapshot{}, fmt.Errorf("update snapshot meta txn: %v", err)
+		return store.Snapshot{}, false, fmt.Errorf("update snapshot meta txn: %v", err)
 	}
-	if !resp.Succeeded {
-		return store.Snapshot{}, store.ErrSnapshotNameExists
+	if txnResp.Succeeded {
+		return updated, false, nil
 	}
-	return updated, nil
+	// The AND-ed guard failed for one of two reasons: the new name is taken, or the
+	// row moved under us. Disambiguate: a present newGuard is a real name collision;
+	// otherwise the row-revision compare lost and the caller retries.
+	gresp, gerr := s.c.Raw().Get(ctx, newGuard)
+	if gerr != nil {
+		return store.Snapshot{}, false, fmt.Errorf("read snapshot name guard: %v", gerr)
+	}
+	if len(gresp.Kvs) > 0 {
+		return store.Snapshot{}, false, store.ErrSnapshotNameExists
+	}
+	return store.Snapshot{}, true, nil
 }
 
 // checkSnapshotDeletable runs the two fail-closed guards a soft-delete must pass:
