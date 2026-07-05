@@ -399,11 +399,14 @@ paths:
 
         **Required permission:** `api_token:manage` (own scope for the
         token's `user_id`; admin may target any user).
+
+        **Idempotency-Key intentionally not honored** — each call mints a
+        fresh token (sharing a cached response would compromise the
+        once-only plaintext invariant, and would persist the plaintext at
+        rest in the idempotency store).
       security:
         - bearerAuth: []
         - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -423,7 +426,6 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
     get:
       operationId: apiTokens.list
@@ -490,11 +492,14 @@ paths:
       operationId: apiTokens.createMe
       tags: [api-tokens]
       summary: Create an API token for the current user.
+      description: |
+        **Idempotency-Key intentionally not honored** — each call mints a
+        fresh token (sharing a cached response would compromise the
+        once-only plaintext invariant, and would persist the plaintext at
+        rest in the idempotency store).
       security:
         - bearerAuth: []
         - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -510,7 +515,6 @@ paths:
                 $ref: "#/components/schemas/ApiTokenCreateResponse"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
-        "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
     get:
       operationId: apiTokens.listMe
