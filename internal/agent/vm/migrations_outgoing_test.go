@@ -6,6 +6,8 @@ package vm
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,6 +57,63 @@ func TestStartOutgoingPushesAndCompletes(t *testing.T) {
 	waitPhase(t, m, migID, "completed")
 	if !argsContain(convertArgs, "--target-image-opts") {
 		t.Errorf("convert not invoked as push: %v", convertArgs)
+	}
+}
+
+// TestStartOutgoingIsIdempotentPerMigration pins the split-brain guard: the CP
+// persists the agent_task_id only AFTER StartOutgoing returns, so a crash /
+// redelivery in that window re-POSTs the outgoing start for the same migration.
+// A second StartOutgoing must replay the ORIGINAL task, not mint a new one,
+// Put-overwrite the source record, and spawn a second concurrent push against
+// the same guest QMP. Without the guard task2 gets a fresh id, the record's
+// AgentTaskID is overwritten, and convert runs twice - all three asserted.
+func TestStartOutgoingIsIdempotentPerMigration(t *testing.T) {
+	m := newTestManager(t)
+	v := m.seedStoppedVM(t, "demo")
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var convertCalls int32
+	m.migRunConvert = func(ctx context.Context, args []string) error {
+		atomic.AddInt32(&convertCalls, 1)
+		once.Do(func() { close(started) })
+		<-release
+		return nil
+	}
+
+	migID := uuid.New()
+	spec := OutgoingSpec{
+		MigrationID: migID, VMUUID: v.ID, VMName: v.Name, Mode: "offline",
+		TargetEndpoint: "10.0.0.2:49152", TargetIdentity: "node-tgt.agents.otherix.local", AuthToken: migID.String(),
+	}
+	task1, err := m.StartOutgoing(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("StartOutgoing #1 error = %v", err)
+	}
+	<-started // saga #1 is now pushing (convert blocked on release)
+
+	task2, err := m.StartOutgoing(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("StartOutgoing #2 (redelivery) error = %v", err)
+	}
+	if task2.ID != task1.ID {
+		t.Errorf("redelivered StartOutgoing minted new task %s, want original %s (split-brain double-saga)",
+			task2.ID, task1.ID)
+	}
+	rec, ok := m.Migrations().Get(migID)
+	if !ok {
+		t.Fatal("migration record missing after StartOutgoing")
+	}
+	if rec.AgentTaskID != task1.ID {
+		t.Errorf("migration record AgentTaskID = %s, want %s (record overwritten by duplicate start)",
+			rec.AgentTaskID, task1.ID)
+	}
+
+	close(release)
+	waitPhase(t, m, migID, "completed")
+	if n := atomic.LoadInt32(&convertCalls); n != 1 {
+		t.Errorf("convert invoked %d times, want 1 (a duplicate saga was spawned)", n)
 	}
 }
 
