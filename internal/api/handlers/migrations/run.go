@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,6 +90,12 @@ type MigrationAgentClient interface {
 	// CancelMigration tells an agent (the bound TARGET on a terminal-failure /
 	// cancel of a live migration) to reap its incoming setup. Best-effort.
 	CancelMigration(ctx context.Context, endpoint, vmName, migrationID string) (agentapi.Migration, error)
+	// GetMigration reads an agent's migration record by migration_id (read-only).
+	// Used to arbitrate a cancelled migration whose agent_task_id was never
+	// persisted (CP crash between the outgoing POST and the persist): a 404
+	// AgentError means the source truly never started, any 200 carries the
+	// source's phase to arbitrate on.
+	GetMigration(ctx context.Context, endpoint, vmName, migrationID string) (agentapi.Migration, error)
 }
 
 // Placer is the placement seam: a node-less migrate scores a target
@@ -729,14 +736,15 @@ func reconcileCancelledMigration(ctx context.Context, st MigrationWorkerStore, a
 		return fmt.Errorf("reload task for cancelled migration %s: %v", m.ID, err)
 	}
 	if task.AgentTaskID == nil {
-		// Cancelled before the source handshake started: nothing durable moved, the
-		// source was never contacted. Just finalize the task cancelled.
-		if ferr := finalizeTask(ctx, st, taskID, store.TaskStatusCancelled, ErrCodeMigrationCancelled, m.ErrorMessage); ferr != nil {
-			return fmt.Errorf("finalize task cancelled for cancelled migration %s: %v", m.ID, ferr)
-		}
-		log.InfoContext(ctx, "reconciled dangling task to cancelled for cancelled migration (no source handshake)",
-			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
-		return nil
+		// A nil agent_task_id does NOT prove the source was never contacted: the id
+		// is persisted only AFTER the outgoing StartOutgoing POST returns
+		// (startOrResume), so a CP crash in that window leaves it nil while the
+		// SOURCE is already pushing. Blindly finalizing cancelled here would strand
+		// a source that autonomously completes and hands off - the VM ends up on the
+		// target while the CP records cancelled (split-brain / loss). Probe the
+		// source's migration record (read-only, keyed on migration_id) and arbitrate
+		// on it before finalizing.
+		return reconcileCancelledNoAgentTask(ctx, st, agent, log, taskID, m)
 	}
 	if m.SourceNodeID == nil {
 		// A cancelled migration that started a handshake but has no source is
@@ -791,6 +799,93 @@ func reconcileCancelledMigration(ctx context.Context, st MigrationWorkerStore, a
 	default:
 		// Indeterminate source status: source outcome UNKNOWN. Retry; do NOT destroy.
 		return fmt.Errorf("cancelled migration %s: unexpected source terminal status %q; retry", m.ID, terminal.Status)
+	}
+}
+
+// reconcileCancelledNoAgentTask arbitrates a cancelled migration whose task has
+// no persisted agent_task_id. It probes the SOURCE agent's migration record by
+// migration_id (read-only) and branches so the potentially-split-brain action
+// (finalize cancelled) is taken ONLY when the source is confirmed uninvolved or
+// aborted - never while it is in-flight or has already handed off:
+//
+//   - 404 (source has no record) -> the source was truly never contacted; the
+//     original safe behaviour: finalize the task cancelled. Nothing moved.
+//   - probe ERROR (source unreachable / 5xx) -> outcome UNKNOWN; RETRYABLE, touch
+//     nothing (fail toward inaction).
+//   - source phase COMPLETED -> the source handed off; the live copy is on the
+//     target. Commit the cutover (the only non-loss outcome), like the
+//     agent-task success arm.
+//   - source phase FAILED / CANCELLED -> the source aborted; guest alive on
+//     source. Reap the target incoming and finalize cancelled.
+//   - source phase in-flight (setup / active / postcopy_active) -> outcome
+//     UNKNOWN; RETRYABLE. The source is still pushing; re-arbitrate next delivery
+//     (the source record is retained until it reaches a terminal phase).
+//
+// This is strictly safer than the pre-fix nil-arm, which always finalized
+// cancelled: the 404 branch preserves that behaviour, and every other branch
+// only adds a non-destructive recovery the old code got wrong.
+func reconcileCancelledNoAgentTask(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, taskID uuid.UUID, m store.Migration) error {
+	finalizeCancelled := func(reason string) error {
+		if ferr := finalizeTask(ctx, st, taskID, store.TaskStatusCancelled, ErrCodeMigrationCancelled, m.ErrorMessage); ferr != nil {
+			return fmt.Errorf("finalize task cancelled for cancelled migration %s: %v", m.ID, ferr)
+		}
+		log.InfoContext(ctx, "reconciled dangling task to cancelled for cancelled migration ("+reason+")",
+			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
+		return nil
+	}
+
+	if m.SourceNodeID == nil {
+		// No source to probe: a cancelled migration with no source truly never
+		// contacted anyone. Finalize cancelled (the original safe behaviour).
+		return finalizeCancelled("no source node")
+	}
+	source, err := st.NodeByID(ctx, *m.SourceNodeID)
+	if err != nil {
+		// Source node unresolved: outcome UNKNOWN. Retry; do NOT finalize.
+		return fmt.Errorf("load source node for cancelled migration %s: %v", m.ID, err)
+	}
+	vm, err := st.VMByID(ctx, m.VmID)
+	if err != nil {
+		return fmt.Errorf("load vm for cancelled migration %s: %v", m.ID, err)
+	}
+
+	srcMig, err := agent.GetMigration(ctx, source.AdvertisedEndpoint, vm.Name, m.ID.String())
+	if err != nil {
+		var ae *agentclient.AgentError
+		if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+			// The source has no record for this migration: never contacted (the
+			// cancel landed at/before the handshake). Safe to finalize cancelled.
+			return finalizeCancelled("source has no migration record")
+		}
+		// Source outcome UNKNOWN (unreachable / 5xx): fail toward inaction.
+		return fmt.Errorf("probe source migration %s: %v", m.ID, err)
+	}
+
+	switch srcMig.Phase {
+	case agentapi.MigrationPhaseCompleted:
+		// The source HANDED OFF; the live copy is on the target. The cancel lost
+		// the race. Commit the cutover (mirroring the agent-task success arm) - the
+		// only outcome that does not lose a running VM.
+		log.WarnContext(ctx, "cancel superseded by completed source handoff on reconcile (no agent task; completing to target)",
+			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
+		if err := commitCutover(ctx, st, log, taskID, m.ID, agentclient.TaskTerminal{Status: "success"}); err != nil {
+			return err
+		}
+		if m.TargetNodeID != nil {
+			if target, terr := st.NodeByID(ctx, *m.TargetNodeID); terr == nil {
+				convergePostCutover(ctx, st, agent, log, m.ID, vm, source, target, m.Live)
+			}
+		}
+		return nil
+	case agentapi.MigrationPhaseFailed, agentapi.MigrationPhaseCancelled:
+		// The source ABORTED; the guest is still alive on source (fail-safe). Reap
+		// the target incoming and finalize cancelled.
+		reapTargetIncoming(ctx, st, agent, log, m)
+		return finalizeCancelled("source aborted; vm stays on source")
+	default:
+		// setup / active / postcopy_active: the source is still pushing, outcome
+		// UNKNOWN. Retry; do NOT finalize or destroy. Re-arbitrate next delivery.
+		return fmt.Errorf("cancelled migration %s: source still in-flight (phase %q); retry", m.ID, srcMig.Phase)
 	}
 }
 
