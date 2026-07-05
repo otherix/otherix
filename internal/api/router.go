@@ -321,30 +321,41 @@ func mountV1(r chi.Router, deps RouterDeps) {
 			})
 		})
 
+		// User + API-token management. Mounted as its own group (authn at
+		// the group level, idem wrapping only the routes that need it) so the
+		// two api-token CREATE routes sit OUTSIDE idem: each mints a once-only
+		// otx_ plaintext, and idem would persist that live bearer credential
+		// into the idempotency_keys store at rest for 24h. Mirrors the
+		// join-token and load-balancer carve-outs above.
+		r.Group(func(r chi.Router) {
+			r.Use(authn)
+			r.Route("/users", func(r chi.Router) {
+				apiTokenPerm := middleware.RequirePermission(auth.PermAPITokenManage, deps.Logger)
+				// api-token CREATE — idem NO (once-only plaintext, never cached).
+				r.With(apiTokenPerm).Post("/me/api-tokens", tokensH.CreateMe)
+				r.With(apiTokenPerm).Post("/{id}/api-tokens", tokensH.CreateForUser)
+
+				// Everything else under /users runs with idem.
+				r.Group(func(r chi.Router) {
+					r.Use(idem)
+					r.Get("/me", usersH.GetMe)
+					r.Patch("/me", usersH.UpdateMe)
+					r.With(apiTokenPerm).Get("/me/api-tokens", tokensH.ListMe)
+					r.With(apiTokenPerm).Delete("/me/api-tokens/{token_id}", tokensH.DeleteMe)
+					r.With(apiTokenPerm).Get("/{id}/api-tokens", tokensH.ListForUser)
+					r.With(apiTokenPerm).Delete("/{id}/api-tokens/{token_id}", tokensH.DeleteForUser)
+					r.With(middleware.RequirePermission(auth.PermUserRead, deps.Logger)).Get("/", usersH.List)
+					r.With(middleware.RequirePermission(auth.PermUserRead, deps.Logger)).Get("/{id}", usersH.Get)
+					r.With(middleware.RequirePermission(auth.PermUserManage, deps.Logger)).Post("/", usersH.Create)
+					r.With(middleware.RequirePermission(auth.PermUserManage, deps.Logger)).Patch("/{id}", usersH.Update)
+					r.With(middleware.RequirePermission(auth.PermUserManage, deps.Logger)).Delete("/{id}", usersH.Delete)
+				})
+			})
+		})
+
 		r.Group(func(r chi.Router) {
 			r.Use(authn)
 			r.Use(idem)
-
-			r.Route("/users", func(r chi.Router) {
-				r.Get("/me", usersH.GetMe)
-				r.Patch("/me", usersH.UpdateMe)
-
-				r.Group(func(r chi.Router) {
-					r.Use(middleware.RequirePermission(auth.PermAPITokenManage, deps.Logger))
-					r.Post("/me/api-tokens", tokensH.CreateMe)
-					r.Get("/me/api-tokens", tokensH.ListMe)
-					r.Delete("/me/api-tokens/{token_id}", tokensH.DeleteMe)
-					r.Post("/{id}/api-tokens", tokensH.CreateForUser)
-					r.Get("/{id}/api-tokens", tokensH.ListForUser)
-					r.Delete("/{id}/api-tokens/{token_id}", tokensH.DeleteForUser)
-				})
-
-				r.With(middleware.RequirePermission(auth.PermUserRead, deps.Logger)).Get("/", usersH.List)
-				r.With(middleware.RequirePermission(auth.PermUserRead, deps.Logger)).Get("/{id}", usersH.Get)
-				r.With(middleware.RequirePermission(auth.PermUserManage, deps.Logger)).Post("/", usersH.Create)
-				r.With(middleware.RequirePermission(auth.PermUserManage, deps.Logger)).Patch("/{id}", usersH.Update)
-				r.With(middleware.RequirePermission(auth.PermUserManage, deps.Logger)).Delete("/{id}", usersH.Delete)
-			})
 
 			r.Route("/nodes", func(r chi.Router) {
 				r.With(middleware.RequirePermission(auth.PermNodeRead, deps.Logger)).Get("/", nodesH.List)
