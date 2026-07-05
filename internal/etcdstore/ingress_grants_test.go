@@ -68,21 +68,31 @@ func TestIngressGrant_CreateLookupMutateRevoke(t *testing.T) {
 	if byName, err := st.IngressGrantByName(ctx, "ACME-ALICE"); err != nil || byName.ID != g.ID {
 		t.Fatalf("IngressGrantByName(case-insensitive) = (%v,%v), want (%v,nil)", byName.ID, err, g.ID)
 	}
-	// Add a second VM; scope grows.
-	upd, err := st.AddIngressGrantVM(ctx, g.ID, store.IngressGrantVM{VMName: "web02", Login: "ubuntu"})
+	// Add a second VM; scope grows. The VMID binds the grant to a stable id.
+	web02a := uuid.New()
+	upd, err := st.AddIngressGrantVM(ctx, g.ID, store.IngressGrantVM{VMName: "web02", VMID: web02a, Login: "ubuntu"})
 	if err != nil {
 		t.Fatalf("AddIngressGrantVM() error = %v", err)
 	}
 	if got := loginFor(upd.VMs, "web02"); got != "ubuntu" {
 		t.Errorf("web02 login = %q, want ubuntu", got)
 	}
-	// Re-adding an existing VM replaces the login (idempotent on vm_name).
-	upd, err = st.AddIngressGrantVM(ctx, g.ID, store.IngressGrantVM{VMName: "web02", Login: "admin"})
+	if got := vmIDFor(upd.VMs, "web02"); got != web02a {
+		t.Errorf("web02 vm_id = %v, want %v", got, web02a)
+	}
+	// Re-adding an existing VM replaces the login AND re-binds the VMID
+	// (idempotent on vm_name): a name re-added after the old VM was deleted and
+	// reused must track the current VM's identity, not the stale one.
+	web02b := uuid.New()
+	upd, err = st.AddIngressGrantVM(ctx, g.ID, store.IngressGrantVM{VMName: "web02", VMID: web02b, Login: "admin"})
 	if err != nil {
 		t.Fatalf("AddIngressGrantVM(replace) error = %v", err)
 	}
 	if got := loginFor(upd.VMs, "web02"); got != "admin" {
 		t.Errorf("web02 login after replace = %q, want admin", got)
+	}
+	if got := vmIDFor(upd.VMs, "web02"); got != web02b {
+		t.Errorf("web02 vm_id after replace = %v, want %v (re-bound)", got, web02b)
 	}
 	if n := countVM(upd.VMs, "web02"); n != 1 {
 		t.Errorf("web02 entry count = %d, want 1 (no duplicate)", n)
@@ -187,6 +197,15 @@ func loginFor(vms []store.IngressGrantVM, name string) string {
 		}
 	}
 	return ""
+}
+
+func vmIDFor(vms []store.IngressGrantVM, name string) uuid.UUID {
+	for _, v := range vms {
+		if v.VMName == name {
+			return v.VMID
+		}
+	}
+	return uuid.Nil
 }
 
 func countVM(vms []store.IngressGrantVM, name string) int {

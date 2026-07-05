@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/response"
@@ -193,8 +194,21 @@ func (h *Handler) authorizeRelay(ctx context.Context, tok, vmName string, port i
 		if err != nil {
 			return false
 		}
-		_, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, port, now)
-		return reachable && auth.SourceIPAllows(grant.SourceIP, clientIP)
+		_, wantID, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, port, now)
+		if !reachable || !auth.SourceIPAllows(grant.SourceIP, clientIP) {
+			return false
+		}
+		// Bind the grant to the VM identity it was created against, not just the
+		// name: resolve the name and reject if it now points at a different VM (a
+		// deleted VM whose name another owner reused). A zero wantID marks a legacy
+		// grant with no binding - treat it as name-only. The handler re-loads the
+		// VM to resolve its node; this idempotent read is the enforcement point so
+		// the reject stays inside the single uniform-401 authorization path.
+		vm, err := h.store.VMByName(ctx, vmName)
+		if err != nil {
+			return false
+		}
+		return wantID == uuid.Nil || wantID == vm.ID
 	}
 	if h.sshDeps.Verifier == nil {
 		return false

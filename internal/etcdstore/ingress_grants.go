@@ -170,14 +170,18 @@ func (s *Store) ListIngressGrants(ctx context.Context, arg store.ListIngressGran
 	return grants, nil
 }
 
-// AddIngressGrantVM adds (or replaces the login of) a VM entry in the grant's
+// AddIngressGrantVM adds (or re-binds an existing) VM entry in the grant's
 // mutable scope under a ModRevision CAS, bumping updated_at. Idempotent on an
-// existing vm.VMName: the entry's login is replaced, never duplicated.
+// existing vm.VMName: the entry's login AND VMID are replaced, never
+// duplicated. Re-binding the VMID matters when a name is re-added after the old
+// VM was deleted and the name reused - the entry must track the current VM's
+// identity, not the stale one.
 func (s *Store) AddIngressGrantVM(ctx context.Context, grantID uuid.UUID, vm store.IngressGrantVM) (store.IngressGrant, error) {
 	return s.mutateIngressGrant(ctx, grantID, func(g *store.IngressGrant) {
 		for i := range g.VMs {
 			if g.VMs[i].VMName == vm.VMName {
 				g.VMs[i].Login = vm.Login
+				g.VMs[i].VMID = vm.VMID
 				return
 			}
 		}

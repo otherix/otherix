@@ -144,7 +144,8 @@ func (h *Handler) authorizeIngressGrant(r *http.Request, tok, vmName string, por
 	if err != nil {
 		return store.VM{}, false
 	}
-	if _, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, port, time.Now()); !reachable {
+	_, wantID, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, port, time.Now())
+	if !reachable {
 		return store.VM{}, false
 	}
 	if !auth.SourceIPAllows(grant.SourceIP, ap.Addr()) {
@@ -152,6 +153,12 @@ func (h *Handler) authorizeIngressGrant(r *http.Request, tok, vmName string, por
 	}
 	vm, err := h.store.VMByName(r.Context(), vmName)
 	if err != nil {
+		return store.VM{}, false
+	}
+	// Bind the grant to the VM identity it was created against, not just the
+	// name: a deleted VM whose name another owner reused must not inherit the
+	// grant. A zero wantID marks a legacy grant with no binding (name-only).
+	if wantID != uuid.Nil && wantID != vm.ID {
 		return store.VM{}, false
 	}
 	return vm, true

@@ -40,11 +40,14 @@ func (h *Handler) AddVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.authorizeVMs(w, r, caller, []store.IngressGrantVM{entry}) {
+	// authorizeVMs stamps entry.VMID with the resolved VM's id in place, so read
+	// the stamped element back before handing it to the store.
+	entries := []store.IngressGrantVM{entry}
+	if !h.authorizeVMs(w, r, caller, entries) {
 		return
 	}
 
-	updated, err := h.store.AddIngressGrantVM(r.Context(), grant.ID, entry)
+	updated, err := h.store.AddIngressGrantVM(r.Context(), grant.ID, entries[0])
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeGrantNotFound(w, r)

@@ -48,11 +48,13 @@ func IsIngressGrantFormat(s string) bool {
 }
 
 // GrantVMScope is what a grant authorizes on one VM: the guest TCP ports the
-// bearer may reach, plus the optional pinned SSH login consulted when the
-// reached port is the SSH port.
+// bearer may reach, the optional pinned SSH login consulted when the reached
+// port is the SSH port, and the VM identity the grant was bound to. VMID lets
+// the connect-time authorizers reject a stale name binding (a reused VM name).
 type GrantVMScope struct {
 	Ports []int
 	Login string
+	VMID  uuid.UUID
 }
 
 // GrantPrincipal is the synthetic principal an ingress-grant token resolves
@@ -73,7 +75,7 @@ type GrantPrincipal struct {
 func GrantPrincipalFromStore(g store.IngressGrant) GrantPrincipal {
 	vms := make(map[string]GrantVMScope, len(g.VMs))
 	for _, vm := range g.VMs {
-		vms[vm.VMName] = GrantVMScope{Ports: vm.Ports, Login: vm.Login}
+		vms[vm.VMName] = GrantVMScope{Ports: vm.Ports, Login: vm.Login, VMID: vm.VMID}
 	}
 	return GrantPrincipal{
 		GrantID:   g.ID,
@@ -84,23 +86,26 @@ func GrantPrincipalFromStore(g store.IngressGrant) GrantPrincipal {
 }
 
 // CanReach reports whether the grant authorizes vmName on port at time now and,
-// if so, the pinned login. It returns false when the grant is revoked, has
-// expired, vmName is not in the set, or port is not in that VM's port set.
-func (p GrantPrincipal) CanReach(vmName string, port int, now time.Time) (login string, ok bool) {
+// if so, the pinned login plus the VM identity the grant was bound to. It
+// returns ok=false when the grant is revoked, has expired, vmName is not in the
+// set, or port is not in that VM's port set. The returned vmID lets the caller
+// assert the name-resolved VM matches the grant's binding (a zero vmID marks a
+// legacy grant the caller treats as name-only).
+func (p GrantPrincipal) CanReach(vmName string, port int, now time.Time) (login string, vmID uuid.UUID, ok bool) {
 	if p.Revoked {
-		return "", false
+		return "", uuid.Nil, false
 	}
 	if p.ExpiresAt != nil && !now.Before(*p.ExpiresAt) {
-		return "", false
+		return "", uuid.Nil, false
 	}
 	scope, ok := p.VMs[vmName]
 	if !ok {
-		return "", false
+		return "", uuid.Nil, false
 	}
 	for _, allowed := range scope.Ports {
 		if allowed == port {
-			return scope.Login, true
+			return scope.Login, scope.VMID, true
 		}
 	}
-	return "", false
+	return "", uuid.Nil, false
 }

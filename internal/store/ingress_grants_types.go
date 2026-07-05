@@ -14,10 +14,18 @@ import (
 // closed-by-default reach set (a grant reaches only the ports it lists). The
 // login is recorded for the SSH-cert path (the port-22 principal); the guest
 // sshd owns login policy, there is no control-plane allow-list per VM.
+//
+// VMID is the stable identity the grant was bound to at create / add-vm time.
+// The connect-time authorizers resolve the VM by name but then assert the
+// name-resolved VM's ID equals VMID, so a deleted VM whose name is later reused
+// by another owner cannot inherit the grant. A zero VMID marks a legacy grant
+// minted before this binding existed; it is treated as name-only (the
+// assertion is skipped) for backward compatibility.
 type IngressGrantVM struct {
-	VMName string `json:"vm_name"`
-	Ports  []int  `json:"ports"`
-	Login  string `json:"login,omitempty"`
+	VMName string    `json:"vm_name"`
+	VMID   uuid.UUID `json:"vm_id"`
+	Ports  []int     `json:"ports"`
+	Login  string    `json:"login,omitempty"`
 }
 
 // IngressGrant is a revocable, per-person access grant an external SSH-only user

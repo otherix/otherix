@@ -34,16 +34,17 @@ func TestGrantToken_FormatAndHashRoundTrip(t *testing.T) {
 
 func TestCanReachPortMembership(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
+	webID := uuid.New()
 	p := GrantPrincipal{
-		VMs: map[string]GrantVMScope{"web": {Ports: []int{22, 8080}, Login: "ubuntu"}},
+		VMs: map[string]GrantVMScope{"web": {Ports: []int{22, 8080}, Login: "ubuntu", VMID: webID}},
 	}
-	if login, ok := p.CanReach("web", 22, now); !ok || login != "ubuntu" {
-		t.Errorf("CanReach(web,22) = (%q,%v), want (ubuntu,true)", login, ok)
+	if login, vmID, ok := p.CanReach("web", 22, now); !ok || login != "ubuntu" || vmID != webID {
+		t.Errorf("CanReach(web,22) = (%q,%v,%v), want (ubuntu,%v,true)", login, vmID, ok, webID)
 	}
-	if _, ok := p.CanReach("web", 5432, now); ok {
+	if _, _, ok := p.CanReach("web", 5432, now); ok {
 		t.Errorf("CanReach(web,5432) = ok, want reject (port not in set)")
 	}
-	if _, ok := p.CanReach("db", 22, now); ok {
+	if _, _, ok := p.CanReach("db", 22, now); ok {
 		t.Errorf("CanReach(db,22) = ok, want reject (vm not in set)")
 	}
 }
@@ -51,22 +52,23 @@ func TestCanReachPortMembership(t *testing.T) {
 func TestGrantPrincipal_CanReach(t *testing.T) {
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	exp := now.Add(time.Hour)
+	webID := uuid.New()
 	p := GrantPrincipalFromStore(store.IngressGrant{
 		ID:        uuid.New(),
-		VMs:       []store.IngressGrantVM{{VMName: "web01", Ports: []int{22}, Login: "dev"}},
+		VMs:       []store.IngressGrantVM{{VMName: "web01", VMID: webID, Ports: []int{22}, Login: "dev"}},
 		ExpiresAt: &exp,
 	})
-	if login, ok := p.CanReach("web01", 22, now); !ok || login != "dev" {
-		t.Errorf("CanReach(web01,22) = (%q,%v), want (dev,true)", login, ok)
+	if login, vmID, ok := p.CanReach("web01", 22, now); !ok || login != "dev" || vmID != webID {
+		t.Errorf("CanReach(web01,22) = (%q,%v,%v), want (dev,%v,true)", login, vmID, ok, webID)
 	}
-	if _, ok := p.CanReach("web99", 22, now); ok {
+	if _, _, ok := p.CanReach("web99", 22, now); ok {
 		t.Errorf("CanReach(web99,22) = true, want false (not in scope)")
 	}
-	if _, ok := p.CanReach("web01", 22, exp.Add(time.Second)); ok {
+	if _, _, ok := p.CanReach("web01", 22, exp.Add(time.Second)); ok {
 		t.Errorf("CanReach after expiry = true, want false")
 	}
 	p.Revoked = true
-	if _, ok := p.CanReach("web01", 22, now); ok {
+	if _, _, ok := p.CanReach("web01", 22, now); ok {
 		t.Errorf("CanReach when revoked = true, want false")
 	}
 }
