@@ -178,6 +178,12 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 	}
 	args := []string{
 		"-name", spec.Name,
+		// LOAD-BEARING: -uuid is the identity token VerifyCmdline (process.go)
+		// matches against /proc/<pid>/cmdline before trusting a pidfile pid as
+		// this VM's qemu (status reporting and every SIGKILL path). Do not drop
+		// it, reorder it away from its value, or add -name ...,process=<title>
+		// (which rewrites /proc/cmdline) without updating that check - a silent
+		// omission would make live guests unkillable-via-agent (a qemu leak).
 		"-uuid", spec.UUID.String(),
 		"-smp", strconv.Itoa(spec.VCPUs),
 		"-m", strconv.Itoa(spec.MemoryMB),

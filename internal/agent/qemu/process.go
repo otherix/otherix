@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,11 +37,56 @@ func ReadPIDFile(path string) (int, error) {
 // IsAlive reports whether the process with pid currently exists. It does
 // not distinguish between "running", "sleeping", and "zombie" — any
 // process that responds to signal 0 counts as alive.
+//
+// IsAlive answers "does this pid exist", NOT "is this pid OUR qemu". A pidfile
+// pid can be reused by an unrelated process after the recorded qemu dies
+// (across a reboot, or after an OOM kill), so a positive IsAlive on a pidfile
+// pid is not sufficient to report a VM running or to send it a signal. Use
+// VerifyCmdline for that identity check; reserve IsAlive for pids the agent
+// still owns in-process (freshly spawned children, migration helper pids).
 func IsAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	return syscall.Kill(pid, 0) == nil
+}
+
+// VerifyCmdline reports whether the process with pid is the qemu the agent
+// launched for the VM identified by vmUUID: it reads /proc/<pid>/cmdline and
+// requires the `-uuid <vmUUID>` argument pair qemu is always launched with
+// (cmdline.go, migrations_live.go). It subsumes a liveness check — a dead pid
+// has no /proc entry, and a reaped-but-unwaited zombie has an empty cmdline —
+// so a true result means "alive AND ours".
+//
+// Any read/parse failure, an absent /proc entry, a missing or mismatched uuid,
+// a non-positive pid, or an empty vmUUID returns false. Callers MUST treat
+// false as "not our process": downgrade an observed `running` to stopped, and
+// NEVER send a signal (the pid may belong to an unrelated process after PID
+// reuse). This is the pidfile trust boundary — fail toward inaction.
+func VerifyCmdline(pid int, vmUUID string) bool {
+	return verifyCmdlineAt("/proc", pid, vmUUID)
+}
+
+// verifyCmdlineAt is VerifyCmdline with an injectable proc root for testing.
+func verifyCmdlineAt(procRoot string, pid int, vmUUID string) bool {
+	if pid <= 0 || vmUUID == "" {
+		return false
+	}
+	// #nosec G304 -- procRoot is a constant ("/proc") in production; pid is the
+	// agent's own pidfile value, not user input.
+	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return false
+	}
+	// /proc/<pid>/cmdline is the process argv[] joined by NUL bytes. Find a
+	// `-uuid` token immediately followed by the VM's uuid.
+	args := strings.Split(string(data), "\x00")
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-uuid" && args[i+1] == vmUUID {
+			return true
+		}
+	}
+	return false
 }
 
 // Spawn invokes binary with args and waits for the process to exit. With

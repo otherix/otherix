@@ -726,6 +726,100 @@ func TestManager_FailTaskOnly_DoesNotMutateVMStatus(t *testing.T) {
 	}
 }
 
+// TestManager_ObservedStatus_RejectsForeignPidfilePid pins the pidfile trust
+// boundary (the PID-reuse-after-reboot hazard): a VM persisted as running whose
+// pidfile pid is alive but belongs to a process that is NOT this VM's qemu must
+// be reported stopped, never running. It uses the test's own pid - a live
+// process whose /proc cmdline carries no `-uuid <vmID>` - as the stand-in for a
+// reused pid. Reverting observedStatus to a bare qemu.IsAlive check turns this
+// live foreign pid into a false `running`, which is exactly what would let an
+// operator's poweroff/delete SIGKILL an innocent process.
+func TestManager_ObservedStatus_RejectsForeignPidfilePid(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	pidFile := filepath.Join(t.TempDir(), "qemu.pid")
+	if werr := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); werr != nil {
+		t.Fatalf("write pidfile: %v", werr)
+	}
+
+	vmID := uuid.New()
+	m.mu.Lock()
+	m.vms[vmID] = &VM{
+		ID:      vmID,
+		Name:    "reused-pid-vm",
+		Status:  StatusRunning,
+		PIDFile: pidFile,
+	}
+	m.mu.Unlock()
+
+	v, err := m.Get(vmID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if v.Status != StatusStopped {
+		t.Errorf("observedStatus for a foreign live pidfile pid = %q, want %q (must not trust a reused pid)",
+			v.Status, StatusStopped)
+	}
+}
+
+// TestManager_Poweroff_DoesNotKillForeignPidfilePid pins the irreversible edge
+// of the pidfile trust boundary: runPoweroff must NOT SIGKILL a live process at
+// the recorded pidfile pid when that process is not this VM's qemu (the classic
+// reused-pid case). It runs the real runPoweroff worker against a VM whose
+// pidfile points at an unrelated live `sleep`, and asserts the sleep survives
+// and the task settles success (guest treated as already gone). Reverting the
+// kill gate to a bare qemu.IsAlive check makes runPoweroff SIGKILL the innocent
+// process after poweroffGrace - which is exactly the bug.
+func TestManager_Poweroff_DoesNotKillForeignPidfilePid(t *testing.T) {
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skipf("sleep not available: %v", err)
+	}
+	cfg, _, _ := newTestConfig(t)
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	child := exec.Command("sleep", "60")
+	if err := child.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	pid := child.Process.Pid
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+
+	pidFile := filepath.Join(t.TempDir(), "qemu.pid")
+	if werr := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0o600); werr != nil {
+		t.Fatalf("write pidfile: %v", werr)
+	}
+
+	vmID := uuid.New()
+	m.mu.Lock()
+	m.vms[vmID] = &VM{
+		ID:      vmID,
+		Name:    "foreign-pid-vm",
+		Status:  StatusRunning,
+		PIDFile: pidFile,
+	}
+	m.mu.Unlock()
+
+	task := m.tasks.Create(TaskKindVMPoweroff, vmID)
+	m.runPoweroff(task.ID, vmID)
+
+	if !qemu.IsAlive(pid) {
+		t.Errorf("runPoweroff SIGKILLed an unrelated live process at the reused pidfile pid %d", pid)
+	}
+	if got := m.tasks.Get(task.ID); got == nil || got.Status != TaskStatusSuccess {
+		t.Errorf("poweroff task = %v, want success (foreign pid => guest treated as already gone)", got)
+	}
+	if v, verr := m.snapshotVM(vmID); verr == nil && v.Status != StatusStopped {
+		t.Errorf("VM status after poweroff = %q, want stopped", v.Status)
+	}
+}
+
 // TestManager_FailTask_MutatesVMStatusToFailed locks the existing
 // semantics of failTask: VM transitions to StatusFailed AND task is
 // recorded as failed. Reserved for paths where the VM legitimately
