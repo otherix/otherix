@@ -4,7 +4,11 @@
 package qemu
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,5 +52,61 @@ func TestStopNBDNoopForDeadPid(t *testing.T) {
 	}
 	if err := StopNBD(-1, time.Second); err != nil {
 		t.Errorf("StopNBD(-1) = %v, want nil", err)
+	}
+}
+
+// writeFakeProc lays out <root>/<pid>/cmdline with the NUL-separated args a
+// /proc entry would expose, mirroring the kernel's argv[] encoding qemu is
+// launched with.
+func writeFakeProc(t *testing.T, root string, pid int, args ...string) {
+	t.Helper()
+	dir := filepath.Join(root, strconv.Itoa(pid))
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	data := strings.Join(args, "\x00")
+	if len(args) > 0 {
+		data += "\x00" // /proc/<pid>/cmdline is NUL-terminated, not just NUL-separated
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(data), 0o600); err != nil {
+		t.Fatalf("write cmdline: %v", err)
+	}
+}
+
+// TestVerifyCmdlineAt drives the identity check over a synthetic /proc: a pid is
+// only "ours" when its cmdline carries the exact `-uuid <vmUUID>` pair qemu is
+// launched with. Every other shape (different uuid, missing flag, absent entry,
+// dangling flag, non-positive pid, empty uuid) must be rejected so the caller
+// treats it as not-alive and never signals it.
+func TestVerifyCmdlineAt(t *testing.T) {
+	const vmUUID = "11111111-1111-1111-1111-111111111111"
+	root := t.TempDir()
+
+	writeFakeProc(t, root, 100, "qemu-system-x86_64", "-name", "vm", "-uuid", vmUUID, "-pidfile", "/x")
+	writeFakeProc(t, root, 101, "qemu-system-x86_64", "-name", "vm", "-uuid", "22222222-2222-2222-2222-222222222222")
+	writeFakeProc(t, root, 102, "/usr/bin/some-other-daemon", "--serve")
+	writeFakeProc(t, root, 103, "qemu-system-x86_64", "-name", "vm", "-uuid") // dangling flag, no value
+
+	cases := []struct {
+		name string
+		pid  int
+		uuid string
+		want bool
+	}{
+		{"our qemu matches", 100, vmUUID, true},
+		{"reused pid different uuid", 101, vmUUID, false},
+		{"unrelated process", 102, vmUUID, false},
+		{"dangling uuid flag", 103, vmUUID, false},
+		{"process gone (no proc entry)", 999, vmUUID, false},
+		{"non-positive pid", 0, vmUUID, false},
+		{"negative pid", -5, vmUUID, false},
+		{"empty uuid", 100, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := verifyCmdlineAt(root, tc.pid, tc.uuid); got != tc.want {
+				t.Errorf("verifyCmdlineAt(%q, %d, %q) = %v, want %v", root, tc.pid, tc.uuid, got, tc.want)
+			}
+		})
 	}
 }

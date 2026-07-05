@@ -5,7 +5,9 @@ package vm
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/netfabric"
+	"github.com/otherix/otherix/internal/agent/qemu"
 	"github.com/otherix/otherix/internal/agent/state"
 )
 
@@ -31,7 +34,7 @@ import (
 // recovery test must script it BEFORE constructing the Manager. Mutates a
 // package-level seam - see the LOAD-BEARING INVARIANT note above (no
 // t.Parallel() in this package).
-func withProbeIncoming(t *testing.T, fn func(qmpSocket, pidFile string) incomingProbe) {
+func withProbeIncoming(t *testing.T, fn func(qmpSocket, pidFile string, vmID uuid.UUID) incomingProbe) {
 	t.Helper()
 	prev := probeRecoveredIncoming
 	probeRecoveredIncoming = fn
@@ -115,7 +118,7 @@ func rawStatus(t *testing.T, m *Manager, id uuid.UUID) (Status, bool) {
 // removeAdoptedVM does NOT run (disk dir kept), and the VM stays in the map.
 func TestRecoverIncoming_Paused(t *testing.T) {
 	cfg, poolRoot, _ := newTestConfig(t)
-	withProbeIncoming(t, func(string, string) incomingProbe {
+	withProbeIncoming(t, func(string, string, uuid.UUID) incomingProbe {
 		return incomingProbe{alive: true, queried: true, runState: "paused"}
 	})
 
@@ -162,7 +165,7 @@ func TestRecoverIncoming_PreResumeStatesReaped(t *testing.T) {
 	for _, runState := range []string{"inmigrate", "paused", "prelaunch", "finish-migrate"} {
 		t.Run(runState, func(t *testing.T) {
 			cfg, poolRoot, _ := newTestConfig(t)
-			withProbeIncoming(t, func(string, string) incomingProbe {
+			withProbeIncoming(t, func(string, string, uuid.UUID) incomingProbe {
 				return incomingProbe{alive: true, queried: true, runState: runState}
 			})
 			id, diskDir := seedIncomingMeta(t, cfg.StatePath, poolRoot, nil)
@@ -192,7 +195,7 @@ func TestRecoverIncoming_PreResumeStatesReaped(t *testing.T) {
 // meta is persisted StatusRunning.
 func TestRecoverIncoming_Running(t *testing.T) {
 	cfg, poolRoot, _ := newTestConfig(t)
-	withProbeIncoming(t, func(string, string) incomingProbe {
+	withProbeIncoming(t, func(string, string, uuid.UUID) incomingProbe {
 		return incomingProbe{alive: true, queried: true, runState: "running"}
 	})
 
@@ -230,7 +233,7 @@ func TestRecoverIncoming_Running(t *testing.T) {
 // killing, tears down its taps, and keeps the disk dir.
 func TestRecoverIncoming_Dead(t *testing.T) {
 	cfg, poolRoot, _ := newTestConfig(t)
-	withProbeIncoming(t, func(string, string) incomingProbe {
+	withProbeIncoming(t, func(string, string, uuid.UUID) incomingProbe {
 		return incomingProbe{alive: false}
 	})
 
@@ -269,7 +272,7 @@ func TestRecoverIncoming_Dead(t *testing.T) {
 // StatusFailed WITHOUT killing and keeps the disk (fail toward inaction).
 func TestRecoverIncoming_Inconclusive(t *testing.T) {
 	cfg, poolRoot, _ := newTestConfig(t)
-	withProbeIncoming(t, func(string, string) incomingProbe {
+	withProbeIncoming(t, func(string, string, uuid.UUID) incomingProbe {
 		// Alive, but query-status failed (queried=false) - inconclusive.
 		return incomingProbe{alive: true, queried: false}
 	})
@@ -294,11 +297,15 @@ func TestRecoverIncoming_Inconclusive(t *testing.T) {
 	}
 }
 
-// TestObservedStatus_Incoming covers the observedStatus arm: a dead pidfile
-// reports StatusFailed; a live pid reports StatusMigratingIncoming.
+// TestObservedStatus_Incoming covers the observedStatus arm at the pidfile
+// trust boundary: a dead pidfile reports StatusFailed; a LIVE pid that is not
+// this VM's qemu (no matching -uuid) also reports StatusFailed - a reused
+// pidfile pid must never masquerade as the live target; only a live pid whose
+// cmdline carries this VM's -uuid reports StatusMigratingIncoming.
 func TestObservedStatus_Incoming(t *testing.T) {
 	m := newTestManager(t)
 
+	// Dead pidfile (no /proc entry) -> failed.
 	deadVM := &VM{
 		ID:      uuid.New(),
 		Name:    "dead-incoming",
@@ -309,18 +316,77 @@ func TestObservedStatus_Incoming(t *testing.T) {
 		t.Errorf("observedStatus(dead incoming) = %v, want failed", got)
 	}
 
-	pidDir := t.TempDir()
-	pidFile := filepath.Join(pidDir, "live.pid")
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+	// A live pid that is NOT this VM's qemu (os.Getpid(): a real live process
+	// whose cmdline carries no matching -uuid) must be failed, not migrating.
+	// Under a bare IsAlive check this reused pid would falsely report migrating.
+	foreignVM := &VM{
+		ID:      uuid.New(),
+		Name:    "foreign-incoming",
+		Status:  StatusMigratingIncoming,
+		PIDFile: writePidfile(t, os.Getpid()),
+	}
+	if got := m.observedStatus(foreignVM); got != StatusFailed {
+		t.Errorf("observedStatus(foreign live pid) = %v, want failed", got)
+	}
+
+	// A live pid that IS this VM's qemu (its /proc cmdline carries -uuid <vmID>)
+	// reports migrating. Depends on /proc semantics, so Linux only.
+	if runtime.GOOS == "linux" {
+		vmID := uuid.New()
+		liveVM := &VM{
+			ID:      vmID,
+			Name:    "live-incoming",
+			Status:  StatusMigratingIncoming,
+			PIDFile: writePidfile(t, spawnUUIDHelper(t, vmID.String())),
+		}
+		if got := m.observedStatus(liveVM); got != StatusMigratingIncoming {
+			t.Errorf("observedStatus(live incoming with matching -uuid) = %v, want migrating_incoming", got)
+		}
+	}
+}
+
+// TestHelperHang is a helper subprocess entrypoint, not a real test: when
+// re-exec'd with OTHERIX_HELPER_HANG=1 it blocks until the parent kills it, so a
+// test can point a pidfile at a live process whose /proc/<pid>/cmdline carries a
+// chosen `-uuid <id>` pair (passed after `--`). Under a normal suite run the env
+// gate is unset and it skips immediately.
+func TestHelperHang(t *testing.T) {
+	if os.Getenv("OTHERIX_HELPER_HANG") != "1" {
+		t.Skip("helper subprocess entrypoint; not run directly")
+	}
+	select {} // block until the parent SIGKILLs us
+}
+
+// writePidfile writes pid to a fresh temp pidfile and returns its path.
+func writePidfile(t *testing.T, pid int) string {
+	t.Helper()
+	pf := filepath.Join(t.TempDir(), "qemu.pid")
+	if err := os.WriteFile(pf, []byte(strconv.Itoa(pid)), 0o600); err != nil {
 		t.Fatalf("write pidfile: %v", err)
 	}
-	liveVM := &VM{
-		ID:      uuid.New(),
-		Name:    "live-incoming",
-		Status:  StatusMigratingIncoming,
-		PIDFile: pidFile,
+	return pf
+}
+
+// spawnUUIDHelper re-execs the test binary into TestHelperHang with
+// `-uuid <vmUUID>` embedded after `--`, so the child's /proc cmdline carries the
+// exact pair qemu.VerifyCmdline matches (mirroring how qemu is launched with
+// -uuid). It waits until the cmdline is observable, then returns the child pid.
+// Linux only (relies on /proc). The child is SIGKILLed on test cleanup.
+func spawnUUIDHelper(t *testing.T, vmUUID string) int {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHang$", "--", "-uuid", vmUUID)
+	cmd.Env = append(os.Environ(), "OTHERIX_HELPER_HANG=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start uuid helper: %v", err)
 	}
-	if got := m.observedStatus(liveVM); got != StatusMigratingIncoming {
-		t.Errorf("observedStatus(live incoming) = %v, want migrating_incoming", got)
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	deadline := time.Now().Add(5 * time.Second)
+	for !qemu.VerifyCmdline(pid, vmUUID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("uuid helper pid %d /proc cmdline never matched -uuid %s", pid, vmUUID)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	return pid
 }

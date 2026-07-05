@@ -239,7 +239,7 @@ type Manager struct {
 	// replay loop runs inside New, so a post-construction field assignment
 	// cannot reach it; New copies the package-level probeRecoveredIncoming hook
 	// here BEFORE the replay loop.
-	probeIncoming func(qmpSocket, pidFile string) incomingProbe
+	probeIncoming func(qmpSocket, pidFile string, vmID uuid.UUID) incomingProbe
 	killIncoming  func(v *VM)
 
 	// diskCapturer captures one VM disk device into a destination backup
@@ -325,9 +325,13 @@ type incomingProbe struct {
 // alive) dials QMP to read the run-state. Package-level so recovery tests can
 // substitute a scripted probe before calling New (the replay loop that consults
 // it runs inside New, out of reach of a post-construction field assignment).
-var probeRecoveredIncoming = func(qmpSocket, pidFile string) incomingProbe {
+var probeRecoveredIncoming = func(qmpSocket, pidFile string, vmID uuid.UUID) incomingProbe {
 	pid, err := qemu.ReadPIDFile(pidFile)
-	if err != nil || pid <= 0 || !qemu.IsAlive(pid) {
+	if err != nil || pid <= 0 || !qemu.VerifyCmdline(pid, vmID.String()) {
+		// alive:false covers both a dead pid and a reused pid that is not this
+		// VM's qemu - either way the recovered target's qemu is gone, so
+		// reconcileRecoveredIncoming takes the "process already gone" arm and
+		// never signals the pid.
 		return incomingProbe{alive: false}
 	}
 	conn, err := qemu.DialQMP(qmpSocket, 5*time.Second)
@@ -715,8 +719,12 @@ func (m *Manager) Task(id uuid.UUID) *AgentTask { return m.tasks.Get(id) }
 func (m *Manager) observedStatus(v *VM) Status {
 	switch v.Status {
 	case StatusRunning:
+		// VerifyCmdline, not IsAlive: a pidfile pid can be reused by an
+		// unrelated process after this VM's qemu dies (across a reboot / OOM
+		// kill). Requiring the pid's cmdline to carry this VM's `-uuid` stops a
+		// reused pid from being reported running (and later SIGKILLed).
 		pid, err := qemu.ReadPIDFile(v.PIDFile)
-		if err != nil || !qemu.IsAlive(pid) {
+		if err != nil || !qemu.VerifyCmdline(pid, v.ID.String()) {
 			return StatusStopped
 		}
 		return StatusRunning
@@ -725,9 +733,10 @@ func (m *Manager) observedStatus(v *VM) Status {
 		// probe the pidfile and downgrade to failed when the qemu is gone.
 		// Belt-and-suspenders - recovery (reconcileRecoveredIncoming) runs once
 		// at boot before the manager serves and normally transitions this VM
-		// away from StatusMigratingIncoming first.
+		// away from StatusMigratingIncoming first. VerifyCmdline (not IsAlive)
+		// so a reused pidfile pid does not masquerade as the live target.
 		pid, err := qemu.ReadPIDFile(v.PIDFile)
-		if err != nil || !qemu.IsAlive(pid) {
+		if err != nil || !qemu.VerifyCmdline(pid, v.ID.String()) {
 			return StatusFailed
 		}
 		return StatusMigratingIncoming
@@ -777,7 +786,7 @@ var preResumeIncomingRunStates = map[string]bool{
 // and the fabric is set, so transitionVM / persistVM / killIncoming /
 // teardownNICs / attachMux are all safe to call here.
 func (m *Manager) reconcileRecoveredIncoming(log *slog.Logger, v *VM) {
-	probe := m.probeIncoming(v.QMPSocket, v.PIDFile)
+	probe := m.probeIncoming(v.QMPSocket, v.PIDFile, v.ID)
 
 	switch {
 	case probe.alive && probe.queried && probe.runState == "running":
@@ -1587,7 +1596,10 @@ func (m *Manager) runPoweroff(taskID, vmID uuid.UUID) {
 	}
 
 	pid, err := qemu.ReadPIDFile(v.PIDFile)
-	if err != nil || pid <= 0 || !qemu.IsAlive(pid) {
+	// VerifyCmdline, not IsAlive: if the pidfile pid is not this VM's qemu (gone,
+	// or reused by an unrelated process), treat the guest as already gone and
+	// take the no-op arm - never SIGKILL a pid whose identity we cannot confirm.
+	if err != nil || pid <= 0 || !qemu.VerifyCmdline(pid, v.ID.String()) {
 		log.Info("qemu already gone; poweroff is a no-op", "pid", pid, "err", err)
 		m.transitionVM(vmID, StatusStopped, "")
 		_ = m.persistVM(vmID)
@@ -1823,7 +1835,10 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 	}
 
 	pid, _ := qemu.ReadPIDFile(v.PIDFile) // ignore error — VM may already be gone
-	if pid > 0 && qemu.IsAlive(pid) {
+	// VerifyCmdline, not IsAlive: only shut down / SIGKILL a pid confirmed to be
+	// this VM's qemu. A reused pidfile pid (unrelated process) fails the check
+	// and the delete proceeds straight to state teardown without signalling it.
+	if pid > 0 && qemu.VerifyCmdline(pid, v.ID.String()) {
 		client, err := qemu.DialQMP(v.QMPSocket, 5*time.Second)
 		if err == nil {
 			if err := client.SystemPowerdown(); err != nil {
@@ -1956,7 +1971,10 @@ func (m *Manager) killQEMU(v *VM) {
 	if err != nil || pid <= 0 {
 		return
 	}
-	if !qemu.IsAlive(pid) {
+	// VerifyCmdline, not IsAlive: never SIGKILL a pid we cannot confirm is this
+	// VM's qemu. A dead or reused pidfile pid fails the check and killQEMU is a
+	// safe no-op (fail toward inaction at the pidfile trust boundary).
+	if !qemu.VerifyCmdline(pid, v.ID.String()) {
 		return
 	}
 	if err := qemu.Kill(pid); err != nil {
