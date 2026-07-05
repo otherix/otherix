@@ -128,14 +128,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 // caller's vm:ingress-grant scope against each VM's owner. A missing VM
 // yields 404 (the VM name is caller-supplied, not secret); a visible VM
 // the caller may not grant on yields 403. It returns false and writes the
-// response on the first failure.
+// response on the first failure. On success it stamps each entry's VMID with
+// the resolved VM's id in place (vms is the caller's slice), binding the grant
+// to a stable identity so a later name reuse cannot retarget it.
 func (h *Handler) authorizeVMs(w http.ResponseWriter, r *http.Request, caller *auth.User, vms []store.IngressGrantVM) bool {
-	for _, vm := range vms {
-		row, err := h.store.VMByName(r.Context(), vm.VMName)
+	for i := range vms {
+		row, err := h.store.VMByName(r.Context(), vms[i].VMName)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				response.WriteError(w, r, http.StatusNotFound,
-					response.CodeNotFound, "vm not found: "+vm.VMName, nil)
+					response.CodeNotFound, "vm not found: "+vms[i].VMName, nil)
 				return false
 			}
 			response.WriteError(w, r, http.StatusInternalServerError,
@@ -148,13 +150,14 @@ func (h *Handler) authorizeVMs(w http.ResponseWriter, r *http.Request, caller *a
 				response.WriteError(w, r, http.StatusForbidden,
 					response.CodePermissionDenied,
 					"vm:ingress-grant on this vm is limited to its owner",
-					map[string]any{"vm_name": vm.VMName})
+					map[string]any{"vm_name": vms[i].VMName})
 				return false
 			}
 			response.WriteError(w, r, http.StatusInternalServerError,
 				response.CodeInternal, "authorize vm", nil)
 			return false
 		}
+		vms[i].VMID = row.ID
 	}
 	return true
 }

@@ -306,6 +306,87 @@ func TestRelaySourceIPPinnedGrantInPinRelays(t *testing.T) {
 	t.Errorf("agent received %q, want ssh-bytes", agent.received())
 }
 
+// TestRelayVMIDMatchRelays is the positive counterpart to the mismatch test: a
+// grant whose bound VMID equals the name-resolved VM's id relays end to end,
+// proving the identity assertion is not over-broad (a correctly-bound grant is
+// never rejected).
+func TestRelayVMIDMatchRelays(t *testing.T) {
+	t.Parallel()
+	agent := newWSAgentServer(t, true)
+	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
+	vmID := uuid.New()
+	vm := store.VM{ID: vmID, Name: "demo", PinnedNodeID: &node.ID}
+	grant := store.IngressGrant{
+		ID:  uuid.New(),
+		VMs: []store.IngressGrantVM{{VMName: "demo", VMID: vmID, Ports: []int{22}, Login: "ubuntu"}},
+	}
+	st := &relayStoreStub{grant: grant, vm: vm, node: node}
+
+	r := chi.NewRouter()
+	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{}).Relay)
+	cp := httptest.NewServer(r)
+	t.Cleanup(cp.Close)
+
+	u := "ws" + cp.URL[len("http"):] + "/v1/vms/demo/relay"
+	op, _, err := websocket.Dial(context.Background(),
+		u, &websocket.DialOptions{HTTPHeader: bearerHeader("otx_ingressgrant_abc")})
+	if err != nil {
+		t.Fatalf("operator dial: %v", err)
+	}
+	t.Cleanup(func() { _ = op.Close(websocket.StatusNormalClosure, "") })
+
+	if err := op.Write(context.Background(), websocket.MessageBinary, []byte("ssh-bytes")); err != nil {
+		t.Fatalf("operator write: %v", err)
+	}
+	typ, data, err := op.Read(context.Background())
+	if err != nil || typ != websocket.MessageBinary || string(data) != "ssh-bytes" {
+		t.Fatalf("echo read = %q,%v,%v, want ssh-bytes", data, typ, err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if string(agent.received()) == "ssh-bytes" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("agent received %q, want ssh-bytes", agent.received())
+}
+
+// TestRelayNameReuseVMIDMismatchRejectedNoDial: a grant bound to VM "demo" at
+// UUID X must not authorize a session once the name "demo" resolves to a
+// DIFFERENT VM (UUID Y) - the case where the original VM was deleted and its
+// name reused, potentially by another owner. The connect-time VM-ID assertion
+// rejects the stale binding with the uniform 401 and no upstream dial.
+//
+// The VM and its owning node are seeded so the VM-ID check is the ONLY thing
+// standing between the request and a dial: were the stale name binding honored,
+// VM load and node resolve would both succeed and the relay would reach the
+// dial - flipping spy.dialed to true. So spy.dialed==false is driven by the
+// ID check itself, not a downstream resolve failure.
+func TestRelayNameReuseVMIDMismatchRejectedNoDial(t *testing.T) {
+	t.Parallel()
+	spy := &dialSpyClient{}
+	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://agent.example.com:9090"}
+	boundID := uuid.New()  // the VM the grant was created against
+	reusedID := uuid.New() // the name "demo" now points at a different VM
+	vm := store.VM{ID: reusedID, Name: "demo", PinnedNodeID: &node.ID}
+	grant := store.IngressGrant{
+		ID:  uuid.New(),
+		VMs: []store.IngressGrantVM{{VMName: "demo", VMID: boundID, Ports: []int{22}, Login: "ubuntu"}},
+	}
+	st := &relayStoreStub{grant: grant, vm: vm, node: node}
+	h := relayHandler(st, spy)
+
+	rec := httptest.NewRecorder()
+	h.Relay(rec, relayRequest("demo", "otx_ingressgrant_abc"))
+
+	assertGenericRelayRejection(t, rec)
+	if spy.dialed {
+		t.Errorf("dialed upstream on VM-ID mismatch, want no dial")
+	}
+}
+
 func bearerHeader(tok string) http.Header {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+tok)
