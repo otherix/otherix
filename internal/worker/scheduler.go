@@ -78,7 +78,7 @@ func (s *Scheduler) loop(ctx context.Context, j periodicJob) {
 
 // fire runs one tick, logging a non-nil result at warn.
 func (s *Scheduler) fire(ctx context.Context, j periodicJob) {
-	if err := j.fn(ctx); err != nil {
+	if err := guardPanic(ctx, s.log, j.name, func() error { return j.fn(ctx) }); err != nil {
 		s.log.WarnContext(ctx, "periodic job failed", "job", j.name, "error", err)
 	}
 }

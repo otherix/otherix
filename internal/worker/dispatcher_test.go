@@ -366,3 +366,28 @@ func TestDispatcherRetriesOnError(t *testing.T) {
 		t.Errorf("RetryJob maxAttempts = %d, want 5", src.retried[2])
 	}
 }
+
+// TestExecuteRecoversHandlerPanic drives the real execute path with a handler
+// that panics: execute must NOT propagate the panic (which would unwind the
+// worker goroutine and crash the whole api-server process, embedded etcd with
+// it), and must route the recovered panic through the normal retry path so the
+// poison job consumes its attempt budget instead of crash-looping forever.
+func TestExecuteRecoversHandlerPanic(t *testing.T) {
+	src := newJobSourceFake()
+	src.add(etcdstore.Job{ID: 30, Kind: "poison", State: etcdstore.JobStateRunning})
+	reg := registration{
+		handler:     func(context.Context, []byte) error { panic("boom") },
+		maxAttempts: 5,
+	}
+	d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
+
+	// Must return normally (recovered), not panic out of execute.
+	d.execute(context.Background(), etcdstore.Job{ID: 30, Kind: "poison"}, reg)
+
+	src.mu.Lock()
+	_, retried := src.retried[30]
+	src.mu.Unlock()
+	if !retried {
+		t.Errorf("panicking handler did not go through RetryJob: attempt budget never consumed, poison job would crash-loop")
+	}
+}
