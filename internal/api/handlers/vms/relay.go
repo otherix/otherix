@@ -19,6 +19,7 @@ import (
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
+	"github.com/otherix/otherix/internal/store"
 	"github.com/otherix/otherix/internal/wskeepalive"
 )
 
@@ -93,21 +94,21 @@ func (h *Handler) Relay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.authorizeRelay(r.Context(), tok, vmName, port, ap.Addr(), time.Now()) {
+	// authorizeRelay returns the VM it authorized against; the node resolve and
+	// dial below use that exact VM, never a fresh name resolve, so the identity
+	// the grant/ownership was checked against is the one dialed (no name-reuse
+	// TOCTOU between check and dial).
+	vm, ok := h.authorizeRelay(r.Context(), tok, vmName, port, ap.Addr(), time.Now())
+	if !ok {
 		h.rejectSSH(w, r)
 		return
 	}
 
-	// Load the VM and resolve its owning node to build the upstream URL. A
+	// Resolve the authorized VM's owning node to build the upstream URL. A
 	// failure here is anti-enumeration-collapsed to the same uniform 401:
-	// for a grant-authorized caller these reads only fail transiently (node
-	// down mid-connect), and collapsing keeps the unknown-VM and node-down
-	// cases indistinguishable to an unauthorized prober.
-	vm, err := h.store.VMByName(r.Context(), vmName)
-	if err != nil {
-		h.rejectSSH(w, r)
-		return
-	}
+	// for a grant-authorized caller this fails only transiently (node down
+	// mid-connect), and collapsing keeps the unknown-VM and node-down cases
+	// indistinguishable to an unauthorized prober.
 	node, err := h.resolveConsoleNode(r.Context(), vm)
 	if err != nil {
 		h.log.WarnContext(r.Context(), "vms.relay resolve node",
@@ -178,53 +179,62 @@ func relayPort(r *http.Request) (port int, ok bool) {
 	return port, true
 }
 
-// authorizeRelay reports whether the bearer authorizes a session to vmName
-// on port at time now. It dual-dispatches grant vs CLI exactly like the
-// cert-mint endpoint but needs no login (for SSH, the inner cert carries the
-// principal) and writes no response: every failure is the caller's single
-// uniform reject, so this returns a bare bool. The port is the actual requested
-// guest port: the relay is the generic bridge relay for arbitrary ports, so a
-// grant must authorize the exact port the relay would forward, not a constant.
-// For a bridge VM the relay IS the data path, so the grant's optional source-IP
-// pin is enforced here (against clientIP) exactly as the broker does; a CLI
-// bearer carries no pin and ignores clientIP.
-func (h *Handler) authorizeRelay(ctx context.Context, tok, vmName string, port int, clientIP netip.Addr, now time.Time) bool {
+// authorizeRelay reports whether the bearer authorizes a session to vmName on
+// port at time now and, if so, returns the authorized VM. It dual-dispatches
+// grant vs CLI exactly like the cert-mint endpoint but needs no login (for SSH,
+// the inner cert carries the principal) and writes no response: every failure
+// is the caller's single uniform reject, so it returns ok=false with no VM. The
+// caller MUST use the returned VM (not a fresh name resolve) for node
+// resolution and the dial, so the identity the grant/ownership was checked
+// against is exactly the one dialed - a re-resolve would reopen a name-reuse
+// TOCTOU between the check and the dial. The port is the actual requested guest
+// port: the relay is the generic bridge relay for arbitrary ports, so a grant
+// must authorize the exact port the relay would forward, not a constant. For a
+// bridge VM the relay IS the data path, so the grant's optional source-IP pin
+// is enforced here (against clientIP) exactly as the broker does; a CLI bearer
+// carries no pin and ignores clientIP.
+func (h *Handler) authorizeRelay(ctx context.Context, tok, vmName string, port int, clientIP netip.Addr, now time.Time) (store.VM, bool) {
 	if auth.IsIngressGrantFormat(tok) {
 		grant, err := h.store.IngressGrantByTokenHash(ctx, auth.HashToken(tok))
 		if err != nil {
-			return false
+			return store.VM{}, false
 		}
 		_, wantID, reachable := auth.GrantPrincipalFromStore(grant).CanReach(vmName, port, now)
 		if !reachable || !auth.SourceIPAllows(grant.SourceIP, clientIP) {
-			return false
+			return store.VM{}, false
 		}
 		// Bind the grant to the VM identity it was created against, not just the
 		// name: resolve the name and reject if it now points at a different VM (a
 		// deleted VM whose name another owner reused). A zero wantID marks a legacy
-		// grant with no binding - treat it as name-only. The handler re-loads the
-		// VM to resolve its node; this idempotent read is the enforcement point so
-		// the reject stays inside the single uniform-401 authorization path.
+		// grant with no binding - treat it as name-only. The returned VM is the one
+		// the caller dials, so the checked identity and the dialed identity match.
 		vm, err := h.store.VMByName(ctx, vmName)
 		if err != nil {
-			return false
+			return store.VM{}, false
 		}
-		return wantID == uuid.Nil || wantID == vm.ID
+		if wantID != uuid.Nil && wantID != vm.ID {
+			return store.VM{}, false
+		}
+		return vm, true
 	}
 	if h.sshDeps.Verifier == nil {
-		return false
+		return store.VM{}, false
 	}
 	user, err := h.verifyCLIToken(ctx, tok)
 	if err != nil || user == nil {
-		return false
+		return store.VM{}, false
 	}
 	vm, err := h.store.VMByName(ctx, vmName)
 	if err != nil {
-		return false
+		return store.VM{}, false
 	}
 	if !auth.Has(user.Role, auth.PermVMSSH) {
-		return false
+		return store.VM{}, false
 	}
-	return auth.CheckOwnership(user, &vm.OwnerID, auth.PermVMSSH) == nil
+	if auth.CheckOwnership(user, &vm.OwnerID, auth.PermVMSSH) != nil {
+		return store.VM{}, false
+	}
+	return vm, true
 }
 
 // relaySSH pumps raw bytes bidirectionally between the operator (downstream)
