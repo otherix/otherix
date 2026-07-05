@@ -551,7 +551,9 @@ func TestSpliceConnsTeardownOnEitherClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		spliceConns(ctx, cancel, a, b)
+		// A generous idle here so the teardown under test is the leg close, not
+		// the idle timer.
+		spliceConns(ctx, cancel, a, b, time.Hour)
 		close(done)
 	}()
 
@@ -565,6 +567,41 @@ func TestSpliceConnsTeardownOnEitherClose(t *testing.T) {
 	_ = bPeer.SetWriteDeadline(time.Now().Add(time.Second))
 	if _, err := bPeer.Write([]byte("z")); err == nil {
 		t.Error("upstream leg still open after teardown; spliceConns must close both legs")
+	}
+}
+
+// TestSpliceConnsTeardownOnIdle pins the idle-reclaim invariant: a session that
+// carries zero bytes in both directions for the idle window is torn down and
+// both legs closed, so a slot pinned by a silent client is reclaimed. Without
+// the idle timeout the two io.Copy goroutines block forever on the idle pipes
+// and spliceConns never returns.
+func TestSpliceConnsTeardownOnIdle(t *testing.T) {
+	a, aPeer := net.Pipe()
+	b, bPeer := net.Pipe()
+	t.Cleanup(func() { _ = aPeer.Close(); _ = bPeer.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		spliceConns(ctx, cancel, a, b, 150*time.Millisecond)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("spliceConns did not return on an idle session; idle timeout not enforced")
+	}
+
+	// Both legs must be closed after an idle teardown.
+	_ = a.SetWriteDeadline(time.Now().Add(time.Second))
+	if _, err := a.Write([]byte("z")); err == nil {
+		t.Error("leg a still open after idle teardown; spliceConns must close both legs")
+	}
+	_ = b.SetWriteDeadline(time.Now().Add(time.Second))
+	if _, err := b.Write([]byte("z")); err == nil {
+		t.Error("leg b still open after idle teardown; spliceConns must close both legs")
 	}
 }
 

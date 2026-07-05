@@ -33,6 +33,20 @@ import (
 // holding the request open.
 const connectDialTimeout = 10 * time.Second
 
+// connectIdleTimeout tears down a spliced /v1/connect session that has carried
+// zero bytes in BOTH directions for this long. It matches the AWS-NLB
+// idle-timeout default (350s) and the sibling published-port datapath
+// (reconciler.publishedIdleTimeout): a truly idle session is reclaimed so a
+// per-VM/per-gateway slot cannot be pinned open indefinitely, while any byte in
+// either direction (SSH/keepalive traffic on an interactive session) re-arms the
+// window so a live session is never torn. The credential that opens a session is
+// reusable within its short TTL and the caller controls its own backends, so
+// credential-gating alone does not stop a caller from pinning slots; the idle
+// reclaim closes that cross-tenant exhaustion. This intentionally reverses the
+// sibling's note that the ingress path was "deliberately left unchanged" -
+// the reusable-credential slot-pinning DoS is the reason it now changes.
+const connectIdleTimeout = 350 * time.Second
+
 // Connection-slot caps for the connect/splice plane. They bound the number of
 // concurrent spliced sessions a single gateway carries, per VM and in total, so
 // one tenant cannot exhaust the gateway's file descriptors or memory and a
@@ -243,9 +257,12 @@ func (h *ConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derive the splice context from the request context (not context.Background)
+	// so a cancelled request propagates, and bound the session with the idle
+	// timeout so a slot pinned by a silent client is reclaimed.
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	spliceConns(ctx, cancel, conn, upstream)
+	spliceConns(ctx, cancel, conn, upstream, connectIdleTimeout)
 	h.log.Info("connect: session closed", "target", target, "vm_id", vmID)
 }
 
@@ -346,17 +363,15 @@ func (s *connectSlots) release(vmID string) {
 	}
 }
 
-// spliceConns copies bytes both directions until either side closes or ctx is
-// cancelled, then tears both legs down (the kill-implies-teardown invariant: no
-// goroutine, fd, or slot survives any exit path).
-func spliceConns(ctx context.Context, cancel context.CancelFunc, a, b net.Conn) {
+// spliceConns copies bytes both directions until either side closes, ctx is
+// cancelled, or the session sits idle in both directions for idle, then tears
+// both legs down (the kill-implies-teardown invariant: no goroutine, fd, or slot
+// survives any exit path). idle bounds a silent session so a per-VM/per-gateway
+// slot cannot be pinned open indefinitely; see connectIdleTimeout.
+func spliceConns(ctx context.Context, cancel context.CancelFunc, a, b net.Conn, idle time.Duration) {
 	done := make(chan struct{}, 2)
-	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
-		done <- struct{}{}
-	}
-	go cp(a, b)
-	go cp(b, a)
+	go copyIdle(a, b, idle, done)
+	go copyIdle(b, a, idle, done)
 
 	select {
 	case <-ctx.Done():
@@ -365,4 +380,35 @@ func spliceConns(ctx context.Context, cancel context.CancelFunc, a, b net.Conn) 
 	cancel()
 	_ = a.Close()
 	_ = b.Close()
+}
+
+// copyIdle copies src to dst until either end errors or the session stays idle
+// in both directions for the idle window, then signals done. Before every read
+// it re-arms src's read deadline to now+idle, and after every successful write it
+// re-arms dst's read deadline (dst is the peer leg's src), so a byte in EITHER
+// direction resets both legs' windows and only a session idle in both directions
+// (or a closed/broken leg) ends the copy. It signals done exactly once on return;
+// the caller's teardown then closes both legs. Mirrors the sibling published-port
+// datapath (reconciler.copyIdle); kept local rather than shared because the
+// /v1/connect splice plane is load-bearing and reliability beats the DRY saving.
+func copyIdle(dst, src net.Conn, idle time.Duration, done chan<- struct{}) {
+	defer func() { done <- struct{}{} }()
+	buf := make([]byte, 32*1024)
+	for {
+		_ = src.SetReadDeadline(time.Now().Add(idle))
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+			// Activity in this direction must also reset the peer leg's idle
+			// window: dst is the peer leg's src, so pushing dst's read deadline
+			// forward keeps a session alive whenever bytes flow in EITHER
+			// direction. Only a session idle in both directions is torn down.
+			_ = dst.SetReadDeadline(time.Now().Add(idle))
+		}
+		if rerr != nil {
+			return
+		}
+	}
 }
