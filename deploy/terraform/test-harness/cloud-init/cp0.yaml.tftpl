@@ -85,6 +85,14 @@ runcmd:
     logger:
       level: "info"
       format: "json"
+    workers:
+      heartbeat:
+        # A generous window before an unreachable node is advanced to the
+        # terminal 'gone'. On AWS a node's bootstrap (package install, join,
+        # WireGuard mesh) can outrun the default grace, and the grace is
+        # measured from created_at until the first heartbeat lands, so a slow
+        # first report must not condemn the node before it reaches steady state.
+        gone_grace: "30m"
     cp_cert:
       additional_sans:
         - "cp.${fqdn_public}"
