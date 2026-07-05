@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -763,5 +764,151 @@ func TestMarkSnapshotError_CapsMessage(t *testing.T) {
 	}
 	if len(*got.ErrorMessage) >= len(huge) {
 		t.Errorf("error_message len = %d, want bounded below %d", len(*got.ErrorMessage), len(huge))
+	}
+}
+
+// TestSnapshotManifestApplied_SoftDeletedNoResurrect pins the abort half of the
+// CAS fix: once a DeleteSnapshot has soft-deleted the row, a (redelivered)
+// SnapshotManifestApplied must NOT resurrect it to ready. The old code read via
+// SnapshotByID and blind-put the pre-read value back; the fix re-reads under CAS,
+// sees DeletedAt, and returns a no-op.
+func TestSnapshotManifestApplied_SoftDeletedNoResurrect(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snapresurrect")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-resurrect-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "doomed")
+	if _, err := s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+
+	disks := []store.SnapshotDisk{{Index: 0, Device: "virtio0", SHA256: "cc", SizeBytes: 10, Format: "qcow2"}}
+	if err := s.SnapshotManifestApplied(ctx, snap.ID, uuid.New(), disks, store.VmStateAtSnapshotRunning); err != nil {
+		t.Fatalf("SnapshotManifestApplied on a soft-deleted row = %v, want nil (abort, no resurrect)", err)
+	}
+
+	// The row stays soft-deleted (not resurrected to ready).
+	if _, err := s.SnapshotByID(ctx, snap.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SnapshotByID after manifest-on-deleted = %v, want ErrNotFound (row must stay deleted)", err)
+	}
+	deleted, err := s.SnapshotByIDIncludingDeleted(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByIDIncludingDeleted: %v", err)
+	}
+	if deleted.DeletedAt == nil || deleted.Status == store.SnapshotStatusReady {
+		t.Errorf("row = {status:%q deleted_at:%v}, want soft-deleted (never resurrected to ready)", deleted.Status, deleted.DeletedAt)
+	}
+	// The refgraph must NOT have been seeded for a deleted snapshot.
+	items, err := cl.Range(ctx, etcd.Key("index", "blob_refs", "cc")+"/")
+	if err != nil {
+		t.Fatalf("Range blob_refs: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("blob_refs[cc] = %v, want empty (aborted projection seeds no refgraph)", items)
+	}
+}
+
+// TestSnapshotManifestAppliedVsDelete_NoTornState runs the projection and the
+// delete concurrently many times and asserts the durable state never tears. The
+// invariant: a row that is still LIVE (SnapshotByID returns it) must still be
+// counted through the owner index. A resurrection (the projection blind-putting
+// ready AFTER the delete dropped the owner index) would show a live row with a
+// zero owner-resource count - the exact torn state the CAS prevents.
+func TestSnapshotManifestAppliedVsDelete_NoTornState(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snaptorn")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-torn-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	disks := []store.SnapshotDisk{{Index: 0, Device: "virtio0", SHA256: "dd", SizeBytes: 10, Format: "qcow2"}}
+	for i := 0; i < 60; i++ {
+		snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "race-"+uuid.NewString()[:8])
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = s.SnapshotManifestApplied(ctx, snap.ID, uuid.New(), disks, store.VmStateAtSnapshotRunning)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{})
+		}()
+		wg.Wait()
+
+		_, liveErr := s.SnapshotByID(ctx, snap.ID)
+		cnt, err := s.CountUserResources(ctx, owner.ID)
+		if err != nil {
+			t.Fatalf("CountUserResources: %v", err)
+		}
+		// If the row is live (not soft-deleted) it must be counted; a resurrected row
+		// whose owner index the delete dropped is a torn state.
+		if liveErr == nil && cnt.Snapshots == 0 {
+			t.Fatalf("iter %d: snapshot %s is live but owner-resource count is 0 (torn/resurrected row)", i, snap.ID)
+		}
+		// Clean up so CountUserResources reflects only the current iteration's row.
+		if liveErr == nil {
+			if _, derr := s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); derr != nil && !errors.Is(derr, store.ErrNotFound) {
+				t.Fatalf("cleanup delete: %v", derr)
+			}
+		}
+	}
+}
+
+// TestUpdateSnapshotMeta_SoftDeletedNoResurrect pins the third writer closed by
+// the CAS class fix: a metadata patch must NOT resurrect a snapshot a concurrent
+// delete already soft-deleted. Sequentially: delete, then patch -> ErrNotFound,
+// and the row stays soft-deleted (never blind-put back to a live ready row with
+// its owner index already dropped).
+func TestUpdateSnapshotMeta_SoftDeletedNoResurrect(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+
+	owner, err := s.CreateUser(ctx, userParams(uniqueEmail("snapmetadel")))
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	vm := vmRow("snap-metadel-src")
+	vm.OwnerID = owner.ID
+	seedVM(t, cl, vm)
+
+	snap := seedSnapshot(t, s, ctx, vm.ID, owner.ID, "daily")
+	if _, err := s.DeleteSnapshot(ctx, snap.ID, taskParams(store.TaskStatusPending, nil), stubSnapArgs{}); err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+
+	// A rename patch (guard-move branch) on the deleted row must not resurrect it.
+	newName := "weekly"
+	if _, err := s.UpdateSnapshotMeta(ctx, store.UpdateSnapshotMetaParams{ID: snap.ID, Name: &newName}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateSnapshotMeta(rename) on a soft-deleted row = %v, want ErrNotFound (no resurrect)", err)
+	}
+	// A description patch (plain-put branch) likewise.
+	desc := "note"
+	if _, err := s.UpdateSnapshotMeta(ctx, store.UpdateSnapshotMetaParams{ID: snap.ID, Description: &desc}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("UpdateSnapshotMeta(description) on a soft-deleted row = %v, want ErrNotFound (no resurrect)", err)
+	}
+
+	if _, err := s.SnapshotByID(ctx, snap.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SnapshotByID after patch-on-deleted = %v, want ErrNotFound (row stays deleted)", err)
+	}
+	deleted, err := s.SnapshotByIDIncludingDeleted(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("SnapshotByIDIncludingDeleted: %v", err)
+	}
+	if deleted.DeletedAt == nil {
+		t.Errorf("row resurrected: DeletedAt = nil, want still soft-deleted")
 	}
 }

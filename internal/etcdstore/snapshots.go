@@ -265,10 +265,50 @@ func (s *Store) snapshotsByPrimaryPrefix(ctx context.Context) ([]store.Snapshot,
 // guard being free; a collision returns store.ErrSnapshotNameExists. A
 // description-only change is a plain put. Nil fields are left unchanged.
 func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMetaParams) (store.Snapshot, error) {
-	existing, err := s.SnapshotByID(ctx, p.ID)
-	if err != nil {
-		return store.Snapshot{}, err
+	const maxAttempts = 3
+	for attempt := 0; ; attempt++ {
+		updated, retry, err := s.tryUpdateSnapshotMeta(ctx, p)
+		if err != nil {
+			return store.Snapshot{}, err
+		}
+		if !retry {
+			return updated, nil
+		}
+		// CAS lost: the row moved between read and commit. Re-read and retry a
+		// bounded number of times before surfacing the conflict.
+		if attempt+1 >= maxAttempts {
+			return store.Snapshot{}, store.ErrConcurrentUpdate
+		}
 	}
+}
+
+// tryUpdateSnapshotMeta runs one CAS-guarded attempt of UpdateSnapshotMeta. It
+// returns (updated, false, nil) on commit, (_, false, err) on a terminal error
+// (ErrNotFound / ErrSnapshotNameExists / store fault), and (_, true, nil) when
+// the row's ModRevision CAS lost and the caller should re-read and retry.
+func (s *Store) tryUpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMetaParams) (store.Snapshot, bool, error) {
+	// Read the row + its ModRevision so the meta put CAS-guards on it. A blind put
+	// here can resurrect a row a concurrent DeleteSnapshot soft-deleted between this
+	// read and this commit (writing the pre-delete value back with DeletedAt
+	// cleared) - a guardless "ready" row whose owner index the delete already
+	// dropped, pointing at blobs the delete's GC may have removed.
+	resp, err := s.c.Raw().Get(ctx, snapshotKey(p.ID))
+	if err != nil {
+		return store.Snapshot{}, false, fmt.Errorf("read snapshot %s: %v", p.ID, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return store.Snapshot{}, false, store.ErrNotFound
+	}
+	rev := resp.Kvs[0].ModRevision
+	var existing store.Snapshot
+	if err := json.Unmarshal(resp.Kvs[0].Value, &existing); err != nil {
+		return store.Snapshot{}, false, fmt.Errorf("unmarshal snapshot %s: %v", p.ID, err)
+	}
+	if existing.DeletedAt != nil {
+		// Soft-deleted: never resurrect it via a metadata patch.
+		return store.Snapshot{}, false, store.ErrNotFound
+	}
+
 	updated := existing
 	if p.Description != nil {
 		updated.Description = *p.Description
@@ -277,28 +317,33 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 		updated.Name = *p.Name
 	}
 	updated.UpdatedAt = time.Now().UTC()
-
 	val, err := etcd.Marshal(updated)
 	if err != nil {
-		return store.Snapshot{}, err
+		return store.Snapshot{}, false, err
 	}
 
-	// Detect a true rename by guard inequality (the guard is lowercased), not by
-	// a raw name compare: a case-only change ("daily" -> "Daily") yields the same
-	// guard key, so it must take the plain-put branch rather than a guard-move
-	// txn that would OpPut+OpDelete the same key (etcd rejects that as a duplicate
-	// key). The plain put still persists the new display-case name.
+	// Detect a true rename by guard inequality (the guard is lowercased), not by a
+	// raw name compare: a case-only change ("daily" -> "Daily") yields the same
+	// guard key, so it must take the plain-put branch rather than a guard-move txn
+	// that would OpPut+OpDelete the same key (etcd rejects that as a duplicate key).
+	// The plain put still persists the new display-case name.
 	oldGuard := snapshotVMNameGuard(existing.VmID, existing.Name)
 	newGuard := snapshotVMNameGuard(existing.VmID, updated.Name)
+	rowUnchanged := clientv3.Compare(clientv3.ModRevision(snapshotKey(p.ID)), "=", rev)
+
 	if oldGuard == newGuard {
-		if err := s.c.Put(ctx, snapshotKey(p.ID), val); err != nil {
-			return store.Snapshot{}, err
+		txnResp, err := s.c.Raw().Txn(ctx).
+			If(rowUnchanged).
+			Then(clientv3.OpPut(snapshotKey(p.ID), string(val))).
+			Commit()
+		if err != nil {
+			return store.Snapshot{}, false, fmt.Errorf("update snapshot meta txn: %v", err)
 		}
-		return updated, nil
+		return updated, !txnResp.Succeeded, nil
 	}
 
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0)).
+	txnResp, err := s.c.Raw().Txn(ctx).
+		If(rowUnchanged, clientv3.Compare(clientv3.CreateRevision(newGuard), "=", 0)).
 		Then(
 			clientv3.OpPut(newGuard, p.ID.String()),
 			clientv3.OpDelete(oldGuard),
@@ -306,12 +351,48 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 		).
 		Commit()
 	if err != nil {
-		return store.Snapshot{}, fmt.Errorf("update snapshot meta txn: %v", err)
+		return store.Snapshot{}, false, fmt.Errorf("update snapshot meta txn: %v", err)
 	}
-	if !resp.Succeeded {
-		return store.Snapshot{}, store.ErrSnapshotNameExists
+	if txnResp.Succeeded {
+		return updated, false, nil
 	}
-	return updated, nil
+	// The AND-ed guard failed for one of two reasons: the new name is taken, or the
+	// row moved under us. Disambiguate: a present newGuard is a real name collision;
+	// otherwise the row-revision compare lost and the caller retries.
+	gresp, gerr := s.c.Raw().Get(ctx, newGuard)
+	if gerr != nil {
+		return store.Snapshot{}, false, fmt.Errorf("read snapshot name guard: %v", gerr)
+	}
+	if len(gresp.Kvs) > 0 {
+		return store.Snapshot{}, false, store.ErrSnapshotNameExists
+	}
+	return store.Snapshot{}, true, nil
+}
+
+// checkSnapshotDeletable runs the two fail-closed guards a soft-delete must pass:
+// no live snapshot parents off this id (children check, via the per-VM index),
+// and no active (pending|running) vm.create names this snapshot as its source
+// (a sourcing create pulls the blobs without pinning them, so a delete-now could
+// GC a blob it still needs). A store error on either read aborts the delete
+// (never proceed on an uncertain read) - erring toward the non-destructive refusal.
+func (s *Store) checkSnapshotDeletable(ctx context.Context, id, vmID uuid.UUID) error {
+	siblings, err := s.snapshotsByIndex(ctx, snapshotVMIndexPrefix(vmID))
+	if err != nil {
+		return err
+	}
+	for _, sib := range siblings {
+		if sib.DeletedAt == nil && sib.ParentSnapshotID != nil && *sib.ParentSnapshotID == id {
+			return store.ErrSnapshotHasChildren
+		}
+	}
+	activeCreates, err := s.ActiveCreatesReferencingSnapshot(ctx, id)
+	if err != nil {
+		return err
+	}
+	if activeCreates > 0 {
+		return store.ErrSnapshotSourcingCreate
+	}
+	return nil
 }
 
 // DeleteSnapshot soft-deletes a snapshot fail-closed: it refuses with
@@ -328,49 +409,15 @@ func (s *Store) UpdateSnapshotMeta(ctx context.Context, p store.UpdateSnapshotMe
 // CP crash between a separate soft-delete and a separate enqueue would leave a
 // soft-deleted row whose blobs never get a reclaimer (the retried DELETE 404s on
 // the already-deleted row). It does NOT delete the disk blobs or their blobRef
-// entries - that is the enqueued GC task's job, gated on the reference graph.
+// entries - that is the enqueued GC task's job, gated on the reference graph. The
+// soft-delete put is CAS-guarded on the row's ModRevision so it never interleaves
+// with a concurrent SnapshotManifestApplied projection (torn state); a lost CAS
+// re-reads and retries, returning store.ErrConcurrentUpdate only if it never wins.
 func (s *Store) DeleteSnapshot(ctx context.Context, id uuid.UUID, taskParams store.CreateTaskParams, args queue.JobArgs) (store.Snapshot, error) {
-	existing, err := s.SnapshotByID(ctx, id)
-	if err != nil {
-		return store.Snapshot{}, err
-	}
-
-	// Fail-closed children check: scan the authoritative per-VM index and resolve
-	// each sibling to its primary; refuse if any live snapshot parents off this id.
-	siblings, err := s.snapshotsByIndex(ctx, snapshotVMIndexPrefix(existing.VmID))
-	if err != nil {
-		return store.Snapshot{}, err
-	}
-	for _, sib := range siblings {
-		if sib.DeletedAt == nil && sib.ParentSnapshotID != nil && *sib.ParentSnapshotID == id {
-			return store.Snapshot{}, store.ErrSnapshotHasChildren
-		}
-	}
-
-	// Fail-closed sourcing-create check: refuse while an active (pending|running)
-	// vm.create names this snapshot as its source. Such a create pulls the
-	// snapshot's blobs to the target node while it runs and takes no ref/pin on the
-	// source, so soft-deleting now (which enqueues blob GC) could remove a blob the
-	// in-flight create still needs. A store error here aborts the delete (the read
-	// is uncertain - never proceed to delete on an unknown), erring toward the
-	// non-destructive refusal.
-	activeCreates, err := s.ActiveCreatesReferencingSnapshot(ctx, id)
-	if err != nil {
-		return store.Snapshot{}, err
-	}
-	if activeCreates > 0 {
-		return store.Snapshot{}, store.ErrSnapshotSourcingCreate
-	}
-
-	now := time.Now().UTC()
-	existing.DeletedAt = &now
-	existing.Status = store.SnapshotStatusDeleting
-	existing.UpdatedAt = now
-	val, err := etcd.Marshal(existing)
-	if err != nil {
-		return store.Snapshot{}, err
-	}
-
+	// Allocate the GC task + job ONCE (a fixed task id + a single job seq), so a
+	// CAS retry below reuses them idempotently rather than leaking a task/seq per
+	// attempt. The job seq counter advances on allocation; reusing the same ops
+	// keeps at most one seq consumed regardless of retries.
 	seq, jobOp, err := s.enqueueJobOp(ctx, args)
 	if err != nil {
 		return store.Snapshot{}, err
@@ -381,21 +428,69 @@ func (s *Store) DeleteSnapshot(ctx context.Context, id uuid.UUID, taskParams sto
 		return store.Snapshot{}, err
 	}
 
-	ops := []clientv3.Op{
-		clientv3.OpPut(snapshotKey(id), string(val)),
-		clientv3.OpDelete(snapshotVMNameGuard(existing.VmID, existing.Name)),
-		clientv3.OpDelete(snapshotOwnerIndexKey(existing.OwnerID, id)),
-		clientv3.OpPut(taskKey(task.ID), string(taskVal)),
-		jobOp,
-	}
-	ops = append(ops, taskIndexOps(task)...)
+	const maxAttempts = 3
+	for attempt := 0; ; attempt++ {
+		// Read the row + its ModRevision so the soft-delete CAS-guards its blind put.
+		// Without the CAS, this delete's put (deleting + dropped guards + enqueued GC)
+		// can interleave with a concurrent SnapshotManifestApplied (ready + refgraph),
+		// leaving a torn row (guardless "ready" with GC scheduled, or a resurrected
+		// snapshot).
+		resp, err := s.c.Raw().Get(ctx, snapshotKey(id))
+		if err != nil {
+			return store.Snapshot{}, fmt.Errorf("read snapshot %s: %v", id, err)
+		}
+		if len(resp.Kvs) == 0 {
+			return store.Snapshot{}, store.ErrNotFound
+		}
+		rev := resp.Kvs[0].ModRevision
+		var existing store.Snapshot
+		if err := json.Unmarshal(resp.Kvs[0].Value, &existing); err != nil {
+			return store.Snapshot{}, fmt.Errorf("unmarshal snapshot %s: %v", id, err)
+		}
+		if existing.DeletedAt != nil {
+			// Already soft-deleted (a concurrent delete won): report not-found rather
+			// than double-deleting / re-enqueuing GC.
+			return store.Snapshot{}, store.ErrNotFound
+		}
 
-	if _, err := s.c.Raw().Txn(ctx).
-		Then(ops...).
-		Commit(); err != nil {
-		return store.Snapshot{}, fmt.Errorf("delete snapshot txn: %v", err)
+		if err := s.checkSnapshotDeletable(ctx, id, existing.VmID); err != nil {
+			return store.Snapshot{}, err
+		}
+
+		now := time.Now().UTC()
+		existing.DeletedAt = &now
+		existing.Status = store.SnapshotStatusDeleting
+		existing.UpdatedAt = now
+		val, err := etcd.Marshal(existing)
+		if err != nil {
+			return store.Snapshot{}, err
+		}
+
+		ops := []clientv3.Op{
+			clientv3.OpPut(snapshotKey(id), string(val)),
+			clientv3.OpDelete(snapshotVMNameGuard(existing.VmID, existing.Name)),
+			clientv3.OpDelete(snapshotOwnerIndexKey(existing.OwnerID, id)),
+			clientv3.OpPut(taskKey(task.ID), string(taskVal)),
+			jobOp,
+		}
+		ops = append(ops, taskIndexOps(task)...)
+
+		txnResp, err := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(snapshotKey(id)), "=", rev)).
+			Then(ops...).
+			Commit()
+		if err != nil {
+			return store.Snapshot{}, fmt.Errorf("delete snapshot txn: %v", err)
+		}
+		if txnResp.Succeeded {
+			return existing, nil
+		}
+		// CAS lost: the row moved between read and commit (a concurrent projection or
+		// delete). Re-read, re-check, retry a bounded number of times.
+		if attempt+1 >= maxAttempts {
+			return store.Snapshot{}, store.ErrConcurrentUpdate
+		}
 	}
-	return existing, nil
 }
 
 // SnapshotByIDIncludingDeleted returns the snapshot row with the given id even
@@ -426,31 +521,69 @@ func (s *Store) SnapshotByIDIncludingDeleted(ctx context.Context, id uuid.UUID) 
 // entries let blob GC find a blob's holder node WITHOUT a VM lookup, so the
 // snapshot stays deletable after its source VM is gone.
 func (s *Store) SnapshotManifestApplied(ctx context.Context, id, nodeID uuid.UUID, disks []store.SnapshotDisk, vmState store.VMStateAtSnapshot) error {
-	existing, err := s.SnapshotByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	existing.Disks = disks
-	existing.VMStateAtSnapshot = vmState
-	existing.Status = store.SnapshotStatusReady
-	existing.UpdatedAt = time.Now().UTC()
-	val, err := etcd.Marshal(existing)
-	if err != nil {
-		return err
-	}
+	const maxAttempts = 3
+	for attempt := 0; ; attempt++ {
+		// Read the row + its ModRevision so the projection CAS-guards its put. A
+		// blind put here can resurrect a row a concurrent DeleteSnapshot soft-deleted
+		// between this read and this commit (the old code read via SnapshotByID and
+		// blind-put the pre-delete value back, clearing DeletedAt) - a guardless
+		// "ready" snapshot whose owner index was dropped and whose blob GC is already
+		// enqueued (torn durable state / blob leak).
+		resp, err := s.c.Raw().Get(ctx, snapshotKey(id))
+		if err != nil {
+			return fmt.Errorf("read snapshot %s: %v", id, err)
+		}
+		if len(resp.Kvs) == 0 {
+			// The row is gone entirely: nothing to project onto, and we must not
+			// re-create it. Treat as a no-op.
+			return nil
+		}
+		rev := resp.Kvs[0].ModRevision
+		var existing store.Snapshot
+		if err := json.Unmarshal(resp.Kvs[0].Value, &existing); err != nil {
+			return fmt.Errorf("unmarshal snapshot %s: %v", id, err)
+		}
+		if existing.DeletedAt != nil {
+			// A DeleteSnapshot won the race and soft-deleted the row: do NOT resurrect
+			// it to ready. The delete's enqueued blob GC reclaims what the agent
+			// created; this create has nothing durable left to project.
+			return nil
+		}
 
-	// 1 row put + 2 ops per disk (blobRef + placement). The current path is single-disk (3
-	// ops); a future multi-disk path must chunk via commitInChunks before it nears
-	// etcd's 128-op/txn limit (~63 disks), which no real VM approaches.
-	ops := []clientv3.Op{clientv3.OpPut(snapshotKey(id), string(val))}
-	for _, d := range disks {
-		ops = append(ops, clientv3.OpPut(blobRefKey(d.SHA256, id), id.String()))
-		ops = append(ops, clientv3.OpPut(placementKey(d.SHA256, nodeID), nodeID.String()))
+		existing.Disks = disks
+		existing.VMStateAtSnapshot = vmState
+		existing.Status = store.SnapshotStatusReady
+		existing.UpdatedAt = time.Now().UTC()
+		val, err := etcd.Marshal(existing)
+		if err != nil {
+			return err
+		}
+
+		// 1 row put + 2 ops per disk (blobRef + placement). The current path is single-disk (3
+		// ops); a future multi-disk path must chunk via commitInChunks before it nears
+		// etcd's 128-op/txn limit (~63 disks), which no real VM approaches.
+		ops := []clientv3.Op{clientv3.OpPut(snapshotKey(id), string(val))}
+		for _, d := range disks {
+			ops = append(ops, clientv3.OpPut(blobRefKey(d.SHA256, id), id.String()))
+			ops = append(ops, clientv3.OpPut(placementKey(d.SHA256, nodeID), nodeID.String()))
+		}
+		txnResp, err := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(snapshotKey(id)), "=", rev)).
+			Then(ops...).
+			Commit()
+		if err != nil {
+			return fmt.Errorf("snapshot manifest applied txn: %v", err)
+		}
+		if txnResp.Succeeded {
+			return nil
+		}
+		// CAS lost: the row moved between read and commit. Re-read and retry a bounded
+		// number of times (the next read observes a soft-delete and aborts, or the
+		// fresh revision commits).
+		if attempt+1 >= maxAttempts {
+			return store.ErrConcurrentUpdate
+		}
 	}
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
-		return fmt.Errorf("snapshot manifest applied txn: %v", err)
-	}
-	return nil
 }
 
 // maxSnapshotErrorMessage bounds the error_message stamped on a snapshot row so a
