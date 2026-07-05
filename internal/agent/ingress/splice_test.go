@@ -551,7 +551,9 @@ func TestSpliceConnsTeardownOnEitherClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		spliceConns(ctx, cancel, a, b)
+		// A generous idle here so the teardown under test is the leg close, not
+		// the idle timer.
+		spliceConns(ctx, cancel, a, b, time.Hour)
 		close(done)
 	}()
 
@@ -566,6 +568,112 @@ func TestSpliceConnsTeardownOnEitherClose(t *testing.T) {
 	if _, err := bPeer.Write([]byte("z")); err == nil {
 		t.Error("upstream leg still open after teardown; spliceConns must close both legs")
 	}
+}
+
+// TestSpliceConnsTeardownOnIdle pins the idle-reclaim invariant: a session that
+// carries zero bytes in both directions for the idle window is torn down and
+// both legs closed, so a slot pinned by a silent client is reclaimed. Without
+// the idle timeout the two io.Copy goroutines block forever on the idle pipes
+// and spliceConns never returns.
+func TestSpliceConnsTeardownOnIdle(t *testing.T) {
+	a, aPeer := net.Pipe()
+	b, bPeer := net.Pipe()
+	t.Cleanup(func() { _ = aPeer.Close(); _ = bPeer.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		spliceConns(ctx, cancel, a, b, 150*time.Millisecond)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("spliceConns did not return on an idle session; idle timeout not enforced")
+	}
+
+	// Both legs must be closed after an idle teardown.
+	_ = a.SetWriteDeadline(time.Now().Add(time.Second))
+	if _, err := a.Write([]byte("z")); err == nil {
+		t.Error("leg a still open after idle teardown; spliceConns must close both legs")
+	}
+	_ = b.SetWriteDeadline(time.Now().Add(time.Second))
+	if _, err := b.Write([]byte("z")); err == nil {
+		t.Error("leg b still open after idle teardown; spliceConns must close both legs")
+	}
+}
+
+// TestSpliceConnsActiveSessionKeepsOpen pins the keep-alive invariant: a byte in
+// either direction inside the idle window re-arms the read deadline, so an
+// actively-used session spanning well past a single idle window is never torn.
+func TestSpliceConnsActiveSessionKeepsOpen(t *testing.T) {
+	a1, a2 := net.Pipe()
+	b1, b2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	idle := 200 * time.Millisecond
+	go spliceConns(ctx, cancel, a2, b1, idle)
+
+	// Send a byte each direction at an interval shorter than idle, several rounds
+	// spanning well past a single idle window. Every byte re-arms the read
+	// deadline, so an active session must never be torn down and bytes must keep
+	// flowing.
+	for i := range 4 {
+		go func() { _, _ = a1.Write([]byte("x")) }()
+		if got := readN(t, b2, 1); got != "x" {
+			t.Fatalf("round %d a1->b2 = %q, want x (active session must stay open)", i, got)
+		}
+		go func() { _, _ = b2.Write([]byte("y")) }()
+		if got := readN(t, a1, 1); got != "y" {
+			t.Fatalf("round %d b2->a1 = %q, want y (active session must stay open)", i, got)
+		}
+		time.Sleep(idle / 2)
+	}
+}
+
+// TestSpliceConnsOneDirectionalStreamKeepsOpen is the load-bearing invariant of
+// the whole idle-timeout fix: one direction streams continuously (a1 -> b2, e.g.
+// an SSH server streaming output) while the reverse direction stays silent
+// (client sends nothing). Activity in EITHER direction must reset BOTH legs' idle
+// windows, so the silent reverse leg must not time out and tear an actively
+// streaming session down. On a per-leg-only impl the silent leg fires at idle and
+// kills the live stream mid-flight.
+func TestSpliceConnsOneDirectionalStreamKeepsOpen(t *testing.T) {
+	a1, a2 := net.Pipe()
+	b1, b2 := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	idle := 150 * time.Millisecond
+	go spliceConns(ctx, cancel, a2, b1, idle)
+
+	const rounds = 5
+	for i := range rounds {
+		go func() { _, _ = a1.Write([]byte("x")) }()
+		if got := readN(t, b2, 1); got != "x" {
+			t.Fatalf("round %d a1->b2 = %q, want x (one-directional stream must stay open)", i, got)
+		}
+		time.Sleep(idle / 2)
+	}
+
+	// Both endpoints must still be open after the full run.
+	go func() { _, _ = a1.Write([]byte("z")) }()
+	if got := readN(t, b2, 1); got != "z" {
+		t.Errorf("post-stream a1->b2 = %q, want z (session must survive a one-directional stream)", got)
+	}
+}
+
+// readN reads exactly n bytes from c under a short deadline and returns them as a
+// string, failing the test on any read error.
+func readN(t *testing.T, c net.Conn, n int) string {
+	t.Helper()
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(c, buf); err != nil {
+		t.Fatalf("readN(%d): %v", n, err)
+	}
+	return string(buf)
 }
 
 // TestSessionCredIsNotAnX509Identity proves the trust isolation between the
