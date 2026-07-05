@@ -834,6 +834,15 @@ func reconcileCancelledNoAgentTask(ctx context.Context, st MigrationWorkerStore,
 		return nil
 	}
 
+	if !m.Live {
+		// The split-brain this arbitration prevents only exists for LIVE
+		// migrations: an offline target adopts a STOPPED copy and never
+		// auto-resumes, so a completed offline source leaves the guest intact on
+		// the source disk - finalizing cancelled is fully recoverable (the pre-fix
+		// behaviour). Skip the source probe entirely so a cancel whose very reason
+		// is an unreachable source does not hang in a retry loop.
+		return finalizeCancelled("offline migration; nothing live to arbitrate")
+	}
 	if m.SourceNodeID == nil {
 		// No source to probe: a cancelled migration with no source truly never
 		// contacted anyone. Finalize cancelled (the original safe behaviour).

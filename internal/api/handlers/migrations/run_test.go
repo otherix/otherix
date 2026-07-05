@@ -2151,6 +2151,48 @@ func TestFinalizeTerminalCancelled_NoAgentTaskSourceFailedReapsTarget(t *testing
 	}
 }
 
+// TestFinalizeTerminalCancelled_NoAgentTaskOfflineFinalizesWithoutProbe pins the
+// scope guard: an OFFLINE cancelled-no-agent-task migration must finalize
+// cancelled immediately WITHOUT probing the source (offline never auto-resumes,
+// so there is no live VM to strand). A source down - a common reason to cancel -
+// must not hang the cancel in a retry loop. The staged getMigrationErr would
+// make the handler retry forever if the probe fired.
+func TestFinalizeTerminalCancelled_NoAgentTaskOfflineFinalizesWithoutProbe(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm := seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false) // OFFLINE
+
+	if _, err := s.CancelMigration(ctx, m.ID, "operator cancelled; source is down"); err != nil {
+		t.Fatalf("cancel migration: %v", err)
+	}
+
+	// A source probe would ERROR (source down) and hang the cancel; it must not fire.
+	agent := &fakeMigrationAgent{getMigrationErr: errors.New("source unreachable")}
+	placer := &fakePlacer{}
+
+	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(offline cancelled) = %v, want nil (finalize without probe)", err)
+	}
+	if agent.getMigrationCalls != 0 {
+		t.Errorf("getMigrationCalls = %d, want 0 (offline must not probe the source)", agent.getMigrationCalls)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusCancelled {
+		t.Errorf("task status = %q, want cancelled", task.Status)
+	}
+}
+
 // TestFinalizeTerminalCancelled_NoAgentTaskSourceInFlightRetries pins fail-
 // toward-inaction: the source probe shows the source still pushing (phase
 // active), outcome UNKNOWN. The reconcile MUST return a retryable error and
