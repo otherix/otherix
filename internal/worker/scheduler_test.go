@@ -58,3 +58,13 @@ func TestSchedulerErrorDoesNotStopSchedule(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// TestFireRecoversPanic ensures a panic in a periodic func is recovered rather
+// than propagated: a panic in a scheduler goroutine crashes the whole process
+// (embedded etcd with it). fire must convert it to a logged error and return.
+func TestFireRecoversPanic(t *testing.T) {
+	s := NewScheduler(discardLogger())
+	j := periodicJob{name: "poison", fn: func(context.Context) error { panic("boom") }}
+	// Reaching the line after fire = the panic was recovered, not propagated.
+	s.fire(context.Background(), j)
+}

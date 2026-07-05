@@ -169,7 +169,7 @@ func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, reg registrat
 	defer close(done)
 	d.startRenewer(ctx, j.ID, done)
 
-	herr := reg.handler(ctx, j.Args)
+	herr := guardPanic(ctx, d.log, j.Kind, func() error { return reg.handler(ctx, j.Args) })
 	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
 	defer cancel()
 	switch {
