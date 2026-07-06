@@ -33,6 +33,12 @@ const IdempotencyKeyMaxLength = 255
 // value is 24 hours.
 const IdempotencyTTL = 24 * time.Hour
 
+// idempotencySettleTimeout bounds the detached settle write (Complete / Delete)
+// that runs after the handler returns. It is detached from the request context
+// so a client disconnect or a fired request deadline cannot abort it, but it
+// must still be bounded so it cannot hang graceful shutdown.
+const idempotencySettleTimeout = 5 * time.Second
+
 // IdempotencyInFlightLease bounds how long an in_flight record blocks a retry.
 // It must exceed the maximum real request duration (the server WriteTimeout, 30s
 // default) so a live request is never reclaimed, while a crashed in_flight is
@@ -153,7 +159,19 @@ func Idempotency(s IdempotencyStore, log *slog.Logger) func(http.Handler) http.H
 				// the process crashes between here and the flush, the
 				// client never received a 2xx, so its retry replays as a
 				// first attempt against the reclaimable in_flight row.
-				finalizeKey(r.Context(), s, user.ID, key, rec, log)
+				//
+				// The handler has already run - its side effects happened -
+				// so the settle must commit even when the request context is
+				// already cancelled (client disconnect, or the Timeout
+				// middleware firing while this runs in its detached
+				// goroutine). Detach from the request's cancellation but keep
+				// its values (request id) and bound the write so it cannot
+				// hang shutdown. Leaving the settle on r.Context() would wedge
+				// the row in_flight: the response goes unrecorded and a retry
+				// re-runs the operation, breaking idempotency.
+				settleCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), idempotencySettleTimeout)
+				finalizeKey(settleCtx, s, user.ID, key, rec, log)
+				cancel()
 				rec.flush(w)
 			}
 		})
