@@ -28,7 +28,7 @@ func TestCancelLosesToClaim(t *testing.T) {
 		t.Fatalf("EnqueueTask: %v", err)
 	}
 	task, _ := s.TaskByID(ctx, p.ID)
-	claimed, err := s.ClaimJob(ctx, *task.JobID) // dispatcher wins first
+	claimed, _, err := s.ClaimJob(ctx, *task.JobID) // dispatcher wins first
 	if err != nil || !claimed {
 		t.Fatalf("ClaimJob = %v, %v; want true, nil", claimed, err)
 	}
@@ -65,7 +65,7 @@ func TestCancelBeforeClaimDeletesJob(t *testing.T) {
 			t.Errorf("cancelled job %d still pending - dispatcher could deliver a cancelled task", j.ID)
 		}
 	}
-	claimed, _ := s.ClaimJob(ctx, *task.JobID)
+	claimed, _, _ := s.ClaimJob(ctx, *task.JobID)
 	if claimed {
 		t.Errorf("ClaimJob succeeded on a cancelled (deleted) job")
 	}
@@ -93,7 +93,7 @@ func TestCancelClaimRaceExactlyOneWins(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if ok, _ := s.ClaimJob(ctx, *task.JobID); ok {
+			if ok, _, _ := s.ClaimJob(ctx, *task.JobID); ok {
 				claimOK.Store(true)
 			}
 		}()

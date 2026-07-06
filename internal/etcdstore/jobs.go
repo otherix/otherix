@@ -41,14 +41,24 @@ const (
 // the worker renews it via RenewJobLease while the handler runs, and the reaper
 // (ReclaimStaleRunningJobs) returns a running job to pending when ClaimedAt is
 // missing or older than the lease - the signal that its worker crashed.
+//
+// ClaimToken is the fence identifying WHICH claim currently owns a running job:
+// ClaimJob mints a fresh token on the pending->running transition, the reaper
+// clears it on reclaim, and a re-claim mints a new one. A worker's post-handler
+// bookkeeping (RetryJob/RequeueJob) and its renewer (RenewJobLease) carry the
+// token they claimed with and no-op unless it still matches, so a lease-lost
+// worker whose job was reclaimed and re-claimed by another worker cannot stomp
+// the new claim. Empty on a pending row (no live claim) and on legacy pre-upgrade
+// rows.
 type Job struct {
-	ID        int64      `json:"id"`
-	Kind      string     `json:"kind"`
-	Args      []byte     `json:"args"`
-	State     JobState   `json:"state"`
-	Attempts  int32      `json:"attempts"`
-	FailedAt  *time.Time `json:"failed_at,omitempty"`
-	ClaimedAt *time.Time `json:"claimed_at,omitempty"`
+	ID         int64      `json:"id"`
+	Kind       string     `json:"kind"`
+	Args       []byte     `json:"args"`
+	State      JobState   `json:"state"`
+	Attempts   int32      `json:"attempts"`
+	FailedAt   *time.Time `json:"failed_at,omitempty"`
+	ClaimedAt  *time.Time `json:"claimed_at,omitempty"`
+	ClaimToken string     `json:"claim_token,omitempty"`
 }
 
 func jobSeqKey() string { return etcd.Key("seq", "jobs") }
