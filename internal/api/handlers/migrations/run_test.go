@@ -133,6 +133,11 @@ type fakeMigrationAgent struct {
 	terminal agentclient.TaskTerminal
 	pollErr  error
 
+	// pollScript, when set, drives PollTask per call index (1-based) so a test can
+	// stage a sequence - e.g. a poll-budget TimeoutError followed by a terminal
+	// success, or a 404 after a restart. Takes precedence over terminal/pollErr.
+	pollScript func(call int) (agentclient.TaskTerminal, error)
+
 	// pollHook, when set, runs inside PollTask (before it returns terminal) so a
 	// test can inject a mid-flight state change between drive-start and the
 	// source-success cutover - e.g. a too-late operator cancel that races the
@@ -194,10 +199,15 @@ func (f *fakeMigrationAgent) StartOutgoingMigration(_ context.Context, _, _ stri
 func (f *fakeMigrationAgent) PollTask(_ context.Context, _ string, _ uuid.UUID) (agentclient.TaskTerminal, error) {
 	f.mu.Lock()
 	f.pollCalls++
+	call := f.pollCalls
+	script := f.pollScript
 	pollErr := f.pollErr
 	hook := f.pollHook
 	terminal := f.terminal
 	f.mu.Unlock()
+	if script != nil {
+		return script(call)
+	}
 	if pollErr != nil {
 		return agentclient.TaskTerminal{}, pollErr
 	}
@@ -993,6 +1003,257 @@ func TestRunMigration_FailurePreCutover(t *testing.T) {
 	}
 	if agent.startTargetCalls != 0 {
 		t.Errorf("StartVMOnTarget calls = %d, want 0 (no committed cutover)", agent.startTargetCalls)
+	}
+}
+
+// seedSagaVM seeds the standard two-node bound-migration fixture (source pool +
+// boot disk + target pool) and returns the two nodes and the VM.
+func seedSagaVM(t *testing.T, s *etcdstore.Store, cli *etcd.Client) (nodeA, nodeB store.Node, vm store.VM) {
+	t.Helper()
+	nodeA = seedReadyNode(t, s, "node-a", "https://node-a:9443")
+	nodeB = seedReadyNode(t, s, "node-b", "https://node-b:9443")
+	vm = seedPinnedVM(t, cli, nodeA.ID)
+	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
+	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
+	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	return nodeA, nodeB, vm
+}
+
+// TestPollOutgoing_TimeoutBudgetRetriesThenCommits pins #4: a *TimeoutError from
+// PollTask (poll budget elapsed while the agent task is still alive) is NOT a
+// failure - the worker keeps polling under the lease renewer and, on the next
+// poll's success, commits the cutover. Without the fix the first timeout
+// finalizes the task failed and burns an attempt.
+func TestPollOutgoing_TimeoutBudgetRetriesThenCommits(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+
+	agent := &fakeMigrationAgent{
+		pollScript: func(call int) (agentclient.TaskTerminal, error) {
+			if call == 1 {
+				return agentclient.TaskTerminal{}, &agentclient.TimeoutError{AgentTaskID: uuid.NewString(), Budget: "5m"}
+			}
+			return agentclient.TaskTerminal{Status: "success"}, nil
+		},
+	}
+
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(timeout-then-success) = %v, want nil (poll-budget timeout is not a failure)", err)
+	}
+	if agent.pollCalls != 2 {
+		t.Errorf("pollCalls = %d, want 2 (looped past the budget timeout)", agent.pollCalls)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("migration phase = %q, want completed (timeout retried, then committed)", got.Phase)
+	}
+}
+
+// TestPollOutgoing_BudgetElapsedRequeues pins the loop-poll bound (slot-leak
+// fix): when the overall MaxPollDuration is exceeded, the worker frees its
+// dispatcher slot with a RETRYABLE requeue (non-nil error) and leaves the
+// migration NON-terminal (still active) - never a false failed terminal.
+func TestPollOutgoing_BudgetElapsedRequeues(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+
+	agent := &fakeMigrationAgent{
+		pollScript: func(int) (agentclient.TaskTerminal, error) {
+			return agentclient.TaskTerminal{}, &agentclient.TimeoutError{AgentTaskID: "x", Budget: "5m"}
+		},
+	}
+	base := time.Unix(1_700_000_000, 0)
+	var n int64
+	cfg := migrations.MigrateConfig{
+		MaxPollDuration: time.Minute,
+		Now:             func() time.Time { n++; return base.Add(time.Duration(n) * time.Hour) },
+	}
+
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, cfg, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err == nil {
+		t.Fatalf("MigrateHandler(budget-elapsed) = nil, want a retryable error so the dispatcher requeues")
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseActive {
+		t.Errorf("migration phase = %q, want active (requeued, NOT a false terminal)", got.Phase)
+	}
+}
+
+// TestPollOutgoing_ShutdownCancelDoesNotFinalize pins the shutdown arm: a
+// context.Canceled from PollTask (graceful shutdown cancelled the run ctx) is
+// returned as-is WITHOUT finalizing the task failed, so the dispatcher requeues
+// with no attempt bump and the next boot resumes via the persisted agent_task_id.
+func TestPollOutgoing_ShutdownCancelDoesNotFinalize(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+
+	agent := &fakeMigrationAgent{pollErr: context.Canceled}
+
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	err := h(ctx, jobArgs(t, taskID, m.ID))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("MigrateHandler(shutdown-cancel) = %v, want context.Canceled propagated", err)
+	}
+	task, terr := s.TaskByID(ctx, taskID)
+	if terr != nil {
+		t.Fatalf("TaskByID: %v", terr)
+	}
+	if task.Status == store.TaskStatusFailed {
+		t.Errorf("task finalized failed on shutdown-cancel; want left non-terminal for requeue")
+	}
+}
+
+// TestVanishedSourceTask_LiveTargetCompletedCommits is the split-brain-avoidance
+// headline (#5 Blocker fix): a LIVE source restart makes PollTask 404, but the
+// TARGET record shows COMPLETED (the guest already resumed on the target). The
+// worker must COMMIT the cutover to the target, never mark failed on the source's
+// (also-vanished) record - marking failed would strand a live guest and split-brain.
+func TestVanishedSourceTask_LiveTargetCompletedCommits(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+
+	agent := &fakeMigrationAgent{
+		pollErr:         &agentclient.AgentError{Status: 404},
+		getMigration:    agentapi.Migration{Phase: agentapi.MigrationPhaseCompleted},
+		getMigrationSet: true,
+	}
+
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(vanished-live-target-completed) = %v, want nil (commit to target)", err)
+	}
+	if agent.getMigrationCalls != 1 {
+		t.Errorf("target probe calls = %d, want 1", agent.getMigrationCalls)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseCompleted {
+		t.Errorf("migration phase = %q, want completed (target confirmed handoff)", got.Phase)
+	}
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeB.ID {
+		t.Errorf("PinnedNodeID = %v, want target %v (guest is live on target, must commit)", gotVM.PinnedNodeID, nodeB.ID)
+	}
+}
+
+// TestVanishedSourceTask_LiveTargetActiveFailsToSource: a LIVE source restart
+// (PollTask 404) with the TARGET showing active (handoff never landed) is
+// positive evidence the guest is NOT on the target -> fail toward source (mark
+// failed, reap target incoming, VM stays on source).
+func TestVanishedSourceTask_LiveTargetActiveFailsToSource(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+
+	agent := &fakeMigrationAgent{
+		pollErr:         &agentclient.AgentError{Status: 404},
+		getMigration:    agentapi.Migration{Phase: agentapi.MigrationPhaseActive},
+		getMigrationSet: true,
+	}
+
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(vanished-live-target-active) = %v, want nil (fail to source, terminal)", err)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseFailed {
+		t.Errorf("migration phase = %q, want failed (target confirms no handoff)", got.Phase)
+	}
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v (fail-safe-to-source)", gotVM.PinnedNodeID, nodeA.ID)
+	}
+	if len(agent.cancelCalls) != 1 {
+		t.Errorf("target incoming reap calls = %d, want 1", len(agent.cancelCalls))
+	}
+}
+
+// TestVanishedSourceTask_LiveTargetUnknownRetries: a LIVE source restart with the
+// TARGET also unreachable is an UNKNOWN outcome. The worker must NOT finalize -
+// return a retryable error and leave the migration active (fail toward inaction).
+func TestVanishedSourceTask_LiveTargetUnknownRetries(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", true)
+
+	agent := &fakeMigrationAgent{
+		pollErr:         &agentclient.AgentError{Status: 404},
+		getMigrationErr: &agentclient.AgentError{Status: 503}, // target unreachable
+	}
+
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err == nil {
+		t.Fatalf("MigrateHandler(vanished-live-target-unknown) = nil, want a retryable error (fail toward inaction)")
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase == store.MigrationPhaseFailed || got.Phase == store.MigrationPhaseCompleted {
+		t.Errorf("migration phase = %q, want NON-terminal (must not finalize on uncertain target)", got.Phase)
+	}
+}
+
+// TestVanishedSourceTask_OfflineFailsToSourceNoProbe: an OFFLINE source restart
+// (PollTask 404) fails toward source directly - the offline target adopts a
+// STOPPED copy the CP never started pre-cutover, so failing is recoverable and
+// no target probe is needed.
+func TestVanishedSourceTask_OfflineFailsToSourceNoProbe(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
+
+	agent := &fakeMigrationAgent{pollErr: &agentclient.AgentError{Status: 404}}
+
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(vanished-offline) = %v, want nil (fail to source, terminal)", err)
+	}
+	if agent.getMigrationCalls != 0 {
+		t.Errorf("offline probed the target %d times, want 0 (no probe needed)", agent.getMigrationCalls)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseFailed {
+		t.Errorf("migration phase = %q, want failed", got.Phase)
+	}
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != nodeA.ID {
+		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v", gotVM.PinnedNodeID, nodeA.ID)
 	}
 }
 
