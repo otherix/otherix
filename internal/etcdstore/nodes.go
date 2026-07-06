@@ -733,17 +733,23 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		}}
 	}
 
-	var (
-		out                  store.NodeDeleteOutcome
-		cancelOps, orphanOps []clientv3.Op
-	)
+	var out store.NodeDeleteOutcome
 	if force {
+		// Cancel the active migrations and orphan the vm_runtime rows through their
+		// own per-row ModRevision CAS (NOT as blind puts in the node cascade below):
+		// a concurrent cutover/heartbeat that commits between our snapshot and this
+		// write must WIN, so we never clobber a just-completed cutover (migration
+		// -> cancelled over completed, runtime -> orphaned over live-on-target). On
+		// CAS-retry exhaustion these return an error and we abort the whole delete
+		// BEFORE the node soft-delete, so a genuinely-active migration never leaves
+		// a dangling active-per-VM guard on a soft-deleted node (fail toward
+		// inaction; the operator retries).
 		reason := fmt.Sprintf("source/target node %s force-deleted by user %s", id, callerID)
-		cancelOps, out.MigrationsCancelled, err = cancelMigrationOps(activeMigs, reason)
+		out.MigrationsCancelled, err = s.cancelNodeMigrations(ctx, activeMigs, reason)
 		if err != nil {
 			return store.NodeDeleteOutcome{}, err
 		}
-		orphanOps, out.VMsOrphaned, err = s.orphanVMRuntimeOps(ctx, id)
+		out.VMsOrphaned, err = s.orphanNodeVMRuntimes(ctx, id)
 		if err != nil {
 			return store.NodeDeleteOutcome{}, err
 		}
@@ -779,22 +785,25 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 		return store.NodeDeleteOutcome{}, err
 	}
 
-	cascade := nodeDeleteCascade(id, n.Name, string(val), cancelOps, orphanOps, certOps, reapOps, wgRec)
+	cascade := nodeDeleteCascade(id, n.Name, string(val), certOps, reapOps, wgRec)
 	if err := s.commitInChunks(ctx, cascade); err != nil {
 		return store.NodeDeleteOutcome{}, fmt.Errorf("force-delete node cascade: %v", err)
 	}
 	return out, nil
 }
 
-// nodeDeleteCascade assembles the ordered force-delete op slice. The whole
-// cascade routes through commitInChunks: each <=120-op chunk commits atomically,
-// so a crash leaves a clean PREFIX of cancel/orphan/wg-purge ops. The
-// node-soft-delete ops (name-guard delete + nodePut) are appended LAST, the
-// nodePut genuinely last, so the node row disappears only after every other op,
-// and a retry re-derives the
-// remaining work (NodeByID at the top returns ErrNotFound once the node row is
-// gone). Every preceding op is an idempotent put/delete, so re-running the whole
-// cascade on retry is safe.
+// nodeDeleteCascade assembles the ordered force-delete op slice. The
+// migration-cancel and vm_runtime-orphan writes are NOT here - they commit
+// earlier through their own per-row ModRevision CAS (cancelNodeMigrations /
+// orphanNodeVMRuntimes) so a concurrent cutover wins; this cascade carries only
+// idempotent puts/deletes. The whole cascade routes through commitInChunks: each
+// <=120-op chunk commits atomically, so a crash leaves a clean PREFIX of
+// cert-revoke/wg-purge/reap ops. The node-soft-delete ops (name-guard delete +
+// nodePut) are appended LAST, the nodePut genuinely last, so the node row
+// disappears only after every other op, and a retry re-derives the remaining
+// work (NodeByID at the top returns ErrNotFound once the node row is gone). Every
+// preceding op is an idempotent put/delete, so re-running the whole cascade on
+// retry is safe.
 //
 // Ordering is load-bearing: the WireGuard fabric purge (record + pubkey guard)
 // MUST precede the node-soft-delete. Were it to trail, a chunk boundary falling
@@ -803,10 +812,8 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 // can never re-run (the gone node short-circuits at NodeByID). There is no
 // backstop reaper for agent_wireguard, so the leaked pubkey guard would later
 // fail a node re-bootstrap with ErrAgentWireguardPubkeyInUse.
-func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, cancelOps, orphanOps, certOps, reapOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
-	cascade := make([]clientv3.Op, 0, len(cancelOps)+len(orphanOps)+len(certOps)+len(reapOps)+4)
-	cascade = append(cascade, cancelOps...)
-	cascade = append(cascade, orphanOps...)
+func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, certOps, reapOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
+	cascade := make([]clientv3.Op, 0, len(certOps)+len(reapOps)+4)
 	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
 	// stops appearing in the mesh and its pubkey becomes reusable - before the
 	// node soft-delete so a retry can re-run it.
@@ -1084,75 +1091,129 @@ func (s *Store) ActiveSourceMigrationCount(ctx context.Context, nodeID uuid.UUID
 	return n, nil
 }
 
-// cancelMigrationOps builds the ops that mark each migration cancelled with the
-// audit reason and stamp completed_at, plus the terminalCleanupOps that release
-// the migration's transient state (the active-per-VM guard + per-node index
-// entries) on the terminal transition - the same release every other terminal
-// path (CommitMigrationCutover, UpdateMigrationProgress-to-terminal,
-// CancelMigration) performs. Without it, force-deleting a node mid-migration
-// would leave the per-VM active guard dangling and the VM permanently
-// un-migratable (every future CreateMigration CAS would hit the guard and 409).
-// Returns the ops + cancelled count. It does not commit - the caller appends the
-// ops to the force-delete cascade so they commit (chunked) with the rest. All
-// terminalCleanupOps are idempotent OpDeletes, safe under commitInChunks.
-func cancelMigrationOps(migs []store.Migration, reason string) ([]clientv3.Op, int64, error) {
-	now := time.Now().UTC()
-	ops := make([]clientv3.Op, 0, len(migs))
+// nodeDeleteCASAttempts bounds the per-row CAS retries the force-delete cancel /
+// orphan writers make against a concurrently-churning migration or runtime row.
+// On exhaustion the writer returns an error and DeleteNode aborts (never
+// soft-deletes the node) so a genuinely-active migration cannot be stranded with
+// a dangling active-per-VM guard.
+const nodeDeleteCASAttempts = 5
+
+// cancelNodeMigrations cancels each still-active migration touching the node
+// being force-deleted, through the shared CancelMigration CAS (which stamps the
+// reason + completed_at and releases the active-per-VM guard + per-node indexes
+// via terminalCleanupOps). It re-reads each row under CancelMigration rather than
+// trusting the snapshot in migs, so a migration a concurrent cutover already
+// drove terminal is SKIPPED (not clobbered back to cancelled - fail toward
+// inaction). Returns the count actually cancelled. A migration that keeps losing
+// the CAS to a live progress stream past nodeDeleteCASAttempts returns an error,
+// aborting the delete before the node soft-delete (the migration is genuinely
+// active; do not delete its node out from under it).
+func (s *Store) cancelNodeMigrations(ctx context.Context, migs []store.Migration, reason string) (int64, error) {
 	var n int64
-	for _, m := range migs {
-		m.Phase = store.MigrationPhaseCancelled
-		r := reason
-		m.ErrorMessage = &r
-		m.CompletedAt = &now
-		val, err := etcd.Marshal(m)
-		if err != nil {
-			return nil, 0, err
+	for _, mig := range migs {
+		for attempt := 0; ; attempt++ {
+			_, err := s.CancelMigration(ctx, mig.ID, reason)
+			switch {
+			case err == nil:
+				n++
+			case errors.Is(err, store.ErrMigrationNotCancelable):
+				// Already terminal: a cutover/failure/cancel won. Do not flip it.
+			case errors.Is(err, store.ErrNotFound):
+				// Row vanished (retention/delete): nothing to cancel.
+			case errors.Is(err, store.ErrConcurrentUpdate):
+				if attempt+1 >= nodeDeleteCASAttempts {
+					return n, fmt.Errorf("cancel migration %s for node delete: %w", mig.ID, err)
+				}
+				continue // re-read + re-CAS
+			default:
+				return n, fmt.Errorf("cancel migration %s for node delete: %v", mig.ID, err)
+			}
+			break
 		}
-		ops = append(ops, clientv3.OpPut(migrationKey(m.ID), string(val)))
-		ops = append(ops, terminalCleanupOps(m)...)
-		n++
 	}
-	return ops, n, nil
+	return n, nil
 }
 
-// orphanVMRuntimeOps builds the ops that mark every vm_runtime row on the node
-// orphaned, clear current_node_id, and remove the node index entry, returning
-// the ops + count. It reads each runtime primary inline (a missing row is
-// skipped) but does not commit - the caller appends the ops to the force-delete
-// cascade so they commit atomically with the rest.
-func (s *Store) orphanVMRuntimeOps(ctx context.Context, nodeID uuid.UUID) ([]clientv3.Op, int64, error) {
+// orphanNodeVMRuntimes marks every vm_runtime still homed on the node being
+// force-deleted as orphaned (phase=orphaned, current_node_id=nil) and drops its
+// by-node index entry, each through a per-row ModRevision CAS so a concurrent
+// cutover/heartbeat wins. A runtime whose current_node_id has already moved off
+// the node (a cutover landed) is SKIPPED - only its stale by-node index entry is
+// reaped - so we never clobber a live-on-target runtime. Returns the count
+// actually orphaned; a runtime that keeps losing the CAS past
+// nodeDeleteCASAttempts returns an error and aborts the delete.
+func (s *Store) orphanNodeVMRuntimes(ctx context.Context, nodeID uuid.UUID) (int64, error) {
 	items, err := s.c.Range(ctx, vmRuntimeNodeIndexPrefix(nodeID))
 	if err != nil {
-		return nil, 0, err
+		return 0, err
 	}
-	ops := make([]clientv3.Op, 0, len(items)*2)
 	var n int64
 	for _, kv := range items {
 		id, perr := uuid.Parse(string(kv.Value))
 		if perr != nil {
-			return nil, 0, fmt.Errorf("corrupt vm_runtime node index %q: %v", kv.Key, perr)
+			return n, fmt.Errorf("corrupt vm_runtime node index %q: %v", kv.Key, perr)
 		}
+		orphaned, oerr := s.orphanOneVMRuntime(ctx, id, nodeID, kv.Key)
+		if oerr != nil {
+			return n, oerr
+		}
+		if orphaned {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// orphanOneVMRuntime orphans a single vm_runtime under a ModRevision CAS, or
+// skips it (reaping only the stale index entry) when the row is gone or has moved
+// off nodeID. Returns whether it actually orphaned the row.
+func (s *Store) orphanOneVMRuntime(ctx context.Context, vmID, nodeID uuid.UUID, indexKey string) (bool, error) {
+	for attempt := 0; ; attempt++ {
+		resp, err := s.c.Raw().Get(ctx, vmRuntimeKey(vmID))
+		if err != nil {
+			return false, err
+		}
+		if len(resp.Kvs) == 0 {
+			// Runtime row gone (a delete projection won): drop the stale by-node
+			// index entry (idempotent) and skip.
+			_, derr := s.c.Delete(ctx, indexKey)
+			return false, derr
+		}
+		rev := resp.Kvs[0].ModRevision
 		var rt store.VMRuntime
-		found, gerr := s.c.GetJSON(ctx, vmRuntimeKey(id), &rt)
-		if gerr != nil {
-			return nil, 0, gerr
+		if err := json.Unmarshal(resp.Kvs[0].Value, &rt); err != nil {
+			return false, fmt.Errorf("unmarshal vm_runtime %s: %v", vmID, err)
 		}
-		if !found {
-			continue
+		if rt.CurrentNodeID == nil || *rt.CurrentNodeID != nodeID {
+			// Moved off this node (a cutover landed) or already orphaned: do not
+			// clobber. The stale by-node index entry under this node is reaped
+			// (a cutover already deletes it; this is a defensive idempotent no-op).
+			_, derr := s.c.Delete(ctx, indexKey)
+			return false, derr
 		}
 		rt.Phase = store.VmPhaseOrphaned
 		rt.CurrentNodeID = nil
-		val, merr := etcd.Marshal(rt)
-		if merr != nil {
-			return nil, 0, merr
+		val, err := etcd.Marshal(rt)
+		if err != nil {
+			return false, err
 		}
-		ops = append(ops,
-			clientv3.OpPut(vmRuntimeKey(id), string(val)),
-			clientv3.OpDelete(kv.Key),
-		)
-		n++
+		txResp, err := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(vmRuntimeKey(vmID)), "=", rev)).
+			Then(
+				clientv3.OpPut(vmRuntimeKey(vmID), string(val)),
+				clientv3.OpDelete(indexKey),
+			).
+			Commit()
+		if err != nil {
+			return false, fmt.Errorf("orphan vm_runtime %s txn: %v", vmID, err)
+		}
+		if txResp.Succeeded {
+			return true, nil
+		}
+		if attempt+1 >= nodeDeleteCASAttempts {
+			return false, fmt.Errorf("orphan vm_runtime %s for node delete: %w", vmID, store.ErrConcurrentUpdate)
+		}
 	}
-	return ops, n, nil
 }
 
 // isTerminalMigration reports whether a migration phase is terminal (matches the
