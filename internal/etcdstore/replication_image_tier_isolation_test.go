@@ -119,7 +119,7 @@ func TestReconcileLeavesImageOnlyDigestUntouched(t *testing.T) {
 
 	// Drive the REAL reconcile.
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := replication.ReconcileFunc(s, log)(ctx); err != nil {
+	if err := replication.ReconcileFunc(s, time.Minute, log)(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 

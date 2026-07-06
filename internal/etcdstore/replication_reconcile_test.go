@@ -102,7 +102,7 @@ func TestReconcileReachesKAgainstRealStore(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := replication.ReconcileFunc(s, log)(ctx); err != nil {
+	if err := replication.ReconcileFunc(s, time.Minute, log)(ctx); err != nil {
 		t.Fatalf("ReconcileFunc: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestReconcileReachesKAgainstRealStore(t *testing.T) {
 	}
 
 	// Second pass while the in-flight marker is set: dedup must enqueue NOTHING new.
-	if err := replication.ReconcileFunc(s, log)(ctx); err != nil {
+	if err := replication.ReconcileFunc(s, time.Minute, log)(ctx); err != nil {
 		t.Fatalf("ReconcileFunc (2nd pass): %v", err)
 	}
 	if n := countPending(); n != 1 {
@@ -155,7 +155,7 @@ func TestReconcileReachesKAgainstRealStore(t *testing.T) {
 	if err := s.EndReplicate(ctx, digest, target); err != nil {
 		t.Fatalf("EndReplicate: %v", err)
 	}
-	if err := replication.ReconcileFunc(s, log)(ctx); err != nil {
+	if err := replication.ReconcileFunc(s, time.Minute, log)(ctx); err != nil {
 		t.Fatalf("ReconcileFunc (3rd pass): %v", err)
 	}
 	if n := countPending(); n != 2 {

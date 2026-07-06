@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -36,16 +37,28 @@ func liveNodeIDs(nodes []store.Node) map[uuid.UUID]bool {
 	return live
 }
 
-// goneNodeIDs returns the set of node ids in terminal 'gone' status (the prune
-// signal; an unreachable node is transient and is never pruned).
-func goneNodeIDs(nodes []store.Node) map[uuid.UUID]bool {
-	gone := map[uuid.UUID]bool{}
+// rebalanceEligibleNodeIDs returns the set of node ids that are rebalance-eligible:
+// in 'unreachable' status with a heartbeat (or, if never heartbeated, a
+// created_at) older than grace. It is the prune signal for durable-replica
+// bookkeeping - a rebalance-eligible node is treated as a dead holder. It is a
+// computed predicate on a durable timestamp, reversible the instant a heartbeat
+// lands: a returning node flips to 'ready' and drops out of this set.
+func rebalanceEligibleNodeIDs(nodes []store.Node, grace time.Duration, now time.Time) map[uuid.UUID]bool {
+	out := map[uuid.UUID]bool{}
+	cutoff := now.Add(-grace)
 	for _, n := range nodes {
-		if n.DeletedAt == nil && n.Status == store.NodeStatusGone {
-			gone[n.ID] = true
+		if n.DeletedAt != nil || n.Status != store.NodeStatusUnreachable {
+			continue
+		}
+		staleSince := n.LastHeartbeatAt
+		if staleSince == nil {
+			staleSince = &n.CreatedAt
+		}
+		if staleSince.Before(cutoff) {
+			out[n.ID] = true
 		}
 	}
-	return gone
+	return out
 }
 
 // membershipNodeIDs expands an artifact pool membership to the set of LIVE node

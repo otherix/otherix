@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/store"
@@ -64,15 +65,19 @@ func TestLiveNodeIDsExcludesDeadAndDeleted(t *testing.T) {
 	}
 }
 
-func TestGoneNodeIDsOnlyTerminalGone(t *testing.T) {
-	now := time.Now()
-	gone := store.Node{ID: uuid.New(), Status: store.NodeStatusGone}
-	unreachable := store.Node{ID: uuid.New(), Status: store.NodeStatusUnreachable}
-	deletedGone := store.Node{ID: uuid.New(), Status: store.NodeStatusGone, DeletedAt: &now}
-	nodes := []store.Node{gone, unreachable, deletedGone}
-
-	g := goneNodeIDs(nodes)
-	if len(g) != 1 || !g[gone.ID] {
-		t.Errorf("goneNodeIDs = %v, want only the terminal gone node (unreachable is transient, deleted excluded)", g)
+func TestRebalanceEligibleNodeIDs(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	grace := 5 * time.Minute
+	stale := now.Add(-10 * time.Minute)
+	fresh := now.Add(-1 * time.Minute)
+	created := now.Add(-10 * time.Minute)
+	unreachableStale := store.Node{ID: uuid.New(), Status: store.NodeStatusUnreachable, LastHeartbeatAt: &stale}
+	unreachableFresh := store.Node{ID: uuid.New(), Status: store.NodeStatusUnreachable, LastHeartbeatAt: &fresh}
+	readyStale := store.Node{ID: uuid.New(), Status: store.NodeStatusReady, LastHeartbeatAt: &stale}
+	neverHeartbeated := store.Node{ID: uuid.New(), Status: store.NodeStatusUnreachable, CreatedAt: created}
+	got := rebalanceEligibleNodeIDs([]store.Node{unreachableStale, unreachableFresh, readyStale, neverHeartbeated}, grace, now)
+	want := map[uuid.UUID]bool{unreachableStale.ID: true, neverHeartbeated.ID: true}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("rebalanceEligibleNodeIDs mismatch (-want +got):\n%s", diff)
 	}
 }

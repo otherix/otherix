@@ -35,7 +35,15 @@ type reconcileStoreFake struct {
 	}
 	inflight        map[inflightKey]bool
 	reclaimInflight map[inflightKey]bool
-	nodeBlobDigests []string // digests observed across node_blobs inventories
+	nodeBlobDigests []string    // digests observed across node_blobs inventories
+	nodeInvPrunes   []uuid.UUID // node ids whose observed inventory was pruned (UpsertNodeBlobInventory with a nil slice)
+}
+
+func (f *reconcileStoreFake) UpsertNodeBlobInventory(_ context.Context, nodeID uuid.UUID, blobs []store.NodeBlob) error {
+	if blobs == nil {
+		f.nodeInvPrunes = append(f.nodeInvPrunes, nodeID)
+	}
+	return nil
 }
 
 func (f *reconcileStoreFake) AllPlacementDigests(context.Context) ([]string, error) {
@@ -146,7 +154,7 @@ func TestReconcileAddsTargetAndEnqueuesToReachK(t *testing.T) {
 		placement: map[string]map[uuid.UUID]bool{digest: {n1: true}},
 	}
 
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(f.added) != 1 {
@@ -160,12 +168,13 @@ func TestReconcileAddsTargetAndEnqueuesToReachK(t *testing.T) {
 	}
 }
 
-func TestReconcilePrunesGoneMemberButNotLastPointer(t *testing.T) {
-	gone1, holder2, n3 := uuid.New(), uuid.New(), uuid.New()
+func TestReconcilePrunesRebalanceEligibleMemberButNotLastPointer(t *testing.T) {
+	dead1, holder2, n3 := uuid.New(), uuid.New(), uuid.New()
 	pool := "gold"
 	digest := "d0"
 	snapID := uuid.New()
-	mk := func(s1 store.NodeStatus, holders []uuid.UUID, members []uuid.UUID) *reconcileStoreFake {
+	stale := time.Now().UTC().Add(-1 * time.Hour) // older than the 5m grace below
+	mk := func(holders []uuid.UUID, members []uuid.UUID) *reconcileStoreFake {
 		pm := map[uuid.UUID]bool{}
 		for _, m := range members {
 			pm[m] = true
@@ -177,7 +186,7 @@ func TestReconcilePrunesGoneMemberButNotLastPointer(t *testing.T) {
 				pools:   map[string]store.ArtifactPool{pool: {Name: pool, ReplicationFactor: store.ReplicationFactor{Count: 2}, Membership: store.ArtifactPoolMembership{AllNodes: true}}},
 				holders: map[string][]uuid.UUID{digest: holders},
 				nodes: []store.Node{
-					{ID: gone1, Name: "node-1", Status: s1},
+					{ID: dead1, Name: "node-1", Status: store.NodeStatusUnreachable, LastHeartbeatAt: &stale},
 					{ID: holder2, Name: "node-2", Status: store.NodeStatusReady},
 					{ID: n3, Name: "node-3", Status: store.NodeStatusReady},
 				},
@@ -186,20 +195,68 @@ func TestReconcilePrunesGoneMemberButNotLastPointer(t *testing.T) {
 		}
 	}
 
-	f := mk(store.NodeStatusGone, []uuid.UUID{holder2}, []uuid.UUID{gone1, holder2})
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	f := mk([]uuid.UUID{holder2}, []uuid.UUID{dead1, holder2})
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if len(f.removed) != 1 || f.removed[0].node != gone1 {
-		t.Errorf("removed = %+v, want one prune of the gone member", f.removed)
+	if len(f.removed) != 1 || f.removed[0].node != dead1 {
+		t.Errorf("removed = %+v, want one prune of the rebalance-eligible member", f.removed)
 	}
 
-	f = mk(store.NodeStatusGone, []uuid.UUID{}, []uuid.UUID{gone1})
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	f = mk([]uuid.UUID{}, []uuid.UUID{dead1})
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(f.removed) != 0 {
 		t.Errorf("removed = %+v, want no prune of the last pointer", f.removed)
+	}
+}
+
+// TestReconcilePrunesRebalanceEligibleInventory proves a rebalance-eligible node
+// (unreachable with a heartbeat older than grace) has its observed blob inventory
+// pruned once per pass and its placement member removed, while a still-fresh
+// unreachable node is left untouched (reversible on a returning heartbeat).
+func TestReconcilePrunesRebalanceEligibleInventory(t *testing.T) {
+	dead, holder := uuid.New(), uuid.New()
+	pool := "gold"
+	digest := "d0"
+	snapID := uuid.New()
+	mk := func(hb time.Time) *reconcileStoreFake {
+		return &reconcileStoreFake{
+			durabilityStoreFake: durabilityStoreFake{
+				refs:    map[string][]uuid.UUID{digest: {snapID}},
+				snaps:   map[uuid.UUID]store.Snapshot{snapID: {ID: snapID, ArtifactPoolName: &pool}},
+				pools:   map[string]store.ArtifactPool{pool: {Name: pool, ReplicationFactor: store.ReplicationFactor{Count: 1}, Membership: store.ArtifactPoolMembership{AllNodes: true}}},
+				holders: map[string][]uuid.UUID{digest: {holder}},
+				nodes: []store.Node{
+					{ID: dead, Name: "node-1", Status: store.NodeStatusUnreachable, LastHeartbeatAt: &hb},
+					{ID: holder, Name: "node-2", Status: store.NodeStatusReady},
+				},
+			},
+			placement: map[string]map[uuid.UUID]bool{digest: {dead: true, holder: true}},
+		}
+	}
+
+	stale := mk(time.Now().UTC().Add(-1 * time.Hour)) // older than the 5m grace below
+	if err := ReconcileFunc(stale, 5*time.Minute, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile (stale): %v", err)
+	}
+	if len(stale.nodeInvPrunes) != 1 || stale.nodeInvPrunes[0] != dead {
+		t.Errorf("nodeInvPrunes = %v, want one prune of the rebalance-eligible node %s", stale.nodeInvPrunes, dead)
+	}
+	if len(stale.removed) != 1 || stale.removed[0].node != dead {
+		t.Errorf("removed = %+v, want the eligible node's placement member pruned", stale.removed)
+	}
+
+	fresh := mk(time.Now().UTC())
+	if err := ReconcileFunc(fresh, 5*time.Minute, discardLog())(context.Background()); err != nil {
+		t.Fatalf("reconcile (fresh): %v", err)
+	}
+	if len(fresh.nodeInvPrunes) != 0 {
+		t.Errorf("nodeInvPrunes = %v, want no prune while the node is still fresh", fresh.nodeInvPrunes)
+	}
+	if len(fresh.removed) != 0 {
+		t.Errorf("removed = %+v, want no placement prune while the node is still fresh", fresh.removed)
 	}
 }
 
@@ -221,7 +278,7 @@ func TestReconcileNoLiveHolderSkipsEnqueue(t *testing.T) {
 		},
 		placement: map[string]map[uuid.UUID]bool{digest: {n1: true}},
 	}
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(f.enqueued) != 0 {
@@ -257,7 +314,7 @@ func TestReconcileSkipsEnqueueWhileInflight(t *testing.T) {
 
 	// First pass: n2's replicate is already in-flight -> enqueue nothing.
 	f := mk(map[inflightKey]bool{{digest, n2}: true})
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile (in-flight): %v", err)
 	}
 	if len(f.enqueued) != 0 {
@@ -266,7 +323,7 @@ func TestReconcileSkipsEnqueueWhileInflight(t *testing.T) {
 
 	// Clear the marker; a later pass enqueues exactly once.
 	f = mk(map[inflightKey]bool{})
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile (cleared): %v", err)
 	}
 	if len(f.enqueued) != 1 || f.enqueued[0].TargetNodeID != n2 {
@@ -293,7 +350,7 @@ func TestReconcileOrphanedReclaimsAllHolders(t *testing.T) {
 		},
 		placement: map[string]map[uuid.UUID]bool{digest: {n1: true, n2: true}},
 	}
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(f.reclaimed) != 2 {
@@ -332,7 +389,7 @@ func TestReconcileOrphanedPrunesObservedAbsentMember(t *testing.T) {
 		},
 		placement: map[string]map[uuid.UUID]bool{digest: {n1: true, n2: true}},
 	}
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(f.removed) != 1 || f.removed[0].node != n2 {
@@ -363,7 +420,7 @@ func TestReconcileOverReplicationReclaimsToK(t *testing.T) {
 		},
 		placement: map[string]map[uuid.UUID]bool{digest: {n1: true, n2: true, n3: true}},
 	}
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(f.reclaimed) != 1 {
@@ -406,7 +463,7 @@ func TestReconcileOverReplicationReclaimsHRWLowest(t *testing.T) {
 		},
 		placement: map[string]map[uuid.UUID]bool{digest: {n1: true, n2: true, n3: true}},
 	}
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(f.reclaimed) != 1 {
@@ -449,7 +506,7 @@ func TestReconcileReferencedBelowKUnchanged(t *testing.T) {
 		},
 		placement: map[string]map[uuid.UUID]bool{digest: {n1: true}},
 	}
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(f.reclaimed) != 0 {
@@ -480,7 +537,7 @@ func TestReconcileBackstopReclaimsObservedOrphan(t *testing.T) {
 		nodeBlobDigests: []string{digest},
 	}
 
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if got := len(f.reclaimed); got != 1 {
@@ -508,7 +565,7 @@ func TestReconcileBackstopSkipsReferencedObservedBlob(t *testing.T) {
 		nodeBlobDigests: []string{digest},
 	}
 
-	if err := ReconcileFunc(f, discardLog())(context.Background()); err != nil {
+	if err := ReconcileFunc(f, 5*time.Minute, discardLog())(context.Background()); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if got := len(f.reclaimed); got != 0 {

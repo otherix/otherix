@@ -652,7 +652,7 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 			api.SchedulerResourcesFromConfig(cfg.Placement.Resources)))
 
 	s.Register("placement.reconcile", positiveOr(cfg.Workers.PlacementReconcile.Interval, 30*time.Second), true,
-		replicationhandlers.ReconcileFunc(st, log))
+		replicationhandlers.ReconcileFunc(st, cfg.Workers.Heartbeat.RebalanceGrace, log))
 
 	s.Register("node.drain.reconcile", 2*time.Minute, false,
 		nodeshandlers.DrainReconcileFunc(st, log))
