@@ -231,19 +231,31 @@ func (s *Store) ReadmitNode(ctx context.Context, id uuid.UUID) (store.Node, erro
 // setNodeCordon applies a cordon/uncordon status change, setting/clearing
 // cordoned_at and bumping updated_at.
 //
-// The handler validates the source status (rejecting draining) before calling,
-// but that check is a TOCTOU: a drain can flip the node to draining between the
-// handler's read and this write. Two guards close that window. First, the node
-// is re-read fresh and refused if it now carries an active drain (DrainTaskID
-// set, i.e. draining) - a cordon/uncordon must never overwrite a live drain,
-// which would drop the drain_task_id and strand the saga. Second, the write
-// commits under a ModRevision CAS on the row, so any concurrent mutation between
-// this read and the put loses. Either guard tripping returns
-// store.ErrConcurrentUpdate; the operator can retry once the drain finishes.
+// The handler validates the source status (rejecting draining and gone) before
+// calling, but that check is a TOCTOU: a drain or the gone-reaper can flip the
+// node between the handler's read and this write. Three guards close that window,
+// all on the fresh re-read. First, the node is refused if it is now terminally
+// gone - a cordon/uncordon must never resurrect a gone node past the readmit
+// health fence. Second, it is refused if it now carries an active drain
+// (DrainTaskID set) - overwriting a live drain would drop its drain_task_id and
+// strand the saga. Third, the write commits under a ModRevision CAS on the row,
+// so any concurrent mutation between this read and the put loses. Any guard
+// tripping returns store.ErrConcurrentUpdate; the operator retries (or, for a
+// gone node, goes through ReadmitNode).
 func (s *Store) setNodeCordon(ctx context.Context, id uuid.UUID, status store.NodeStatus, cordon bool) (store.Node, error) {
 	n, modRev, err := s.nodeWithRev(ctx, id)
 	if err != nil {
 		return store.Node{}, err
+	}
+	if n.Status == store.NodeStatusGone {
+		// The reaper marked the node terminally gone after the handler's status
+		// check. A cordon/uncordon must NOT resurrect it (that bypasses the readmit
+		// health fence, returning a gone node to service without re-proving health);
+		// refuse so the operator goes through ReadmitNode. This mirrors ReadmitNode's
+		// own fresh-status recheck: the ModRevision CAS alone cannot catch a status
+		// change (gone) that landed before this method's fresh read, since no write
+		// then races this method's own window.
+		return store.Node{}, store.ErrConcurrentUpdate
 	}
 	if n.DrainTaskID != nil {
 		// A drain won the race and owns the node; refuse rather than clobber its
