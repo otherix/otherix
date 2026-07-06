@@ -84,14 +84,60 @@ func WriteMeta(vmDir string, m *VMMeta) error {
 	tmpPath := filepath.Join(vmDir, MetaFileName+".tmp")
 	finalPath := filepath.Join(vmDir, MetaFileName)
 
-	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
-		return fmt.Errorf("write temp: %w", err)
+	// Write + fsync the temp file so its bytes are durable BEFORE the rename.
+	// os.WriteFile alone leaves the data in the page cache: a power loss after
+	// the rename metadata is persisted but before the data is flushed yields a
+	// zero-length or torn meta.json that ScanState then decodes into garbage.
+	if err := writeFileSync(tmpPath, data); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename %s -> %s: %w", tmpPath, finalPath, err)
 	}
+	// fsync the directory so the rename itself is durable across a power loss.
+	if err := syncDir(vmDir); err != nil {
+		return err
+	}
 	return nil
+}
+
+// writeFileSync writes data to path (0600) and fsyncs the file before closing,
+// so the bytes are durable on disk rather than only in the page cache.
+func writeFileSync(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- agent-owned per-VM state temp path
+	if err != nil {
+		return fmt.Errorf("open temp: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("fsync temp: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+	return nil
+}
+
+// syncDir fsyncs a directory so a rename/create within it is durable across a
+// power loss, mirroring the store-side helpers in artifactstore and vm. A sync
+// failure is reported, not swallowed, since it defeats the crash-durability
+// guarantee the atomic-write pattern promises.
+func syncDir(dir string) error {
+	d, err := os.Open(dir) // #nosec G304 -- agent-owned per-VM state directory
+	if err != nil {
+		return fmt.Errorf("open dir for sync: %w", err)
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return fmt.Errorf("sync dir: %w", err)
+	}
+	return d.Close()
 }
 
 // ReadMeta loads <vmDir>/meta.json. Returns os.ErrNotExist when the
