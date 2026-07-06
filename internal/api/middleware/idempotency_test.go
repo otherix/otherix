@@ -164,6 +164,68 @@ func discardLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// ctxAwareIdempStore fails the settle writes (Complete / Delete) when their
+// context is already cancelled, modelling a real etcd client that aborts a
+// write on a dead request context (client disconnect or Timeout deadline).
+type ctxAwareIdempStore struct {
+	*fakeIdempStore
+}
+
+func (c *ctxAwareIdempStore) CompleteIdempotencyKey(ctx context.Context, arg store.CompleteIdempotencyKeyParams) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.fakeIdempStore.CompleteIdempotencyKey(ctx, arg)
+}
+
+func (c *ctxAwareIdempStore) DeleteIdempotencyKey(ctx context.Context, userID uuid.UUID, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.fakeIdempStore.DeleteIdempotencyKey(ctx, userID, key)
+}
+
+// TestIdempotency_SettlesRowAfterRequestCancel proves the durable idempotency
+// row is committed even when the request context is already cancelled by the
+// time the handler returns (a client disconnect, or the Timeout middleware
+// firing while Idempotency runs inside its detached goroutine). The handler has
+// already run - its side effects happened - so finalizeKey must settle on a
+// context detached from the request's cancellation. Otherwise the row wedges
+// in_flight: the response is never recorded and a later retry re-runs the
+// operation, breaking the idempotency guarantee.
+func TestIdempotency_SettlesRowAfterRequestCancel(t *testing.T) {
+	st := &ctxAwareIdempStore{fakeIdempStore: newFakeStore()}
+	uid := uuid.New()
+	const key = "cancel-key"
+
+	var reqCancel context.CancelFunc
+	h := Idempotency(st, discardLog())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+		// Cancel the request context before finalizeKey runs, as a client
+		// disconnect / deadline would.
+		reqCancel()
+	}))
+
+	req := authedRequest(http.MethodPost, "/v1/things", []byte(`{}`), uid, key)
+	ctx, cancel := context.WithCancel(req.Context())
+	reqCancel = cancel
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	got, err := st.GetIdempotencyKey(context.Background(), uid, key)
+	if err != nil {
+		t.Fatalf("GetIdempotencyKey: %v", err)
+	}
+	if got.State != "completed" {
+		t.Errorf("row state = %q, want completed (settle must survive a cancelled request context)", got.State)
+	}
+}
+
 func authedRequest(method, path string, body []byte, userID uuid.UUID, key string) *http.Request {
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
 	if key != "" {
