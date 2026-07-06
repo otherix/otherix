@@ -24,63 +24,96 @@ import (
 // is all-or-nothing under one transaction and a worker redelivery re-applies
 // identical bytes for the same end state.
 
+// projectVMCreateCASAttempts bounds the vm-row ModRevision CAS retry in
+// ProjectVMCreateSuccess. A racing `vm delete` terminates the loop early (the
+// re-read observes the tombstone and skips), so this only caps benign contention
+// from a concurrent VM-row writer.
+const projectVMCreateCASAttempts = 5
+
 // ProjectVMCreateSuccess upserts the VM's runtime row (running), stamps the
 // agent-resolved image content digest onto the self-describing VM row, and
-// finalizes the create task - all in one transaction. The runtime and task
-// writes are idempotent blind puts; the digest write is skipped when the row
-// already carries the same bytes, so a worker redelivery re-applies the same
-// runtime + task value and re-reads an already-stamped digest, leaving the end
-// state unchanged.
+// finalizes the create task - all in one transaction, guarded by a CAS on the VM
+// row's ModRevision. If a `vm delete` soft-deleted the VM while the create ran
+// (the delete-during-create seam), the runtime row is NOT resurrected: the CAS
+// loses and the re-read observes the tombstone, so only the create task is
+// finalized. The runtime and task writes are otherwise idempotent (the digest
+// write is skipped when the row already carries the same bytes), so a worker
+// redelivery re-applies the same runtime + task value and re-reads an already-
+// stamped digest, leaving the end state unchanged.
 //
 // imageSHA256 is the digest the agent computed for the materialized image
 // (empty hints the caller had nothing to stamp). A create that pinned a digest
 // up front already carries it, so the digest write only fires for compute-mode
 // creates (no --image-sha256), surfacing the resolved digest on the VM view.
 func (s *Store) ProjectVMCreateSuccess(ctx context.Context, rt store.UpsertVMRuntimeParams, fin store.UpdateTaskFinalizedParams, imageSHA256 []byte) error {
-	now := time.Now().UTC()
-	runtimeVal, err := etcd.Marshal(vmRuntimeFromUpsert(rt, now))
-	if err != nil {
-		return err
+	for attempt := 0; attempt < projectVMCreateCASAttempts; attempt++ {
+		taskVal, err := s.finalizedTaskValue(ctx, fin)
+		if err != nil {
+			return err
+		}
+		vm, vmRev, err := s.vmWithRev(ctx, rt.VmID)
+		if errors.Is(err, store.ErrNotFound) {
+			// A `vm delete` soft-deleted the VM while the create ran on the agent.
+			// Do NOT resurrect the runtime row on a tombstoned VM - a dangling row
+			// pollutes node-delete gating, scheduler capacity, and blob GC. Finalize
+			// the create task only so its job settles. (The just-created qemu is
+			// reclaimed separately: the agent does not auto-reap undeclared VMs, so
+			// orphan-qemu teardown across this seam is a tracked follow-up.)
+			if _, err := s.c.Raw().Txn(ctx).
+				Then(clientv3.OpPut(taskKey(fin.ID), string(taskVal))).
+				Commit(); err != nil {
+				return fmt.Errorf("project vm create (tombstoned) txn: %v", err)
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		runtimeVal, err := etcd.Marshal(vmRuntimeFromUpsert(rt, now))
+		if err != nil {
+			return err
+		}
+		ops := []clientv3.Op{
+			clientv3.OpPut(vmRuntimeKey(rt.VmID), string(runtimeVal)),
+			clientv3.OpPut(taskKey(fin.ID), string(taskVal)),
+		}
+		digestOp, err := digestOpFromVM(vm, imageSHA256, now)
+		if err != nil {
+			return err
+		}
+		if digestOp != nil {
+			ops = append(ops, *digestOp)
+		}
+		// CAS on the VM row's ModRevision: a `vm delete` soft-deleting the VM
+		// between the read and this commit bumps the rev, so the write loses and we
+		// retry - the re-read then observes the tombstone and skips the runtime
+		// resurrection. Closes the read-then-put TOCTOU.
+		resp, err := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(vmKey(rt.VmID)), "=", vmRev)).
+			Then(ops...).
+			Commit()
+		if err != nil {
+			return fmt.Errorf("project vm create txn: %v", err)
+		}
+		if resp.Succeeded {
+			return nil
+		}
+		// Lost CAS: the VM row moved (a racing delete or a concurrent VM-row write).
+		// Retry: the re-read observes the tombstone (skip) or the new rev.
 	}
-	taskVal, err := s.finalizedTaskValue(ctx, fin)
-	if err != nil {
-		return err
-	}
-	ops := []clientv3.Op{
-		clientv3.OpPut(vmRuntimeKey(rt.VmID), string(runtimeVal)),
-		clientv3.OpPut(taskKey(fin.ID), string(taskVal)),
-	}
-	digestOp, err := s.stampImageDigestOp(ctx, rt.VmID, imageSHA256, now)
-	if err != nil {
-		return err
-	}
-	if digestOp != nil {
-		ops = append(ops, *digestOp)
-	}
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
-		return fmt.Errorf("project vm create txn: %v", err)
-	}
-	return nil
+	return fmt.Errorf("project vm create: vm row CAS exhausted after %d attempts", projectVMCreateCASAttempts)
 }
 
-// stampImageDigestOp returns the VM-row put that records the agent-resolved
-// image digest, or nil when there is nothing to write: an empty digest, a VM
-// soft-deleted between create and projection, or a row that already carries the
-// same bytes (a pinned create, or a redelivery of a compute-mode create). The
-// no-op-on-equal guard keeps the projection idempotent and leaves a pinned
-// VM's updated_at untouched.
-func (s *Store) stampImageDigestOp(ctx context.Context, vmID uuid.UUID, imageSHA256 []byte, now time.Time) (*clientv3.Op, error) {
-	if len(imageSHA256) == 0 {
-		return nil, nil
-	}
-	vm, err := s.VMByID(ctx, vmID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return nil, nil
-	case err != nil:
-		return nil, err
-	}
-	if bytes.Equal(vm.ImageSHA256, imageSHA256) {
+// digestOpFromVM returns the VM-row put that records the agent-resolved image
+// digest, or nil when there is nothing to write: an empty digest, or a row that
+// already carries the same bytes (a pinned create, or a redelivery of a compute-
+// mode create). The no-op-on-equal guard keeps the projection idempotent and
+// leaves a pinned VM's updated_at untouched. The caller supplies the already-read
+// VM (held under the create projection's ModRevision CAS), so this does no read
+// and cannot race the tombstone check.
+func digestOpFromVM(vm store.VM, imageSHA256 []byte, now time.Time) (*clientv3.Op, error) {
+	if len(imageSHA256) == 0 || bytes.Equal(vm.ImageSHA256, imageSHA256) {
 		return nil, nil
 	}
 	vm.ImageSHA256 = imageSHA256
@@ -89,7 +122,7 @@ func (s *Store) stampImageDigestOp(ctx context.Context, vmID uuid.UUID, imageSHA
 	if err != nil {
 		return nil, err
 	}
-	op := clientv3.OpPut(vmKey(vmID), string(val))
+	op := clientv3.OpPut(vmKey(vm.ID), string(val))
 	return &op, nil
 }
 

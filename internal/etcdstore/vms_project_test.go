@@ -10,7 +10,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -77,6 +79,109 @@ func TestProjectVMCreateSuccess(t *testing.T) {
 	task, err := s.TaskByID(ctx, taskID)
 	if err != nil || task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
 		t.Errorf("task = (%+v, %v), want success + finished", task, err)
+	}
+}
+
+// TestProjectVMCreateSuccessSkipsRuntimeOnTombstone locks the delete-during-
+// create seam: if a `vm delete` soft-deletes the VM while the create is in flight
+// on the agent, the create-success projection must NOT resurrect the VM's runtime
+// row. A dangling runtime row on a tombstoned VM pollutes node-delete gating,
+// scheduler capacity accounting, and blob GC. The create task is still finalized
+// so its job settles.
+func TestProjectVMCreateSuccessSkipsRuntimeOnTombstone(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	vmID, nodeID, _, taskID := seedCreatedVM(t, s)
+
+	if _, err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+	// A `vm delete` raced the create: soft-delete the VM before the projection.
+	vm, err := s.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	now := time.Now().UTC()
+	vm.DeletedAt = &now
+	if err := cli.PutJSON(ctx, etcd.Key("vms", vmID.String()), vm); err != nil {
+		t.Fatalf("soft-delete vm: %v", err)
+	}
+
+	if err := s.ProjectVMCreateSuccess(ctx,
+		store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+		store.UpdateTaskFinalizedParams{ID: taskID, Status: store.TaskStatusSuccess, Result: []byte(`{"vm_id":"x"}`)},
+		[]byte{0xde, 0xad, 0xbe, 0xef},
+	); err != nil {
+		t.Fatalf("ProjectVMCreateSuccess: %v", err)
+	}
+
+	if _, err := s.VMRuntimeByID(ctx, vmID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("VMRuntimeByID = %v, want ErrNotFound (runtime must not be resurrected on a deleted VM)", err)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil || task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
+		t.Errorf("task = (%+v, %v), want success + finished (create job must settle)", task, err)
+	}
+}
+
+// TestProjectVMCreateSuccessRacesDeleteNoResurrect drives the real delete-during-
+// create seam: the CAS-guarded ProjectVMCreateSuccess racing the real
+// ProjectVMDeleteSuccess (which soft-deletes the vm row and removes the runtime).
+// The invariant across every interleaving is that no runtime row may survive on a
+// soft-deleted VM - the vm-row ModRevision CAS on the create side holds it (a
+// create cannot commit the runtime after the delete bumped the vm rev).
+//
+// This is a PROBABILISTIC seam guard, not a deterministic CAS regression test:
+// the dangerous window (a delete committing between the create's internal
+// vmWithRev read and its guarded commit) is not reproducible from outside without
+// a store-level injection seam, so this test can pass even without the CAS. The
+// deterministic teeth for the skip-on-tombstone behaviour are in
+// TestProjectVMCreateSuccessSkipsRuntimeOnTombstone; the CAS closing the residual
+// mid-projection window is carried by reasoning (the only vm_runtime deleter,
+// vmDeleteBaseOps, always also writes vmKey, so the create's vmKey CAS serializes
+// against it).
+func TestProjectVMCreateSuccessRacesDeleteNoResurrect(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	for i := 0; i < 40; i++ {
+		vmID, nodeID, _, createTask := seedCreatedVM(t, s)
+		if _, err := s.UpdateTaskRunning(ctx, createTask); err != nil {
+			t.Fatalf("iter %d: UpdateTaskRunning(create): %v", i, err)
+		}
+		vm, err := s.VMByID(ctx, vmID)
+		if err != nil {
+			t.Fatalf("iter %d: VMByID: %v", i, err)
+		}
+		delParams := taskParams(store.TaskStatusRunning, nil)
+		delParams.Type = "vm.delete"
+		delParams.ResourceID = &vmID
+		if _, err := s.EnqueueTask(ctx, delParams, testJobArgs{Foo: "del"}); err != nil {
+			t.Fatalf("iter %d: EnqueueTask(delete): %v", i, err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = s.ProjectVMCreateSuccess(ctx,
+				store.UpsertVMRuntimeParams{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, ObservedGeneration: 1},
+				store.UpdateTaskFinalizedParams{ID: createTask, Status: store.TaskStatusSuccess, Result: []byte(`{}`)},
+				nil,
+			)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = s.ProjectVMDeleteSuccess(ctx, vm,
+				store.UpdateTaskFinalizedParams{ID: delParams.ID, Status: store.TaskStatusSuccess, Result: []byte(`{}`)},
+			)
+		}()
+		wg.Wait()
+
+		_, vmErr := s.VMByID(ctx, vmID)
+		_, rtErr := s.VMRuntimeByID(ctx, vmID)
+		if errors.Is(vmErr, store.ErrNotFound) && !errors.Is(rtErr, store.ErrNotFound) {
+			t.Fatalf("iter %d: runtime row survived on a soft-deleted VM (resurrection)", i)
+		}
 	}
 }
 

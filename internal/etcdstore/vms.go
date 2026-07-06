@@ -49,6 +49,28 @@ func (s *Store) VMByID(ctx context.Context, id uuid.UUID) (store.VM, error) {
 	return v, nil
 }
 
+// vmWithRev returns the non-deleted VM and its ModRevision, or store.ErrNotFound
+// (missing key or a soft-deleted row). CAS writers guard on the returned rev so a
+// `vm delete` soft-deleting the row after the read bumps the rev and loses the
+// write.
+func (s *Store) vmWithRev(ctx context.Context, id uuid.UUID) (store.VM, int64, error) {
+	resp, err := s.c.Raw().Get(ctx, vmKey(id))
+	if err != nil {
+		return store.VM{}, 0, fmt.Errorf("get vm %s: %v", id, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return store.VM{}, 0, store.ErrNotFound
+	}
+	var v store.VM
+	if err := json.Unmarshal(resp.Kvs[0].Value, &v); err != nil {
+		return store.VM{}, 0, fmt.Errorf("unmarshal vm %s: %v", id, err)
+	}
+	if v.DeletedAt != nil {
+		return store.VM{}, 0, store.ErrNotFound
+	}
+	return v, resp.Kvs[0].ModRevision, nil
+}
+
 // VMByName returns the non-deleted vms row with the given name
 // (case-insensitive) via the name guard, or store.ErrNotFound.
 func (s *Store) VMByName(ctx context.Context, name string) (store.VM, error) {
