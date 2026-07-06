@@ -4,10 +4,13 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -817,6 +820,236 @@ func TestManager_Poweroff_DoesNotKillForeignPidfilePid(t *testing.T) {
 	}
 	if v, verr := m.snapshotVM(vmID); verr == nil && v.Status != StatusStopped {
 		t.Errorf("VM status after poweroff = %q, want stopped", v.Status)
+	}
+}
+
+// TestManager_Delete_RejectedWhileCreateInFlight pins the create/delete race:
+// Create must hold the per-name inFlight slot for the lifetime of runCreate, so
+// a Delete issued while the create is still materialising is refused with
+// ErrInFlight (a retryable 409) rather than interleaving its teardown
+// (RemoveAll disk+state dirs, delete m.vms) with the in-flight create - which
+// leaks an orphan qemu and the pool disk dir. The create is parked inside the
+// image download (a blocking httptest server) so no real qemu is needed; the
+// test runs on darwin. Before the fix Create spawns runCreate WITHOUT the slot,
+// so Delete acquires it freely, returns (task, nil), and spawns runDelete - the
+// ErrInFlight assertion fails, proving teeth.
+func TestManager_Delete_RejectedWhileCreateInFlight(t *testing.T) {
+	m, poolName, _ := newImageTestManager(t)
+
+	body := qcow2Body(0x2b)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release // park runCreate inside the download, before spawnAndVerify
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	spec := CreateSpec{
+		Name:     "race-vm",
+		VCPUs:    2,
+		MemoryMB: 1024,
+		PoolName: poolName,
+		ImageURL: srv.URL + "/noble-minimal-cloudimg-arm64.img",
+		Format:   "qcow2",
+	}
+	task, err := m.Create(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// The slot is acquired synchronously inside Create, so it is held the moment
+	// Create returns.
+	if !m.HasInFlight(spec.Name) {
+		t.Fatalf("HasInFlight(%q) = false immediately after Create, want true", spec.Name)
+	}
+
+	m.mu.Lock()
+	v := m.vms[task.VMID]
+	m.mu.Unlock()
+	if v == nil {
+		t.Fatalf("m.vms[%s] absent after Create", task.VMID)
+	}
+	diskDir := filepath.Dir(v.DiskPath)
+
+	// A delete racing the in-flight create must be refused, not executed.
+	if _, delErr := m.Delete(context.Background(), task.VMID); !errors.Is(delErr, ErrInFlight) {
+		t.Fatalf("Delete during in-flight create = %v, want ErrInFlight", delErr)
+	}
+
+	// The VM entry must survive - the delete did not drop it.
+	m.mu.Lock()
+	_, present := m.vms[task.VMID]
+	m.mu.Unlock()
+	if !present {
+		t.Errorf("m.vms[%s] removed by a refused delete", task.VMID)
+	}
+	// If the pool disk dir was already created by the in-flight clone, the
+	// refused delete must not have RemoveAll'd it.
+	if _, statErr := os.Stat(diskDir); statErr != nil && !os.IsNotExist(statErr) {
+		t.Errorf("stat disk dir %q: %v", diskDir, statErr)
+	}
+
+	// Unblock the download and let the create settle to a terminal state, then
+	// the slot must be released.
+	close(release)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got := m.tasks.Get(task.ID)
+		if got != nil && (got.Status == TaskStatusSuccess || got.Status == TaskStatusFailed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("create task did not reach terminal; status=%v", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// After the create settles, defer release() has run and the slot is free.
+	for time.Now().Before(deadline) && m.HasInFlight(spec.Name) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if m.HasInFlight(spec.Name) {
+		t.Errorf("HasInFlight(%q) = true after create settled, want false", spec.Name)
+	}
+}
+
+// TestManager_Delete_FailsClosedWhenGuestSurvivesKill pins the irreversible
+// edge of runDelete: when a confirmed-live qemu cannot be confirmed gone after
+// SIGKILL (kill errored, or the process is still alive - e.g. wedged in D-state
+// on stuck storage I/O), runDelete must NOT RemoveAll the disk under the live
+// guest and falsely report success. It must fail the task
+// (qemu_supervision_failed), leave disk + state + the in-memory VM intact, and
+// mark the VM failed, so a retry self-heals once the pid is reaped. The
+// still-alive outcome is forced through the terminateGuest seam (a real process
+// cannot be made to survive SIGKILL). Reverting runDelete to fall through to
+// teardown makes the disk-dir/state-dir/vm-present assertions fail, proving
+// teeth.
+func TestManager_Delete_FailsClosedWhenGuestSurvivesKill(t *testing.T) {
+	cfg, poolRoot, poolName := newTestConfig(t)
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool: %v", err)
+	}
+
+	// Force the seam to report "confirmed-live qemu not gone after SIGKILL".
+	orig := terminateGuest
+	t.Cleanup(func() { terminateGuest = orig })
+	terminateGuest = func(_ *Manager, _ *slog.Logger, _ *VM) error {
+		return errors.New("qemu still alive after sigkill")
+	}
+
+	vmID := uuid.New()
+	diskDir := filepath.Join(poolRoot, vmID.String())
+	if err := os.MkdirAll(diskDir, 0o750); err != nil {
+		t.Fatalf("mkdir disk dir: %v", err)
+	}
+	diskPath := filepath.Join(diskDir, "disk.qcow2")
+	if err := os.WriteFile(diskPath, []byte("qcow2-bytes"), 0o600); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	stateVMDir := filepath.Join(cfg.StatePath, vmID.String())
+	if err := os.MkdirAll(stateVMDir, 0o750); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	m.mu.Lock()
+	m.vms[vmID] = &VM{
+		ID:       vmID,
+		Name:     "wedged-vm",
+		Status:   StatusDeleting,
+		DiskPath: diskPath,
+		PIDFile:  filepath.Join(stateVMDir, "qemu.pid"),
+	}
+	m.mu.Unlock()
+
+	task := m.tasks.Create(TaskKindVMDelete, vmID)
+	m.runDelete(task.ID, vmID)
+
+	got := m.tasks.Get(task.ID)
+	if got == nil {
+		t.Fatal("delete task not found")
+	}
+	if got.Status != TaskStatusFailed {
+		t.Errorf("task.Status = %q, want %q", got.Status, TaskStatusFailed)
+	}
+	if got.Error == nil || got.Error.Code != "qemu_supervision_failed" {
+		t.Errorf("task.Error = %v, want code qemu_supervision_failed", got.Error)
+	}
+	// Destructive teardown must NOT have run: disk dir, state dir, and the
+	// in-memory VM entry survive.
+	if _, err := os.Stat(diskDir); err != nil {
+		t.Errorf("disk dir removed under a live guest: %v", err)
+	}
+	if _, err := os.Stat(stateVMDir); err != nil {
+		t.Errorf("state dir removed under a live guest: %v", err)
+	}
+	v, err := m.snapshotVM(vmID)
+	if err != nil {
+		t.Fatalf("VM removed from m.vms by a failed delete: %v", err)
+	}
+	if v.Status != StatusFailed {
+		t.Errorf("VM status = %q, want %q", v.Status, StatusFailed)
+	}
+}
+
+// TestManager_Delete_TearsDownWhenGuestConfirmedGone is the happy-path companion
+// to the fail-closed test: when terminateGuest confirms the guest is gone
+// (returns nil), runDelete proceeds to tear down state and reports success.
+func TestManager_Delete_TearsDownWhenGuestConfirmedGone(t *testing.T) {
+	cfg, poolRoot, poolName := newTestConfig(t)
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.AddPool(poolName, poolRoot); err != nil {
+		t.Fatalf("AddPool: %v", err)
+	}
+
+	orig := terminateGuest
+	t.Cleanup(func() { terminateGuest = orig })
+	terminateGuest = func(_ *Manager, _ *slog.Logger, _ *VM) error { return nil }
+
+	vmID := uuid.New()
+	diskDir := filepath.Join(poolRoot, vmID.String())
+	if err := os.MkdirAll(diskDir, 0o750); err != nil {
+		t.Fatalf("mkdir disk dir: %v", err)
+	}
+	diskPath := filepath.Join(diskDir, "disk.qcow2")
+	if err := os.WriteFile(diskPath, []byte("qcow2-bytes"), 0o600); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	stateVMDir := filepath.Join(cfg.StatePath, vmID.String())
+	if err := os.MkdirAll(stateVMDir, 0o750); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	m.mu.Lock()
+	m.vms[vmID] = &VM{
+		ID:       vmID,
+		Name:     "gone-vm",
+		Status:   StatusDeleting,
+		DiskPath: diskPath,
+		PIDFile:  filepath.Join(stateVMDir, "qemu.pid"),
+	}
+	m.mu.Unlock()
+
+	task := m.tasks.Create(TaskKindVMDelete, vmID)
+	m.runDelete(task.ID, vmID)
+
+	got := m.tasks.Get(task.ID)
+	if got == nil || got.Status != TaskStatusSuccess {
+		t.Fatalf("delete task = %v, want success", got)
+	}
+	if _, err := os.Stat(diskDir); !os.IsNotExist(err) {
+		t.Errorf("disk dir still present after successful delete: err=%v", err)
+	}
+	m.mu.Lock()
+	_, present := m.vms[vmID]
+	m.mu.Unlock()
+	if present {
+		t.Errorf("m.vms[%s] still present after successful delete", vmID)
 	}
 }
 

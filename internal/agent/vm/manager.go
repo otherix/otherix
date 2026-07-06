@@ -354,6 +354,57 @@ var probeRecoveredIncoming = func(qmpSocket, pidFile string, vmID uuid.UUID) inc
 // the manager's best-effort killQEMU.
 var killRecoveredIncoming = func(m *Manager, v *VM) { m.killQEMU(v) }
 
+// terminateGuest gracefully shuts down, then SIGKILLs, this VM's confirmed-live
+// qemu ahead of a delete's state teardown. It returns a non-nil error ONLY when
+// a qemu confirmed to be this VM's guest (VerifyCmdline) cannot be confirmed
+// gone - SIGKILL errored, or the process is still alive after the post-kill
+// wait (e.g. wedged in uninterruptible D-state on stuck storage I/O). That is
+// the signal runDelete must fail toward inaction on rather than RemoveAll the
+// disk out from under a live guest. A pidfile pid that is absent, dead, or
+// reused by an unrelated process is treated as already gone and returns nil, so
+// the delete proceeds to teardown. Package-level function-var so a test can
+// force the still-alive outcome without a real unkillable process (precedent:
+// killRecoveredIncoming).
+var terminateGuest = func(m *Manager, log *slog.Logger, v *VM) error {
+	pid, _ := qemu.ReadPIDFile(v.PIDFile) // ignore error - VM may already be gone
+	// VerifyCmdline, not IsAlive: only shut down / SIGKILL a pid confirmed to be
+	// this VM's qemu. A reused pidfile pid (unrelated process) fails the check
+	// and the delete proceeds straight to state teardown without signalling it.
+	if pid <= 0 || !qemu.VerifyCmdline(pid, v.ID.String()) {
+		return nil
+	}
+
+	client, err := qemu.DialQMP(v.QMPSocket, 5*time.Second)
+	if err == nil {
+		if err := client.SystemPowerdown(); err != nil {
+			log.Warn("system_powerdown failed; will fall back to force", "err", err)
+		}
+		_ = client.Close()
+	} else {
+		log.Warn("qmp dial during delete; falling back to kill", "err", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	if err := qemu.WaitGone(ctx, pid, shutdownGrace); err != nil {
+		cancel()
+		log.Warn("graceful shutdown timed out, sending SIGKILL", "pid", pid, "err", err)
+		if killErr := qemu.Kill(pid); killErr != nil {
+			log.Error("SIGKILL failed", "pid", pid, "err", killErr)
+			return fmt.Errorf("sigkill pid %d: %v", pid, killErr)
+		}
+		killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := qemu.WaitGone(killCtx, pid, 5*time.Second); err != nil {
+			killCancel()
+			log.Error("SIGKILL did not land; guest still alive", "pid", pid, "err", err)
+			return fmt.Errorf("qemu pid %d still alive after sigkill: %v", pid, err)
+		}
+		killCancel()
+	} else {
+		cancel()
+	}
+	return nil
+}
+
 // inFlightAcquire records a new in-flight operation for name. Returns
 // (release, ok) — ok=true when the slot was free and the caller may
 // proceed (must call release when the goroutine ends); ok=false when
@@ -923,6 +974,20 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		// reflecting the reloaded VM status WITHOUT overwriting or re-spawning.
 		return m.idempotentCreateResult(vmID, reloadedStatus), nil
 	}
+	// Hold the same per-name inFlight slot Start/Stop/Poweroff/Reboot/Delete
+	// take, for the LIFETIME of runCreate. Without it a concurrent Delete
+	// acquires the slot freely (runCreate never held it) and interleaves its
+	// teardown (RemoveAll disk+state dirs, teardownNICs, delete m.vms) with
+	// runCreate's materialise/spawn - leaking an orphan qemu and the pool disk
+	// dir. Acquiring here converts that unsafe teardown into a retryable 409
+	// (ErrInFlight) the CP retries once create settles. Acquired under m.mu (a
+	// disjoint sync.Map, no lock nesting) so the slot and the m.vms insert land
+	// atomically vs a racing Delete.
+	release, ok := m.inFlightAcquire(v.Name)
+	if !ok {
+		m.mu.Unlock()
+		return nil, ErrInFlight
+	}
 	task := m.tasks.Create(TaskKindVMCreate, vmID)
 	m.vms[vmID] = v
 	m.createTasks[vmID] = task.ID
@@ -930,7 +995,10 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 
 	// #nosec G118 -- async task work intentionally outlives the HTTP request;
 	// the task surface (GET /v1/tasks/{id}) is how clients track progress.
-	go m.runCreate(task.ID, v, spec)
+	go func() {
+		defer release()
+		m.runCreate(task.ID, v, spec)
+	}()
 	return task, nil
 }
 
@@ -1804,14 +1872,31 @@ func (m *Manager) Delete(ctx context.Context, vmID uuid.UUID) (*AgentTask, error
 		return nil, ErrNotFound
 	}
 	name := v.Name
-	v.Status = StatusDeleting
-	v.UpdatedAt = time.Now().UTC()
 	m.mu.Unlock()
 
+	// Acquire the per-name slot BEFORE flipping Status=StatusDeleting. A delete
+	// that loses the race to an in-flight create (or any other lifecycle op)
+	// must be rejected as a clean 409 without transiently corrupting the
+	// racing VM's status - flipping to StatusDeleting first would leave the
+	// in-flight-create VM observably "deleting" even though the delete is
+	// refused.
 	release, ok := m.inFlightAcquire(name)
 	if !ok {
 		return nil, ErrInFlight
 	}
+	// Re-resolve under m.mu: between releasing the lock above and acquiring the
+	// slot the VM could have been removed by a concurrent settled delete.
+	m.mu.Lock()
+	v, ok = m.vms[vmID]
+	if !ok {
+		m.mu.Unlock()
+		release()
+		return nil, ErrNotFound
+	}
+	v.Status = StatusDeleting
+	v.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+
 	task := m.tasks.Create(TaskKindVMDelete, vmID)
 	// #nosec G118 -- async task work intentionally outlives the HTTP request.
 	go func() {
@@ -1836,34 +1921,17 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 		return
 	}
 
-	pid, _ := qemu.ReadPIDFile(v.PIDFile) // ignore error — VM may already be gone
-	// VerifyCmdline, not IsAlive: only shut down / SIGKILL a pid confirmed to be
-	// this VM's qemu. A reused pidfile pid (unrelated process) fails the check
-	// and the delete proceeds straight to state teardown without signalling it.
-	if pid > 0 && qemu.VerifyCmdline(pid, v.ID.String()) {
-		client, err := qemu.DialQMP(v.QMPSocket, 5*time.Second)
-		if err == nil {
-			if err := client.SystemPowerdown(); err != nil {
-				log.Warn("system_powerdown failed; will fall back to force", "err", err)
-			}
-			_ = client.Close()
-		} else {
-			log.Warn("qmp dial during delete; falling back to kill", "err", err)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
-		if err := qemu.WaitGone(ctx, pid, shutdownGrace); err != nil {
-			cancel()
-			log.Warn("graceful shutdown timed out, sending SIGKILL", "pid", pid, "err", err)
-			if killErr := qemu.Kill(pid); killErr != nil {
-				log.Error("SIGKILL failed", "pid", pid, "err", killErr)
-			}
-			killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = qemu.WaitGone(killCtx, pid, 5*time.Second)
-			killCancel()
-		} else {
-			cancel()
-		}
+	// Shut down / SIGKILL this VM's confirmed-live qemu before touching state.
+	// A non-nil error means a guest confirmed to be this VM's qemu could not be
+	// confirmed gone (SIGKILL errored, or still alive after the post-kill wait).
+	// Fail toward INACTION: leave the disk, state dir, and in-memory VM entry
+	// intact and mark the task failed rather than RemoveAll the disk out from
+	// under a live guest and falsely report success. The delete self-heals on
+	// retry once the stuck pid is finally reaped (VerifyCmdline then returns
+	// false and teardown proceeds). Mirrors runPoweroff's escalation guard.
+	if err := terminateGuest(m, log, v); err != nil {
+		m.failTask(taskID, vmID, "qemu_supervision_failed", err.Error())
+		return
 	}
 
 	// Tear down the multiplexer before removing the state directory so
