@@ -327,14 +327,14 @@ func (s *Store) DeleteNetwork(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	// The name guard is deleted unconditionally here (dropping the former
-	// Value(guard)==id gate): the intent-CAS below already guarantees no
-	// concurrent delete of THIS network finalized (it would have deleted the
-	// intent and failed our CAS), so the name cannot have been freed-and-retaken
-	// while our intent is intact - the guard still points at this network.
+	// Delete the name guard only while it still points at this network: a
+	// concurrent rename (UpdateNetwork frees the old name guard) + a same-name
+	// re-create can leave the guard owned by a FOREIGN live network, which an
+	// unconditional delete would clobber. The intent-CAS covers the delete-vs-
+	// delete race; deleteGuardIfOwned covers the rename-vs-delete race.
 	ops := []clientv3.Op{
 		clientv3.OpPut(networkKey(id), string(val)),
-		clientv3.OpDelete(networkNameGuard(existing.Name)),
+		deleteGuardIfOwned(networkNameGuard(existing.Name), id.String()),
 		clientv3.OpDelete(intentKey),
 	}
 	if existing.Type == store.NetworkTypeOverlay && existing.VNI != nil {

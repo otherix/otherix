@@ -253,13 +253,17 @@ func (s *Store) DeleteFirmware(ctx context.Context, id uuid.UUID) error {
 		s.clearDeleteIntent(ctx, intentKey, myRev)
 		return &store.ResourceInUseError{Resources: map[string]int64{"vms": vmCount}}
 	}
+	// Delete the name-arch guard (and, if default, the default guard) only while
+	// each still points at this firmware: a concurrent rename / default-toggle
+	// (UpdateFirmware) + a same-name re-create can leave a guard owned by a
+	// FOREIGN live firmware. See deleteGuardIfOwned.
 	ops := []clientv3.Op{
 		clientv3.OpDelete(firmwareKey(id)),
-		clientv3.OpDelete(firmwareNameArchGuard(f.Architecture, f.Name)),
+		deleteGuardIfOwned(firmwareNameArchGuard(f.Architecture, f.Name), id.String()),
 		clientv3.OpDelete(intentKey),
 	}
 	if f.IsDefault {
-		ops = append(ops, clientv3.OpDelete(firmwareDefaultGuard(f.Architecture, f.Type)))
+		ops = append(ops, deleteGuardIfOwned(firmwareDefaultGuard(f.Architecture, f.Type), id.String()))
 	}
 	resp, err := s.c.Raw().Txn(ctx).
 		If(deleteIntentGuard(intentKey, myRev)).

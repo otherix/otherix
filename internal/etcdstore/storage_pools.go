@@ -294,7 +294,12 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 		If(deleteIntentGuard(intentKey, myRev)).
 		Then(
 			clientv3.OpPut(storagePoolKey(id), string(val)),
-			clientv3.OpDelete(storagePoolNodeNameGuard(p.NodeID, p.Name)),
+			// Delete the (node,name) guard only while it still points at this pool
+			// (a concurrent rename + same-name re-create can hand it to a foreign
+			// live pool; see deleteGuardIfOwned). The name-index key is id-scoped
+			// in the key itself, so its unconditional delete cannot clobber a
+			// foreign pool's entry.
+			deleteGuardIfOwned(storagePoolNodeNameGuard(p.NodeID, p.Name), id.String()),
 			clientv3.OpDelete(storagePoolNameIndexKey(p.Name, id)),
 			// Drop the agent-reported image inventory (observed state); a
 			// deleted pool reports none, and nothing reads it post-delete.

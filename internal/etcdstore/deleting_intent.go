@@ -101,6 +101,22 @@ func (s *Store) clearDeleteIntent(ctx context.Context, key string, myRev int64) 
 		Commit()
 }
 
+// deleteGuardIfOwned returns an op that deletes a name/identity guard key ONLY
+// while it still holds ownerID, via a nested txn. The enclosing delete finalize's
+// intent-CAS covers the delete-vs-delete race, but a concurrent rename (an
+// Update* that frees the old name guard) followed by a new resource retaking that
+// name means the guard can point at a FOREIGN live resource while ours is being
+// deleted; an unconditional delete would clobber it (two live resources could
+// then share a name). Deleting only when the guard still points at us is safe:
+// if it was retaken, we leave the foreign owner's guard intact.
+func deleteGuardIfOwned(guardKey, ownerID string) clientv3.Op {
+	return clientv3.OpTxn(
+		[]clientv3.Cmp{clientv3.Compare(clientv3.Value(guardKey), "=", ownerID)},
+		[]clientv3.Op{clientv3.OpDelete(guardKey)},
+		nil,
+	)
+}
+
 // deleteIntentPresent reports whether a delete-intent key exists - used by the
 // create-side classifiers to distinguish a lost CAS caused by an in-flight
 // delete from an ordinary name/MAC conflict.
