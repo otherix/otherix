@@ -48,6 +48,31 @@ func refreshTokenUserIndexPrefix(userID uuid.UUID) string {
 	return etcd.Key("index", "refresh_tokens", "user", userID.String()) + "/"
 }
 
+// Family-burn barrier. A per-family key whose mere existence bars any
+// RotateRefreshToken from inserting a child into the family (checked in the
+// rotation CAS). The theft cascade and logout-all set it BEFORE sweeping, so no
+// token can enter a family after it is burned - the single sweep is then exact,
+// with no loop-until-dry that a fast rotator could outrace. The key lives under
+// /otherix/barrier/... clear of refreshTokenPrefix and the family index, so
+// neither existing Range sweeps it.
+func refreshFamilyBarrierKey(familyID uuid.UUID) string {
+	return etcd.Key("barrier", "refresh_tokens", "family", familyID.String())
+}
+
+func refreshFamilyBarrierPrefix() string {
+	return etcd.Key("barrier", "refresh_tokens", "family") + "/"
+}
+
+// barrierSkew pads the barrier's expiry past the newest possible family token so
+// the barrier always outlives every token it must guard (see putFamilyBarrier).
+const barrierSkew = 24 * time.Hour
+
+// familyBarrier is the barrier value. Only ExpiresAt is stored, for cleanup; the
+// key's existence is the gate.
+type familyBarrier struct {
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // refreshTokenFromParams projects CreateRefreshTokenParams onto a fresh row,
 // stamping issued_at.
 func refreshTokenFromParams(arg store.CreateRefreshTokenParams, now time.Time) store.RefreshToken {
@@ -128,15 +153,90 @@ func (s *Store) RevokeRefreshToken(ctx context.Context, id uuid.UUID) error {
 }
 
 // RevokeRefreshTokenFamily revokes every active token in the family. This is the
-// theft-detection cascade fired when a revoked token is replayed.
+// theft-detection cascade fired when a revoked token is replayed. It bars the
+// family first (blocking any concurrent rotation from inserting a fresh child)
+// and then sweeps, so no active token can survive the burn.
 func (s *Store) RevokeRefreshTokenFamily(ctx context.Context, familyID uuid.UUID) error {
-	return s.revokeIndexed(ctx, refreshTokenFamilyIndexPrefix(familyID))
+	return s.burnFamiliesAndSweep(ctx, []uuid.UUID{familyID})
 }
 
 // RevokeAllUserRefreshTokens revokes every active token for the user
-// (logout-from-all).
+// (logout-from-all). It bars every family the user CURRENTLY holds and sweeps
+// each - never the user index, so a fresh login committing a NEW family
+// concurrently is left untouched and can still rotate.
 func (s *Store) RevokeAllUserRefreshTokens(ctx context.Context, userID uuid.UUID) error {
-	return s.revokeIndexed(ctx, refreshTokenUserIndexPrefix(userID))
+	families, err := s.userTokenFamilies(ctx, userID)
+	if err != nil {
+		return err
+	}
+	return s.burnFamiliesAndSweep(ctx, families)
+}
+
+// userTokenFamilies returns the distinct family ids across the user's refresh
+// tokens (via the user index). Logout-all uses it to bar exactly the families
+// the user holds now, never a family born from a later fresh login.
+func (s *Store) userTokenFamilies(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	items, err := s.c.Range(ctx, refreshTokenUserIndexPrefix(userID))
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[uuid.UUID]struct{})
+	var families []uuid.UUID
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			return nil, fmt.Errorf("corrupt refresh token user index %q: %v", kv.Key, perr)
+		}
+		var row store.RefreshToken
+		found, gerr := s.c.GetJSON(ctx, refreshTokenKey(id), &row)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !found {
+			continue
+		}
+		if _, ok := seen[row.FamilyID]; ok {
+			continue
+		}
+		seen[row.FamilyID] = struct{}{}
+		families = append(families, row.FamilyID)
+	}
+	return families, nil
+}
+
+// burnFamiliesAndSweep bars every family (blocking new rotations into them via
+// RotateRefreshToken's CAS) and THEN revokes every active token in each. Setting
+// all barriers before any sweep ranges is the ordering that makes one pass per
+// family exact: a child inserted before its barrier is caught by the sweep, one
+// after is CAS-refused. A family not in the list (a fresh login) is untouched.
+func (s *Store) burnFamiliesAndSweep(ctx context.Context, families []uuid.UUID) error {
+	for _, f := range families {
+		if err := s.putFamilyBarrier(ctx, f); err != nil {
+			return err
+		}
+	}
+	for _, f := range families {
+		if err := s.revokeIndexed(ctx, refreshTokenFamilyIndexPrefix(f)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// putFamilyBarrier idempotently writes the family-burn barrier, sized to outlive
+// every token the family can hold (refreshTokenTTL + skew) so cleanup never
+// deletes it while a token could still be active - the barrier is the sole
+// protection for the crash case (barrier set, sweep not yet committed).
+func (s *Store) putFamilyBarrier(ctx context.Context, familyID uuid.UUID) error {
+	b := familyBarrier{ExpiresAt: time.Now().UTC().Add(s.refreshTokenTTL + barrierSkew)}
+	val, err := etcd.Marshal(b)
+	if err != nil {
+		return err
+	}
+	if err := s.c.Put(ctx, refreshFamilyBarrierKey(familyID), val); err != nil {
+		return fmt.Errorf("put family barrier: %v", err)
+	}
+	return nil
 }
 
 // revokeIndexed loads every token referenced by an index prefix and stamps
@@ -256,6 +356,13 @@ func (s *Store) RotateRefreshToken(ctx context.Context, parentID uuid.UUID, chil
 	if parent.RevokedAt != nil {
 		return store.RefreshToken{}, store.ErrRefreshTokenConflict
 	}
+	// A rotation stays in-family. buildTokenPair always passes the parent's
+	// family; guard against a future caller regression, since the barrier keys on
+	// parent.FamilyID (server-read, authoritative) while the child's index
+	// entries key on child.FamilyID.
+	if child.FamilyID != parent.FamilyID {
+		return store.RefreshToken{}, fmt.Errorf("rotate refresh token: child family %s != parent family %s", child.FamilyID, parent.FamilyID)
+	}
 
 	now := time.Now().UTC()
 	parent.RevokedAt = &now
@@ -274,15 +381,21 @@ func (s *Store) RotateRefreshToken(ctx context.Context, parentID uuid.UUID, chil
 	)
 
 	txnResp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(refreshTokenKey(parentID)), "=", rev)).
+		If(
+			clientv3.Compare(clientv3.ModRevision(refreshTokenKey(parentID)), "=", rev),
+			// Refuse to insert into a burned family: once the theft cascade /
+			// logout-all has set this barrier, no rotation can revive the family.
+			clientv3.Compare(clientv3.CreateRevision(refreshFamilyBarrierKey(parent.FamilyID)), "=", 0),
+		).
 		Then(ops...).
 		Commit()
 	if err != nil {
 		return store.RefreshToken{}, fmt.Errorf("rotate refresh token txn: %v", err)
 	}
 	if !txnResp.Succeeded {
-		// The parent moved between our read and the commit: a concurrent
-		// rotation won. Nothing was written.
+		// The parent moved between our read and the commit (a concurrent
+		// rotation won), or the family was burned (barrier present). Nothing was
+		// written; both are the same double-spend/theft signal to the caller.
 		return store.RefreshToken{}, store.ErrRefreshTokenConflict
 	}
 	return childRow, nil
@@ -315,6 +428,25 @@ func (s *Store) DeleteExpiredRefreshTokens(ctx context.Context, cutoff time.Time
 		)
 		deleted++
 	}
+
+	// Also reap expired family-burn barriers. A barrier's ExpiresAt is sized
+	// (refreshTokenTTL + skew) to outlive every token in its family, so it is
+	// only past cutoff once all those tokens have themselves expired - never
+	// early. Its value decodes into familyBarrier, not store.RefreshToken.
+	barriers, err := s.c.Range(ctx, refreshFamilyBarrierPrefix())
+	if err != nil {
+		return 0, err
+	}
+	for _, kv := range barriers {
+		var b familyBarrier
+		if err := json.Unmarshal(kv.Value, &b); err != nil {
+			return 0, fmt.Errorf("unmarshal family barrier %q: %v", kv.Key, err)
+		}
+		if b.ExpiresAt.Before(cutoff) {
+			ops = append(ops, clientv3.OpDelete(kv.Key))
+		}
+	}
+
 	if err := s.commitInChunks(ctx, ops); err != nil {
 		return 0, fmt.Errorf("delete expired refresh tokens: %v", err)
 	}

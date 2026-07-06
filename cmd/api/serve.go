@@ -157,7 +157,7 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 			log.Error("etcd client close", "error", cerr)
 		}
 	}()
-	st := etcdstore.New(cli, etcdstore.WithLogger(log))
+	st := etcdstore.New(cli, etcdstore.WithLogger(log), etcdstore.WithRefreshTokenTTL(cfg.Auth.JWTRefreshTTL))
 
 	authSvc, err := auth.NewService(auth.Config{
 		JWTSecret:    []byte(cfg.Auth.JWTSecret),
