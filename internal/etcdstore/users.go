@@ -364,16 +364,63 @@ func (s *Store) CountAdmins(ctx context.Context) (int64, error) {
 
 // TouchUserLastLogin stamps last_login_at on a non-deleted user. A missing or
 // soft-deleted user is a no-op (matching the SQL `where deleted_at is null`).
+// The stamp commits under a ModRevision CAS so it can never clobber a concurrent
+// admin write (a role change or a disable): a blind put would re-persist its
+// stale snapshot and silently revert the demotion on the next login.
 func (s *Store) TouchUserLastLogin(ctx context.Context, id uuid.UUID) error {
-	var u store.User
-	found, err := s.c.GetJSON(ctx, userKey(id), &u)
-	if err != nil {
-		return err
-	}
-	if !found || u.DeletedAt != nil {
+	now := time.Now().UTC()
+	_, err := s.casUserUpdate(ctx, id, func(u *store.User) {
+		u.LastLoginAt = &now
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		// Missing or soft-deleted user: no-op, matching the prior contract.
 		return nil
 	}
-	now := time.Now().UTC()
-	u.LastLoginAt = &now
-	return s.c.PutJSON(ctx, userKey(id), u)
+	return err
+}
+
+// casUserUpdate re-reads a user, applies mutate, and commits the whole row under
+// a ModRevision compare-and-set, retrying on a lost race so a concurrent writer
+// (notably an admin role change / disable via UpdateUser) is never clobbered. A
+// blind put that read the row before the admin write committed would re-persist
+// the stale role and silently lose the change; the CAS-retry re-reads on
+// conflict so every field survives. mutate must be a pure field update on the
+// passed row; it runs once per attempt on the freshest read. Returns
+// store.ErrConcurrentUpdate after the retry bound is exhausted, and
+// store.ErrNotFound for a missing or soft-deleted user.
+func (s *Store) casUserUpdate(ctx context.Context, id uuid.UUID, mutate func(*store.User)) (store.User, error) {
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		resp, err := s.c.Raw().Get(ctx, userKey(id))
+		if err != nil {
+			return store.User{}, err
+		}
+		if len(resp.Kvs) == 0 {
+			return store.User{}, store.ErrNotFound
+		}
+		modRev := resp.Kvs[0].ModRevision
+		var u store.User
+		if err := json.Unmarshal(resp.Kvs[0].Value, &u); err != nil {
+			return store.User{}, fmt.Errorf("unmarshal user %s: %v", id, err)
+		}
+		if u.DeletedAt != nil {
+			return store.User{}, store.ErrNotFound
+		}
+		mutate(&u)
+		val, err := etcd.Marshal(u)
+		if err != nil {
+			return store.User{}, err
+		}
+		resp2, err := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(userKey(id)), "=", modRev)).
+			Then(clientv3.OpPut(userKey(id), string(val))).
+			Commit()
+		if err != nil {
+			return store.User{}, fmt.Errorf("cas user update txn: %v", err)
+		}
+		if resp2.Succeeded {
+			return u, nil
+		}
+	}
+	return store.User{}, store.ErrConcurrentUpdate
 }
