@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -788,7 +789,7 @@ func TestDialIngressPinsBrokerServerName(t *testing.T) {
 // never InsecureSkipVerify.
 func TestGatewayTLSConfigUsesRootCAsAndServerName(t *testing.T) {
 	caPEM := foreignCAPEM(t)
-	cfg, err := gatewayTLSConfig(Config{CACertPEM: caPEM}, "gw.example")
+	cfg, err := gatewayTLSConfig(context.Background(), Config{CACertPEM: caPEM}, "gw.example")
 	if err != nil {
 		t.Fatalf("gatewayTLSConfig: %v", err)
 	}
@@ -800,5 +801,205 @@ func TestGatewayTLSConfigUsesRootCAsAndServerName(t *testing.T) {
 	}
 	if cfg.ServerName != "gw.example" {
 		t.Errorf("ServerName = %q, want %q", cfg.ServerName, "gw.example")
+	}
+}
+
+// clusterCA is an in-memory cluster CA that can issue leaf certificates. It
+// exercises the pin-mode gateway leg: the converged gateway presents a
+// cluster-CA-signed node leaf, a certificate the CP-leaf pin can never match, so
+// the gateway leg must anchor its trust in the cluster CA (fetched from /v1/ca)
+// instead.
+type clusterCA struct {
+	cert    *x509.Certificate
+	key     ed25519.PrivateKey
+	certPEM []byte
+}
+
+func newClusterCA(t *testing.T) *clusterCA {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate cluster ca key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "otherix-cluster-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	if err != nil {
+		t.Fatalf("create cluster ca cert: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse cluster ca cert: %v", err)
+	}
+	return &clusterCA{
+		cert:    cert,
+		key:     priv,
+		certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+	}
+}
+
+// issueLeaf signs a server leaf certificate carrying dnsSAN, returning it ready
+// to serve.
+func (ca *clusterCA) issueLeaf(t *testing.T, dnsSAN string) tls.Certificate {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: dnsSAN},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{dnsSAN},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, pub, ca.key)
+	if err != nil {
+		t.Fatalf("create leaf cert: %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
+}
+
+// TestDialIngressGatewayUnderPinMode proves the pin-mode gateway leg: the
+// operator pins the CP's TLS leaf (CAFingerprint set, CACertPEM empty), and the
+// converged gateway presents its own cluster-CA-signed leaf (SAN gw.example). The
+// connector must fetch the cluster CA from /v1/ca over the pin-verified client
+// and verify the gateway leaf against it, then splice bytes end to end. Pre-fix
+// the gateway handshake fails with "fingerprint does not match".
+func TestDialIngressGatewayUnderPinMode(t *testing.T) {
+	ca := newClusterCA(t)
+
+	gw := &fakeGateway{}
+	gwTS := httptest.NewUnstartedServer(gw.handler())
+	gwTS.TLS = &tls.Config{Certificates: []tls.Certificate{ca.issueLeaf(t, "gw.example")}} //nolint:gosec // test leaf, MinVersion irrelevant.
+	gwTS.StartTLS()
+	defer gwTS.Close()
+	splicer := "https://" + gwTS.Listener.Addr().String()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"cert_pem": string(ca.certPEM)})
+	})
+	mux.HandleFunc("/v1/vms/vm1/ingress", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Port int `json:"port"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"transport":           "gateway",
+			"vm_id":               "11111111-1111-1111-1111-111111111111",
+			"port":                body.Port,
+			"splicer_addr":        splicer,
+			"splicer_server_name": "gw.example",
+			"session_cred":        "otx_ingress_faketoken",
+			"expires_at":          time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+		})
+	})
+	cpTS := httptest.NewTLSServer(mux)
+	defer cpTS.Close()
+
+	cfg := Config{
+		ServerURL:     cpTS.URL,
+		BearerToken:   "otx_clitoken",
+		CAFingerprint: fingerprintOf(t, cpTS),
+	}
+
+	conn, err := DialIngress(context.Background(), cfg, "vm1", 22)
+	if err != nil {
+		t.Fatalf("DialIngress: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := io.WriteString(conn, "ping"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "ping" {
+		t.Errorf("echoed bytes = %q, want %q", got, "ping")
+	}
+}
+
+// TestGatewayTLSConfigPinModeUsesFetchedClusterCA is the unit view of the pin-mode
+// gateway trust: it must verify a full chain against the fetched cluster CA
+// (RootCAs set, InsecureSkipVerify false, no CP-leaf VerifyConnection pin) with
+// the ServerName pinned to the broker identity.
+func TestGatewayTLSConfigPinModeUsesFetchedClusterCA(t *testing.T) {
+	ca := newClusterCA(t)
+	cpTS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/ca" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"cert_pem": string(ca.certPEM)})
+	}))
+	defer cpTS.Close()
+
+	cfg := Config{ServerURL: cpTS.URL, CAFingerprint: fingerprintOf(t, cpTS)}
+	tlsCfg, err := gatewayTLSConfig(context.Background(), cfg, "gw.example")
+	if err != nil {
+		t.Fatalf("gatewayTLSConfig: %v", err)
+	}
+	if tlsCfg.InsecureSkipVerify {
+		t.Error("pin-mode gateway leg must not skip TLS verification")
+	}
+	if tlsCfg.RootCAs == nil {
+		t.Error("pin-mode gateway leg must verify against the fetched cluster CA")
+	}
+	if tlsCfg.VerifyConnection != nil {
+		t.Error("pin-mode gateway leg must not carry the CP-leaf fingerprint pin")
+	}
+	if tlsCfg.ServerName != "gw.example" {
+		t.Errorf("ServerName = %q, want %q", tlsCfg.ServerName, "gw.example")
+	}
+}
+
+// TestDialGatewayPinModeCAFetchFailsClosed proves the pin-mode gateway leg fails
+// closed: when /v1/ca cannot be fetched (HTTP 500) the dial returns an error and
+// never downgrades to an insecure or CP-leaf-pinned gateway connection.
+func TestDialGatewayPinModeCAFetchFailsClosed(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/ca", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/v1/vms/vm1/ingress", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Port int `json:"port"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"transport":           "gateway",
+			"vm_id":               "11111111-1111-1111-1111-111111111111",
+			"port":                body.Port,
+			"splicer_addr":        "https://127.0.0.1:1",
+			"splicer_server_name": "gw.example",
+			"session_cred":        "otx_ingress_faketoken",
+			"expires_at":          time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+		})
+	})
+	cpTS := httptest.NewTLSServer(mux)
+	defer cpTS.Close()
+
+	cfg := Config{
+		ServerURL:     cpTS.URL,
+		BearerToken:   "otx_clitoken",
+		CAFingerprint: fingerprintOf(t, cpTS),
+	}
+	if _, err := DialIngress(context.Background(), cfg, "vm1", 22); err == nil {
+		t.Fatal("DialIngress accepted a gateway dial after the cluster CA fetch failed")
 	}
 }
