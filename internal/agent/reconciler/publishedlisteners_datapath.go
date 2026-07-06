@@ -41,11 +41,14 @@ const publishedDialTimeout = 10 * time.Second
 // open indefinitely.
 const publishedIdleTimeout = 350 * time.Second
 
-// deviceResolver maps a backend overlay IP to the gateway veth device that
-// reaches its overlay, or reports ok=false when this node does not gateway that
-// overlay (fail closed). Satisfied by *Networks (OverlayNetworkForIP).
+// deviceResolver enumerates the gateway veth candidates whose overlay subnet
+// contains a backend IP; the datapath picks the one whose neighbor MAC matches the
+// CP-declared backend MAC (overlapping overlay subnets are legal, so more than one
+// can match on subnet alone). An empty result means this node does not gateway any
+// overlay containing the IP (fail closed). Satisfied by *Networks
+// (OverlayCandidatesForIP).
 type deviceResolver interface {
-	OverlayNetworkForIP(ip netip.Addr) (device, networkID string, ok bool)
+	OverlayCandidatesForIP(ip netip.Addr) []OverlayCandidate
 }
 
 // neighborResolver returns the kernel-resolved neighbor MAC for a backend IP on
@@ -148,14 +151,14 @@ func (r *PublishedListeners) handleConn(ctx context.Context, c net.Conn, cfg *li
 		_ = c.Close()
 		return
 	}
-	device, _, ok := r.devices.OverlayNetworkForIP(ip)
+	// Enumerate the candidate overlays whose subnet contains the backend IP and
+	// bind the dial to the one whose neighbor table resolves the IP to the
+	// CP-declared backend MAC. Overlapping overlay subnets are legal, so more than
+	// one candidate can match on subnet alone; the per-veth MAC pin is the
+	// disambiguator (and the anti-SSRF gate). No candidate matching the MAC means
+	// this node cannot reach the backend on any overlay it gateways - fail closed.
+	device, ok := r.resolveCandidate(r.devices.OverlayCandidatesForIP(ip), ip, b.MAC)
 	if !ok {
-		_ = c.Close()
-		return
-	}
-
-	mac, ok, err := r.neighbors.NeighborMAC(device, ip)
-	if err != nil || !ok || !macEqual(mac, b.MAC) {
 		_ = c.Close()
 		return
 	}
@@ -170,6 +173,23 @@ func (r *PublishedListeners) handleConn(ctx context.Context, c net.Conn, cfg *li
 
 	spliceCtx, spliceCancel := context.WithCancel(ctx)
 	spliceConns(spliceCtx, spliceCancel, c, up, r.idleTimeout)
+}
+
+// resolveCandidate returns the veth device to dial on: it probes the neighbor MAC
+// on each candidate overlay veth (overlapping subnets can yield several) and
+// returns the first whose kernel-resolved neighbor MAC for ip equals the
+// CP-declared backend MAC wantMAC. ok is false when no candidate resolves to
+// wantMAC (fail closed). The MAC pin is both the anti-SSRF gate and the
+// disambiguator for overlapping overlay subnets: guest NIC MACs are globally
+// unique across L2 domains, so at most one candidate resolves ip to wantMAC.
+func (r *PublishedListeners) resolveCandidate(candidates []OverlayCandidate, ip netip.Addr, wantMAC string) (device string, ok bool) {
+	for _, cand := range candidates {
+		mac, resolved, err := r.neighbors.NeighborMAC(cand.Device, ip)
+		if err == nil && resolved && macEqual(mac, wantMAC) {
+			return cand.Device, true
+		}
+	}
+	return "", false
 }
 
 // selectBackend picks a uniformly random backend from the CP-pushed set and

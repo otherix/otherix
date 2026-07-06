@@ -34,8 +34,11 @@ type spyOverlays struct {
 	released []string
 }
 
-func (s *spyOverlays) OverlayNetworkForIP(netip.Addr) (string, string, bool) {
-	return s.bridge, s.networkID, s.ok
+func (s *spyOverlays) OverlayCandidatesForIP(netip.Addr) []overlayCandidate {
+	if !s.ok {
+		return nil
+	}
+	return []overlayCandidate{{Device: s.bridge, NetworkID: s.networkID}}
 }
 
 func (s *spyOverlays) AcquireSession(id string) {

@@ -138,21 +138,35 @@ func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tic
 	}, nil
 }
 
-// OverlayNetworkForIP returns the veth host-end device AND the network id whose
-// CP-declared subnet contains ip, but only for an overlay this node holds a
-// gateway membership on (GatewayAddr set), because ingress sources its dials from
-// that overlay's veth host end. The connect path binds the dial and the neighbor
-// lookup to the returned device and keys its per-network live-session counter by
-// the network id. It consults only the latest declared state, the same
-// authoritative source the reconciler applies from; ok is false when no declared
-// gateway overlay's subnet contains ip, so a credential for an overlay this node
+// OverlayCandidate is one gateway-overlay whose CP-declared subnet contains a
+// guest IP: the veth host-end Device to source the dial and neighbor probe from,
+// and the NetworkID for per-network session accounting. It is a type alias to a
+// plain anonymous struct so the ingress OverlayResolver and the published-listener
+// deviceResolver can name the identical type structurally without importing this
+// package (dependency inversion is preserved).
+type OverlayCandidate = struct {
+	Device    string
+	NetworkID string
+}
+
+// OverlayCandidatesForIP returns EVERY declared gateway-overlay (VNI>0, subnet
+// set, GatewayAddr set) whose CP-declared subnet contains ip - the veth host-end
+// device and network id for each. Overlay subnets are per-tenant, isolated L2/L3
+// domains and may legally overlap (two overlays both 10.0.0.0/16), so a guest IP
+// can fall in more than one; the caller disambiguates by probing the per-veth
+// neighbor MAC (guest NIC MACs are globally unique across L2 domains, so at most
+// one candidate resolves ip to the credential MAC). In the common no-overlap case
+// there is exactly one candidate. It consults only the latest declared state, the
+// same authoritative source the reconciler applies from; an empty result means no
+// declared gateway overlay contains ip, so a credential for an overlay this node
 // does not gateway fails closed. Only overlay networks (VNI + subnet) with a
 // gateway membership are considered.
-func (r *Networks) OverlayNetworkForIP(ip netip.Addr) (device, networkID string, ok bool) {
+func (r *Networks) OverlayCandidatesForIP(ip netip.Addr) []OverlayCandidate {
 	d := r.desired.Load()
 	if d == nil {
-		return "", "", false
+		return nil
 	}
+	var out []OverlayCandidate
 	for _, n := range d.networks {
 		if n.VNI == nil || *n.VNI <= 0 || n.Subnet == nil || n.GatewayAddr == nil {
 			continue
@@ -162,10 +176,13 @@ func (r *Networks) OverlayNetworkForIP(ip netip.Addr) (device, networkID string,
 			continue
 		}
 		if subnet.Contains(ip) {
-			return netfabric.GatewayVethHostName(uint32(*n.VNI)), n.ID, true //nolint:gosec // VNI guarded >0 and <= 24-bit
+			out = append(out, OverlayCandidate{
+				Device:    netfabric.GatewayVethHostName(uint32(*n.VNI)), //nolint:gosec // VNI guarded >0 and <= 24-bit
+				NetworkID: n.ID,
+			})
 		}
 	}
-	return "", "", false
+	return out
 }
 
 // AcquireSession records one live ingress session on the network. The connect

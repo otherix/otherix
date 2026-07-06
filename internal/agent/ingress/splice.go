@@ -64,16 +64,28 @@ const (
 // a dialer that reaches a loopback stub and ignore device.
 type dialFunc func(ctx context.Context, network, addr, device string) (net.Conn, error)
 
-// OverlayResolver maps a guest IP to the overlay datapath whose CP-declared
+// overlayCandidate is one gateway-overlay whose CP-declared subnet contains a
+// guest IP: the per-overlay veth host-end Device for the dial binding + neighbor
+// probe, and the NetworkID for session accounting. It is a type alias to a plain
+// anonymous struct that is byte-identical to reconciler.OverlayCandidate, so
+// *reconciler.Networks satisfies OverlayResolver structurally without this package
+// importing reconciler (dependency inversion is preserved).
+type overlayCandidate = struct {
+	Device    string
+	NetworkID string
+}
+
+// OverlayResolver maps a guest IP to the overlay datapath(s) whose CP-declared
 // subnet contains it and tracks live ingress sessions per network. The network
-// reconciler (*reconciler.Networks) satisfies it. OverlayNetworkForIP finds which
-// overlay datapath a session credential's guest IP lives on (the per-overlay veth
-// host-end device for the dial binding, network id for session accounting);
+// reconciler (*reconciler.Networks) satisfies it. OverlayCandidatesForIP returns
+// every gateway overlay a session credential's guest IP could live on (overlay
+// subnets are per-tenant and may overlap, so more than one can match on subnet
+// alone); the connect path disambiguates by the per-overlay veth neighbor MAC.
 // AcquireSession/ReleaseSession maintain the per-network live-session counter the
 // gateway reports through its heartbeat so the CP keeps the gateway's membership
 // sticky while sessions drain.
 type OverlayResolver interface {
-	OverlayNetworkForIP(ip netip.Addr) (device, networkID string, ok bool)
+	OverlayCandidatesForIP(ip netip.Addr) []overlayCandidate
 	AcquireSession(networkID string)
 	ReleaseSession(networkID string)
 }
@@ -164,9 +176,11 @@ func (h *ConnectHandler) VerifyCred(next http.Handler) http.Handler {
 
 // Connect handles POST /v1/connect. The verified credential's claims supply the
 // dial target; VerifyCred must have run first to place them in the context. The
-// handler resolves the overlay the guest IP lives on, refuses unless the guest
-// IP's neighbor MAC equals the credential MAC (anti-SSRF / IP-reuse binding),
-// acquires a concurrency slot, dials the guest target, hijacks the inbound
+// handler enumerates the candidate overlays the guest IP could live on, acquires a
+// concurrency slot, then binds the dial to the credential MAC (refuses unless a
+// candidate overlay's neighbor table resolves the guest IP to exactly the
+// credential MAC - anti-SSRF / IP-reuse binding, and the disambiguator for
+// overlapping overlay subnets), dials the guest target, hijacks the inbound
 // connection, and splices the two legs until either side closes.
 func (h *ConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	claims, ok := claimsFromContext(r.Context())
@@ -176,31 +190,29 @@ func (h *ConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the per-overlay veth host-end device the guest IP lives on, then bind
-	// the dial to the credential MAC: refuse unless the IP currently resolves, in
-	// the gateway's neighbor table, to exactly the credential's NIC MAC. A stale
-	// credential whose guest IP has been reassigned to a different NIC resolves to a
-	// different MAC and is refused. Every binding failure collapses to a uniform
-	// refusal so the gateway is no oracle and never dials on uncertain input.
-	device, networkID, ok := h.overlays.OverlayNetworkForIP(claims.GuestIP)
-	if !ok {
+	// Enumerate the candidate overlays whose CP-declared subnet contains the guest
+	// IP. Overlay subnets are per-tenant, isolated domains and may overlap, so more
+	// than one can match on subnet alone; the neighbor-MAC probe below disambiguates.
+	// An empty set means the guest IP is on no declared gateway overlay - refuse for
+	// free before taking a slot.
+	candidates := h.overlays.OverlayCandidatesForIP(claims.GuestIP)
+	if len(candidates) == 0 {
 		h.log.Warn("connect: refused, guest ip not on any declared overlay",
 			"guest_ip", claims.GuestIP.String(), "vm_id", claims.VMID.String())
 		h.refuse(w, r)
 		return
 	}
-	mac, ok, err := h.fabric.NeighborMAC(device, claims.GuestIP)
-	if err != nil || !ok || !macEqual(mac, claims.NICMAC) {
-		h.log.Warn("connect: refused, neighbor mac does not match credential",
-			"guest_ip", claims.GuestIP.String(), "device", device,
-			"vm_id", claims.VMID.String(), "resolved", ok, "error", errString(err))
-		h.refuse(w, r)
-		return
-	}
 
-	// Acquire a concurrency slot before dialing. Released on every exit path
-	// (defer), including after the splice tears down, so a freed slot lets a
-	// later connect through.
+	// Acquire a concurrency slot BEFORE the neighbor probe (not just before the
+	// dial). On a cold miss each probe can block up to the fabric's neighbor-resolve
+	// budget (~2s) while holding the hijackable request connection; the ingress
+	// credential is reusable within its TTL and the caller controls its backends,
+	// so one valid credential can be replayed to open unbounded concurrent probes.
+	// The per-VM/per-gateway cap bounds concurrent probes to the same ceiling it
+	// bounds spliced sessions. Released on every exit path (defer), including a
+	// MAC-mismatch refusal and after the splice tears down, so a freed slot lets a
+	// later connect through. The off-overlay refusal above returns for free before
+	// this point (a cheap map lookup, no slot).
 	vmID := claims.VMID.String()
 	if err := h.slots.acquire(vmID); err != nil {
 		response.WriteError(w, r, http.StatusServiceUnavailable,
@@ -208,6 +220,23 @@ func (h *ConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.slots.release(vmID)
+
+	// Bind the dial to the credential MAC by probing each candidate overlay's veth
+	// and using the first whose neighbor table resolves the guest IP to exactly the
+	// credential's NIC MAC. This closes IP-reuse (a stale credential whose guest IP
+	// now resolves to a different NIC is refused) AND disambiguates overlapping
+	// overlay subnets: guest NIC MACs are globally unique across L2 domains, so at
+	// most one candidate resolves the IP to the credential MAC. Every binding
+	// failure collapses to a uniform refusal so the gateway is no oracle and never
+	// dials on uncertain input.
+	device, networkID, ok := h.resolveCandidate(candidates, claims.GuestIP, claims.NICMAC)
+	if !ok {
+		h.log.Warn("connect: refused, no candidate overlay neighbor mac matches credential",
+			"guest_ip", claims.GuestIP.String(), "candidates", len(candidates),
+			"vm_id", claims.VMID.String())
+		h.refuse(w, r)
+		return
+	}
 
 	// Count this session against its network the instant it holds a slot, and
 	// release the count on every exit path (defer), mirroring the slot discipline
@@ -266,6 +295,23 @@ func (h *ConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	h.log.Info("connect: session closed", "target", target, "vm_id", vmID)
 }
 
+// resolveCandidate probes the neighbor MAC on each candidate overlay veth and
+// returns the device + network id of the first whose kernel-resolved neighbor MAC
+// for ip equals wantMAC. ok is false when none match (fail closed). The MAC pin
+// both closes IP-reuse and disambiguates overlapping overlay subnets: guest NIC
+// MACs are globally unique across L2 domains, so at most one overlapping overlay
+// resolves ip to wantMAC. In the common no-overlap case there is exactly one
+// candidate and this is a single probe.
+func (h *ConnectHandler) resolveCandidate(candidates []overlayCandidate, ip netip.Addr, wantMAC string) (device, networkID string, ok bool) {
+	for _, cand := range candidates {
+		mac, resolved, err := h.fabric.NeighborMAC(cand.Device, ip)
+		if err == nil && resolved && macEqual(mac, wantMAC) {
+			return cand.Device, cand.NetworkID, true
+		}
+	}
+	return "", "", false
+}
+
 // unauthorized writes the uniform 401 the cred gate uses for every credential
 // failure, leaking nothing about which check failed.
 func (h *ConnectHandler) unauthorized(w http.ResponseWriter, r *http.Request) {
@@ -304,14 +350,6 @@ func macEqual(a net.HardwareAddr, b string) bool {
 		return false
 	}
 	return bytes.Equal(a, pb)
-}
-
-// errString returns err.Error() or "" for a nil error, for structured logging.
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 // connectSlots enforces the per-VM and per-gateway concurrency caps on the

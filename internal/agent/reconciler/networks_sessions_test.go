@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/otherix/otherix/internal/agent/heartbeat"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 )
@@ -55,12 +57,13 @@ func TestNetworksSessionCounterFoldsIntoReport(t *testing.T) {
 	}
 }
 
-// TestNetworksOverlayNetworkForIP confirms the resolver returns the overlay veth
+// TestOverlayCandidatesForIP confirms the resolver returns the overlay veth
 // host-end device and the network id whose declared subnet contains the IP for an
 // overlay this node holds a gateway membership on, so the connect plane can source
 // its dial from the veth and key its per-network session counter the same way the
-// report does.
-func TestNetworksOverlayNetworkForIP(t *testing.T) {
+// report does. A non-overlapping IP yields exactly one candidate; an off-overlay
+// IP yields none.
+func TestOverlayCandidatesForIP(t *testing.T) {
 	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
@@ -77,21 +80,22 @@ func TestNetworksOverlayNetworkForIP(t *testing.T) {
 	})
 
 	// A gateway overlay resolves to its veth host end, not the bridge.
-	dev, gotID, ok := rec.OverlayNetworkForIP(netip.MustParseAddr("10.50.0.7"))
-	if !ok || dev != "otvg200" || gotID != netID {
-		t.Fatalf("OverlayNetworkForIP = (%q, %q, %v), want (otvg200, %s, true)", dev, gotID, ok, netID)
+	got := rec.OverlayCandidatesForIP(netip.MustParseAddr("10.50.0.7"))
+	want := []OverlayCandidate{{Device: "otvg200", NetworkID: netID}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("OverlayCandidatesForIP mismatch (-want +got):\n%s", diff)
 	}
 	// An off-overlay IP resolves to nothing.
-	if _, _, ok := rec.OverlayNetworkForIP(netip.MustParseAddr("192.168.0.1")); ok {
-		t.Fatalf("OverlayNetworkForIP for an off-overlay IP = ok, want not ok")
+	if cands := rec.OverlayCandidatesForIP(netip.MustParseAddr("192.168.0.1")); len(cands) != 0 {
+		t.Fatalf("OverlayCandidatesForIP for an off-overlay IP = %+v, want empty", cands)
 	}
 }
 
-// TestOverlayNetworkForIPRequiresMembership proves the resolver fails closed: an
+// TestOverlayCandidatesRequireMembership proves the resolver fails closed: an
 // overlay whose declared subnet contains the IP but on which this node holds no
-// gateway membership (GatewayAddr nil) must not resolve as a dial target, because
+// gateway membership (GatewayAddr nil) must not appear as a candidate, because
 // there is no veth to source the dial from.
-func TestOverlayNetworkForIPRequiresMembership(t *testing.T) {
+func TestOverlayCandidatesRequireMembership(t *testing.T) {
 	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
@@ -103,8 +107,49 @@ func TestOverlayNetworkForIPRequiresMembership(t *testing.T) {
 			GatewayAddr: nil,
 		}},
 	})
-	if _, _, ok := rec.OverlayNetworkForIP(netip.MustParseAddr("10.60.0.5")); ok {
-		t.Fatalf("OverlayNetworkForIP on a non-membership overlay = ok, want not ok (fail closed)")
+	if cands := rec.OverlayCandidatesForIP(netip.MustParseAddr("10.60.0.5")); len(cands) != 0 {
+		t.Fatalf("OverlayCandidatesForIP on a non-membership overlay = %+v, want empty (fail closed)", cands)
+	}
+}
+
+// TestOverlayResolverOverlappingSubnets proves the resolver enumerates EVERY
+// gateway overlay whose subnet contains the IP when two overlays share the same
+// subnet (a legal per-tenant configuration), independent of declared slice order,
+// so the caller can disambiguate by neighbor MAC. The pre-fix single-return
+// resolver could only ever surface the first-declared overlay, refusing a
+// legitimate session to the second.
+func TestOverlayResolverOverlappingSubnets(t *testing.T) {
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
+	if err != nil {
+		t.Fatalf("NewNetworks: %v", err)
+	}
+	subnet := "10.0.0.0/16"
+	netA := heartbeat.DeclaredNetwork{
+		ID: "net-A", Type: "overlay", BridgeName: "otvb100", Mtu: 1450, VNI: i32(100), Subnet: &subnet,
+		GatewayAddr: &heartbeat.GatewayAddr{IP: "10.0.0.1", MAC: "02:00:00:00:01:00"},
+	}
+	netB := heartbeat.DeclaredNetwork{
+		ID: "net-B", Type: "overlay", BridgeName: "otvb200", Mtu: 1450, VNI: i32(200), Subnet: &subnet,
+		GatewayAddr: &heartbeat.GatewayAddr{IP: "10.0.0.2", MAC: "02:00:00:00:02:00"},
+	}
+
+	// Both declared orders must yield both candidates.
+	orders := map[string][]heartbeat.DeclaredNetwork{
+		"A_before_B": {netA, netB},
+		"B_before_A": {netB, netA},
+	}
+	want := map[string]string{"otvg100": "net-A", "otvg200": "net-B"}
+	for name, order := range orders {
+		t.Run(name, func(t *testing.T) {
+			rec.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{DeclaredNetworks: order})
+			got := map[string]string{}
+			for _, c := range rec.OverlayCandidatesForIP(netip.MustParseAddr("10.0.0.5")) {
+				got[c.Device] = c.NetworkID
+			}
+			if diff := cmp.Diff(want, got); diff != "" {
+				t.Errorf("candidates mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
