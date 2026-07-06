@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -60,7 +61,7 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		return store.RedeemJoinTokenResult{}, err
 	}
 
-	node, err := s.upsertJoinNode(ctx, p, redeemNodeGateway(token))
+	node, created, err := s.upsertJoinNode(ctx, p, redeemNodeGateway(token))
 	if err != nil {
 		return store.RedeemJoinTokenResult{}, err
 	}
@@ -89,6 +90,17 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 	}
 
 	if err := s.commitNodeRedemption(ctx, token, node, p, certPutOps); err != nil {
+		// The authoritative max_uses CAS rejected (or the txn errored) AFTER we
+		// created a fresh row above. Compensate that leak best-effort: delete only
+		// the row THIS call created, gated to fail toward inaction (see
+		// deleteOrphanedJoinNode). A reused row (created==false) is a legitimate
+		// prior node and is never touched. The delete never masks the commit error.
+		if created {
+			if delErr := s.deleteOrphanedJoinNode(ctx, node.ID); delErr != nil {
+				s.log.WarnContext(ctx, "etcdstore: compensating delete of orphaned join node failed",
+					slog.String("node_id", node.ID.String()), slog.String("error", delErr.Error()))
+			}
+		}
 		return store.RedeemJoinTokenResult{}, err
 	}
 	return store.RedeemJoinTokenResult{NodeID: node.ID, TokenID: token.ID}, nil
@@ -292,7 +304,12 @@ func redeemNodeGateway(token store.JoinToken) bool {
 // is created with the requested role. Reuse of an unconfirmed row is the lost-
 // bootstrap recovery path (the caller supersedes the stale undelivered cert). A
 // concurrent create that loses the name guard re-fetches the winner.
-func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParams, gatewayWanted bool) (store.Node, error) {
+//
+// created reports whether THIS call materialized a brand-new row (the CreateNode
+// success path) versus reusing an existing/race-winner row. Only a created row is
+// eligible for the caller's compensating delete when the downstream max_uses CAS
+// rejects, so a reuse of a legitimate prior row is never destroyed.
+func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParams, gatewayWanted bool) (node store.Node, created bool, err error) {
 	existing, err := s.NodeByName(ctx, p.NodeName)
 	if err == nil {
 		// "Owned" is keyed on the CONFIRM signal (the node has authenticated with
@@ -302,7 +319,7 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 		// the row and re-issues (the caller supersedes the stale cert). A node that
 		// has ever heartbeated is owned and must not be re-enrolled via a token.
 		if existing.LastHeartbeatAt != nil {
-			return store.Node{}, store.ErrJoinNodeNameTaken
+			return store.Node{}, false, store.ErrJoinNodeNameTaken
 		}
 		// A node's role is fixed by the token that first claims the name. The
 		// caller selects the CSR signing template from the reused row's role, so a
@@ -310,15 +327,15 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 		// (e.g. a gateway token yielding a node-<name> leaf). Reject rather than
 		// silently re-stamping the row.
 		if existing.HasRole(store.NodeRoleGateway) != gatewayWanted {
-			return store.Node{}, store.ErrJoinNodeKindMismatch
+			return store.Node{}, false, store.ErrJoinNodeKindMismatch
 		}
-		return existing, nil
+		return existing, false, nil
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		return store.Node{}, fmt.Errorf("node lookup: %v", err)
+		return store.Node{}, false, fmt.Errorf("node lookup: %v", err)
 	}
 
-	node, err := s.CreateNode(ctx, store.CreateNodeParams{
+	node, err = s.CreateNode(ctx, store.CreateNodeParams{
 		ID:                        uuid.New(),
 		Name:                      p.NodeName,
 		Gateway:                   gatewayWanted,
@@ -337,20 +354,66 @@ func (s *Store) upsertJoinNode(ctx context.Context, p store.RedeemJoinTokenParam
 			// different role must not yield a mis-issued identity.
 			winner, ferr := s.NodeByName(ctx, p.NodeName)
 			if ferr != nil {
-				return store.Node{}, ferr
+				return store.Node{}, false, ferr
 			}
 			// Same confirm gate as the reuse branch: a winner that has already
 			// heartbeated is owned (a just-created concurrent winner is unconfirmed,
 			// so this only bites a genuine race against a live node).
 			if winner.LastHeartbeatAt != nil {
-				return store.Node{}, store.ErrJoinNodeNameTaken
+				return store.Node{}, false, store.ErrJoinNodeNameTaken
 			}
 			if winner.HasRole(store.NodeRoleGateway) != gatewayWanted {
-				return store.Node{}, store.ErrJoinNodeKindMismatch
+				return store.Node{}, false, store.ErrJoinNodeKindMismatch
 			}
-			return winner, nil
+			return winner, false, nil
 		}
-		return store.Node{}, fmt.Errorf("create node: %v", err)
+		return store.Node{}, false, fmt.Errorf("create node: %v", err)
 	}
-	return node, nil
+	return node, true, nil
+}
+
+// deleteOrphanedJoinNode is the best-effort compensating delete for a fresh
+// pending node row this redemption created (upsertJoinNode created==true) but
+// could not finalize: commitNodeRedemption returned after that create - a
+// CAS-lost max_uses exhaustion or a txn error - leaving a certless,
+// never-heartbeating row no future redemption reuses. It hard-deletes ONLY that
+// node, by the id we ourselves created, plus its name guard, under a single txn
+// that fails toward inaction. The row must still be pending, have never
+// heartbeated, and carry no active cert; if any guard fails - a cert
+// materialized because the commit actually applied server-side despite the
+// client-observed error, or the node heartbeated - this is a no-op, so a
+// wanted/enrolled node is never destroyed. The final ModRevision CAS makes any
+// concurrent mutation of the row between the checks and the delete win. The
+// delete is opportunistic: the caller logs and swallows its error and always
+// surfaces the original commit error.
+func (s *Store) deleteOrphanedJoinNode(ctx context.Context, nodeID uuid.UUID) error {
+	n, modRev, err := s.nodeWithRev(ctx, nodeID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil // already gone/soft-deleted: nothing to compensate
+		}
+		return err
+	}
+	if n.Status != store.NodeStatusPending || n.LastHeartbeatAt != nil {
+		return nil // promoted/confirmed since we created it: leave it
+	}
+	hasCert, err := s.NodeHasActiveCert(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	if hasCert {
+		// A cert exists: the redemption's commit actually applied server-side
+		// despite the client-observed error. The row is enrolled, not orphaned.
+		return nil
+	}
+	if _, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(nodeID)), "=", modRev)).
+		Then(
+			clientv3.OpDelete(nodeKey(nodeID)),
+			clientv3.OpDelete(nodeNameGuard(n.Name)),
+		).
+		Commit(); err != nil {
+		return fmt.Errorf("delete orphaned join node %s txn: %v", nodeID, err)
+	}
+	return nil
 }

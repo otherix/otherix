@@ -481,6 +481,146 @@ func TestRedeemJoinTokenConcurrentReissue(t *testing.T) {
 	}
 }
 
+// TestRedeemJoinTokenConcurrentDistinctNamesNoOrphan pins that concurrent
+// redemptions of one capped token with DISTINCT node names leave no orphaned
+// pending node rows. Each redemption creates its own fresh node before the
+// authoritative max_uses CAS; only MaxUses of them win that CAS, and the losers
+// return store.ErrJoinTokenExhausted. Without the compensating delete each
+// loser's certless, never-heartbeating pending row (and its name guard) leaks.
+// Post-fix exactly MaxUses nodes survive and every loser's name guard is gone.
+func TestRedeemJoinTokenConcurrentDistinctNamesNoOrphan(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	one := int32(1)
+	hash := []byte("distinct-orphan-hash")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, MaxUses: &one, ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+
+	const m = 8
+	names := make([]string, m)
+	errs := make([]error, m)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range m {
+		names[i] = fmt.Sprintf("distinct-node-%d", i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, errs[i] = s.RedeemJoinToken(ctx, redeemParams(hash, names[i]), func(store.Node) (store.IssuedCert, error) {
+				return issuedCert(), nil
+			})
+		}()
+	}
+	close(start) // release all goroutines together
+	wg.Wait()
+
+	succeeded := 0
+	winners := map[string]struct{}{}
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+			winners[names[i]] = struct{}{}
+		case errors.Is(err, store.ErrJoinTokenExhausted):
+		default:
+			t.Errorf("RedeemJoinToken(goroutine %d) = %v, want nil or store.ErrJoinTokenExhausted", i, err)
+		}
+	}
+	if succeeded != int(one) {
+		t.Errorf("succeeded = %d, want exactly %d (max_uses)", succeeded, one)
+	}
+	// No orphaned pending rows: the only surviving nodes are the CAS winners.
+	nodes, err := s.AllNodes(ctx)
+	if err != nil {
+		t.Fatalf("AllNodes: %v", err)
+	}
+	if len(nodes) != int(one) {
+		t.Errorf("surviving nodes = %d, want %d (no orphaned pending rows)", len(nodes), one)
+	}
+	for _, n := range nodes {
+		if _, ok := winners[n.Name]; !ok {
+			t.Errorf("surviving node %q is not a redemption winner (orphan leaked)", n.Name)
+		}
+	}
+	// Every loser's name guard is severed, so the name is free for reuse.
+	for i, err := range errs {
+		if err == nil {
+			continue
+		}
+		if _, nerr := s.NodeByName(ctx, names[i]); !errors.Is(nerr, store.ErrNotFound) {
+			t.Errorf("loser %q NodeByName = %v, want store.ErrNotFound (orphan row + guard leaked)", names[i], nerr)
+		}
+	}
+}
+
+// TestRedeemJoinTokenReuseSurvivesConcurrentExhaustion pins that the
+// compensating delete fires ONLY for a row this call created (created==true): a
+// re-redemption that REUSES an existing unconfirmed row (created==false) is
+// never deleted, even while a concurrent distinct-name redemption on the same
+// spent single-use token is compensated away. The reused row and its single
+// active cert must survive.
+func TestRedeemJoinTokenReuseSurvivesConcurrentExhaustion(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	one := int32(1)
+	hash := []byte("reuse-survives-hash")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, MaxUses: &one, ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+	// Establish the counted, unconfirmed row (its single-use budget is now spent).
+	first, err := s.RedeemJoinToken(ctx, redeemParams(hash, "reuse-survivor"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	})
+	if err != nil {
+		t.Fatalf("first redeem: %v", err)
+	}
+
+	// Race a reuse of the counted row against a distinct-name redemption that must
+	// exhaust and be compensated. The reuse (created==false) must be untouched.
+	var wg sync.WaitGroup
+	var reuseErr, distinctErr error
+	start := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, reuseErr = s.RedeemJoinToken(ctx, redeemParams(hash, "reuse-survivor"), func(store.Node) (store.IssuedCert, error) {
+			return issuedCert(), nil
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, distinctErr = s.RedeemJoinToken(ctx, redeemParams(hash, "reuse-intruder"), func(store.Node) (store.IssuedCert, error) {
+			return issuedCert(), nil
+		})
+	}()
+	close(start)
+	wg.Wait()
+
+	if reuseErr != nil {
+		t.Errorf("reuse of counted unconfirmed row = %v, want nil", reuseErr)
+	}
+	if distinctErr != nil && !errors.Is(distinctErr, store.ErrJoinTokenExhausted) {
+		t.Errorf("distinct-name redemption = %v, want nil or store.ErrJoinTokenExhausted", distinctErr)
+	}
+	// The reused row survives with exactly one active cert.
+	if _, err := s.NodeByID(ctx, first.NodeID); err != nil {
+		t.Errorf("reused node after race = %v, want it to survive", err)
+	}
+	if got := activeCertCount(t, cli, ctx, first.NodeID); got != 1 {
+		t.Errorf("active certs on reused node = %d, want exactly 1", got)
+	}
+	// The intruder left no orphan when it exhausted.
+	if distinctErr != nil {
+		if _, nerr := s.NodeByName(ctx, "reuse-intruder"); !errors.Is(nerr, store.ErrNotFound) {
+			t.Errorf("intruder NodeByName = %v, want store.ErrNotFound (orphan leaked)", nerr)
+		}
+	}
+}
+
 // TestRedeemJoinTokenCountsPreCounterConsumptions pins the migration fallback:
 // a token redeemed by a pre-counter CP build has a consumption index entry but
 // no consumed-count key. The count read must fall back to the historical index
