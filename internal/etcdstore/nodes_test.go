@@ -9,6 +9,8 @@ package etcdstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -373,6 +375,182 @@ func TestNodeForceDeleteRetryConvergence(t *testing.T) {
 	// ErrNotFound - convergence with no double-cancel/double-orphan.
 	if _, err := s.DeleteNode(ctx, p.ID, true, uuid.New()); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("DeleteNode(force) retry = %v, want store.ErrNotFound", err)
+	}
+}
+
+// TestNodeForceDeleteSkipsRuntimeMovedOffNode proves the force-delete cascade no
+// longer blind-orphans a vm_runtime whose current_node_id has already moved off
+// the node being deleted. This is the transient state a cutover leaves while
+// DeleteNode's by-node index range is stale (the range saw the entry before the
+// cutover deleted it and moved the runtime): orphaning it would clobber the
+// live-on-target runtime. The fix skips it (current_node_id != this node) and
+// still reaps the stale by-node index entry.
+func TestNodeForceDeleteSkipsRuntimeMovedOffNode(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	src := nodeParams(uniqueNodeName("moved"))
+	if _, err := s.CreateNode(ctx, src); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	other := uuid.New() // the target the VM already moved onto
+	vmID := uuid.New()
+	rt := store.VMRuntime{VmID: vmID, CurrentNodeID: &other, Phase: store.VmPhaseRunning}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_runtime", vmID.String()), rt); err != nil {
+		t.Fatalf("seed vm_runtime: %v", err)
+	}
+	staleIdx := etcd.Key("index", "vm_runtime", "node", src.ID.String(), vmID.String())
+	if err := cli.Put(ctx, staleIdx, []byte(vmID.String())); err != nil {
+		t.Fatalf("seed stale vm_runtime index: %v", err)
+	}
+
+	out, err := s.DeleteNode(ctx, src.ID, true, uuid.New())
+	if err != nil {
+		t.Fatalf("DeleteNode(force): %v", err)
+	}
+	if out.VMsOrphaned != 0 {
+		t.Errorf("VMsOrphaned = %d, want 0 (runtime already moved off node)", out.VMsOrphaned)
+	}
+	var got store.VMRuntime
+	if _, err := cli.GetJSON(ctx, etcd.Key("vm_runtime", vmID.String()), &got); err != nil {
+		t.Fatalf("read vm_runtime: %v", err)
+	}
+	if got.CurrentNodeID == nil || *got.CurrentNodeID != other || got.Phase != store.VmPhaseRunning {
+		t.Errorf("vm_runtime = %+v, want untouched (current=%s, running)", got, other)
+	}
+	if indexExists(t, cli, staleIdx) {
+		t.Errorf("stale vm_runtime by-node index under deleted node still present")
+	}
+}
+
+// TestNodeForceDeleteRaceCutoverNoSplitBrain races a force-delete of the source
+// node against a live-migration cutover to the target. Whoever wins, the durable
+// state must stay consistent: once the cutover's pin has landed (VM pinned to
+// target), the migration must read completed and the runtime must not be
+// orphaned. The pre-fix blind cascade clobbers a just-completed cutover to
+// cancelled+orphaned, leaving the VM pinned to target with a cancelled migration
+// (split-brain).
+func TestNodeForceDeleteRaceCutoverNoSplitBrain(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	target := nodeParams(uniqueNodeName("racetgt"))
+	if _, err := s.CreateNode(ctx, target); err != nil {
+		t.Fatalf("CreateNode(target): %v", err)
+	}
+
+	for i := 0; i < 40; i++ {
+		src := nodeParams(uniqueNodeName(fmt.Sprintf("racesrc%d", i)))
+		if _, err := s.CreateNode(ctx, src); err != nil {
+			t.Fatalf("CreateNode(src %d): %v", i, err)
+		}
+		vm := seedPinnedVM(t, cli, src.ID)
+		if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+			return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+				VmID: vm.ID, CurrentNodeID: &src.ID, Phase: store.VmPhaseRunning, ObservedGeneration: 1,
+			})
+		}); err != nil {
+			t.Fatalf("seed runtime %d: %v", i, err)
+		}
+		m := seedActiveMigration(t, s, vm.ID, src.ID, target.ID)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = s.CommitMigrationCutover(ctx, m.ID) }()
+		go func() { defer wg.Done(); _, _ = s.DeleteNode(ctx, src.ID, true, uuid.New()) }()
+		wg.Wait()
+
+		var gotM store.Migration
+		if _, err := cli.GetJSON(ctx, etcd.Key("migrations", m.ID.String()), &gotM); err != nil {
+			t.Fatalf("read migration %d: %v", i, err)
+		}
+		var gotVM store.VM
+		if _, err := cli.GetJSON(ctx, etcd.Key("vms", vm.ID.String()), &gotVM); err != nil {
+			t.Fatalf("read vm %d: %v", i, err)
+		}
+		var gotRT store.VMRuntime
+		if _, err := cli.GetJSON(ctx, etcd.Key("vm_runtime", vm.ID.String()), &gotRT); err != nil {
+			t.Fatalf("read runtime %d: %v", i, err)
+		}
+		pinnedTarget := gotVM.PinnedNodeID != nil && *gotVM.PinnedNodeID == target.ID
+		if pinnedTarget && gotM.Phase != store.MigrationPhaseCompleted {
+			t.Fatalf("iter %d split-brain: VM pinned to target but migration=%v (cutover pin clobbered)", i, gotM.Phase)
+		}
+		if pinnedTarget && gotRT.Phase == store.VmPhaseOrphaned {
+			t.Fatalf("iter %d split-brain: VM pinned to target but runtime orphaned (rt=%+v)", i, gotRT)
+		}
+	}
+}
+
+// TestNodeForceDeleteAbortsOnLiveMigrationChurn proves the exhaustion policy: a
+// force-delete racing a continuously-progressing migration must NOT soft-delete
+// the node while leaving a still-active migration (a dangling active-per-VM guard
+// = un-migratable VM). When the per-migration cancel CAS exhausts against the
+// churn, DeleteNode returns an error and the node survives for a retry.
+func TestNodeForceDeleteAbortsOnLiveMigrationChurn(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	target := nodeParams(uniqueNodeName("churntgt"))
+	if _, err := s.CreateNode(ctx, target); err != nil {
+		t.Fatalf("CreateNode(target): %v", err)
+	}
+	src := nodeParams(uniqueNodeName("churnsrc"))
+	if _, err := s.CreateNode(ctx, src); err != nil {
+		t.Fatalf("CreateNode(src): %v", err)
+	}
+	vm := seedPinnedVM(t, cli, src.ID)
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: vm.ID, CurrentNodeID: &src.ID, Phase: store.VmPhaseRunning, ObservedGeneration: 1,
+		})
+	}); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	m := seedActiveMigration(t, s, vm.ID, src.ID, target.ID)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pct := int16(0)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				pct = (pct + 1) % 100
+				p := pct
+				_ = s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{ProgressPercent: &p})
+			}
+		}
+	}()
+
+	_, delErr := s.DeleteNode(ctx, src.ID, true, uuid.New())
+	close(stop)
+	<-done
+
+	_, nerr := s.NodeByID(ctx, src.ID)
+	nodeGone := errors.Is(nerr, store.ErrNotFound)
+
+	var gotM store.Migration
+	if _, err := cli.GetJSON(ctx, etcd.Key("migrations", m.ID.String()), &gotM); err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	migActive := gotM.Phase != store.MigrationPhaseCompleted &&
+		gotM.Phase != store.MigrationPhaseFailed &&
+		gotM.Phase != store.MigrationPhaseCancelled
+
+	// The invariant: never soft-delete the node while a migration is still active.
+	if nodeGone && migActive {
+		t.Fatalf("node soft-deleted while migration still active: dangling active guard (exhaustion must abort, not skip). delErr=%v", delErr)
+	}
+	// If the cancel exhausted (migration still active), DeleteNode must have
+	// errored and the node must survive for a retry.
+	if migActive {
+		if delErr == nil {
+			t.Errorf("migration still active but DeleteNode returned nil; want an error on cancel exhaustion")
+		}
+		if nerr != nil {
+			t.Errorf("migration still active but NodeByID = %v; node should survive an aborted force-delete", nerr)
+		}
 	}
 }
 

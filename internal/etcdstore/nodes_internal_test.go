@@ -30,19 +30,17 @@ func TestNodeDeleteCascadeOrdering(t *testing.T) {
 	const pubkey = "test-pubkey"
 	wgRec := &store.AgentWireguard{NodeID: nodeID, PublicKey: pubkey}
 
-	// A handful of cancel + orphan ops to stand in for the pre-node-delete work.
-	cancelOps := []clientv3.Op{
-		clientv3.OpPut("cancel-0", "v"),
-		clientv3.OpPut("cancel-1", "v"),
-	}
-	orphanOps := []clientv3.Op{
-		clientv3.OpPut("orphan-0", "v"),
+	// A cert-revoke op + a reap (membership) op stand in for the pre-node-delete
+	// work that stays in the cascade (the migration-cancel / vm_runtime-orphan
+	// writes now commit earlier through their own CAS, not here).
+	certOps := []clientv3.Op{
+		clientv3.OpPut("cert-0", "v"),
 	}
 	membershipOps := []clientv3.Op{
 		clientv3.OpDelete("membership-0"),
 	}
 
-	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", cancelOps, orphanOps, nil, membershipOps, wgRec)
+	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", certOps, membershipOps, wgRec)
 
 	if len(cascade) == 0 {
 		t.Fatalf("nodeDeleteCascade returned an empty cascade")
@@ -96,10 +94,10 @@ func TestNodeDeleteCascadeNoWireguard(t *testing.T) {
 	nodeID := uuid.New()
 	const nodeName = "node-b"
 
-	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", nil, nil, nil, nil, nil)
+	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", nil, nil, nil)
 
 	if len(cascade) != 2 {
-		t.Fatalf("nodeDeleteCascade with no wg/cancel/orphan ops = %d ops, want 2", len(cascade))
+		t.Fatalf("nodeDeleteCascade with no wg/cert/reap ops = %d ops, want 2", len(cascade))
 	}
 	wantLast := nodeKey(nodeID)
 	if gotLast := string(cascade[len(cascade)-1].KeyBytes()); gotLast != wantLast {
