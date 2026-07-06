@@ -300,10 +300,13 @@ func (s *Store) buildBindTxn(ctx context.Context, vm store.VM, writes store.VMBi
 	ops = append(ops, taskIndexOps(task)...)
 
 	conds = []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", rev)}
-	// Do not bind onto a storage pool (or, with a NIC, a network) that is being
+	// Do not bind onto a node, storage pool, or (with a NIC) network that is being
 	// deleted - closes the create-during-delete TOCTOU (see deleting_intent.go). A
 	// lost guard fails the bind commit, which the scheduler retries; once the
 	// resource soft-deletes, placement surfaces the proper unschedulable reason.
+	// The node guard also freezes the VM set a node force-delete rolls back: once
+	// DeleteNode sets the node intent, no new bind can pin here past this point.
+	conds = append(conds, clientv3.Compare(clientv3.CreateRevision(nodeDeletingKey(writes.PinnedNodeID)), "=", 0))
 	conds = append(conds, clientv3.Compare(clientv3.CreateRevision(storagePoolDeletingKey(disk.StoragePoolID)), "=", 0))
 	if writes.Nic != nil {
 		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(networkDeletingKey(writes.Nic.NetworkID)), "=", 0))

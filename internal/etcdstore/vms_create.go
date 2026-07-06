@@ -375,6 +375,17 @@ func (s *Store) poolNodePairs(ctx context.Context, name string, keep func(store.
 	}
 	var out []poolNodePair
 	for _, p := range pools {
+		// LOW-1: skip a node with a live delete-intent - a bind onto it is guaranteed
+		// to lose the node-intent guard until the node soft-deletes, so placing here
+		// only busy-loops. The bind guard remains the real safety; this just avoids
+		// wasted retries.
+		deleting, err := s.deleteIntentPresent(ctx, nodeDeletingKey(p.NodeID))
+		if err != nil {
+			return nil, err
+		}
+		if deleting {
+			continue
+		}
 		node, err := s.NodeByID(ctx, p.NodeID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {

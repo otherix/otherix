@@ -185,6 +185,18 @@ func (s *Store) loadCutoverState(ctx context.Context, migID uuid.UUID) (cutoverS
 	if cs.m.TargetNodeID == nil {
 		return cs, false, fmt.Errorf("cutover without target for migration %s", migID)
 	}
+	// MED-2: refuse to complete onto a target node that has been (force-)deleted.
+	// The cutover Txn also guards on the node's live delete-intent, but that intent
+	// is gone once the node soft-deletes, so this is the durable defense: a cutover
+	// must never re-pin a VM onto a node row that no longer exists. NodeByID returns
+	// ErrNotFound for a missing OR soft-deleted row; a terminal-FAILED classification
+	// is the safe outcome (the source still holds the guest until cutover commits).
+	if _, nerr := s.NodeByID(ctx, *cs.m.TargetNodeID); nerr != nil {
+		if errors.Is(nerr, store.ErrNotFound) {
+			return cs, false, store.ErrMigrationTerminal
+		}
+		return cs, false, nerr
+	}
 
 	vResp, err := s.c.Raw().Get(ctx, vmKey(cs.m.VmID))
 	if err != nil {
@@ -278,6 +290,11 @@ func (s *Store) CommitMigrationCutover(ctx context.Context, migID uuid.UUID) err
 	conds := []clientv3.Cmp{
 		clientv3.Compare(clientv3.ModRevision(migrationKey(m.ID)), "=", mRev),
 		clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", vRev),
+		// Never re-pin onto a node being force-deleted: while DeleteNode holds the
+		// target's delete-intent, the cutover loses this guard and returns
+		// ErrConcurrentUpdate (the worker retries; loadCutoverState refuses once the
+		// node row is actually soft-deleted). See deleting_intent.go, MED-2.
+		clientv3.Compare(clientv3.CreateRevision(nodeDeletingKey(target)), "=", 0),
 	}
 	if rtFound {
 		conds = append(conds, clientv3.Compare(clientv3.ModRevision(vmRuntimeKey(m.VmID)), "=", rtRev))

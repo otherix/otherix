@@ -781,7 +781,29 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	if err != nil {
 		return store.NodeDeleteOutcome{}, err
 	}
-	vmCount, err := s.countPrefix(ctx, vmRuntimeNodeIndexPrefix(id))
+
+	// Set the node delete-intent FIRST so no new bind or migration cutover can pin a
+	// VM here past this point (buildBindTxn + CommitMigrationCutover guard on it);
+	// the VM set gated/evacuated below is then stable. The intent is cleared on every
+	// non-finalizing exit (defer), and the node soft-delete finalize CASes on this
+	// rev. See deleting_intent.go.
+	intentKey := nodeDeletingKey(id)
+	myRev, err := s.setDeleteIntent(ctx, intentKey, time.Now())
+	if err != nil {
+		return store.NodeDeleteOutcome{}, err
+	}
+	finalized := false
+	defer func() {
+		if !finalized {
+			// Guarded on our rev: a no-op if a reaper/racing delete already severed it.
+			s.clearDeleteIntent(ctx, intentKey, myRev)
+		}
+	}()
+
+	// Gate on the UNION of observed (vm_runtime homed here) and declared (pinned
+	// here, incl. pinned-but-unobserved) VMs, so a committed-but-unreported bind
+	// still blocks a non-force delete and is evacuated by a force delete.
+	union, err := s.unionVMIDsForNode(ctx, id)
 	if err != nil {
 		return store.NodeDeleteOutcome{}, err
 	}
@@ -789,70 +811,80 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	if err != nil {
 		return store.NodeDeleteOutcome{}, err
 	}
-	if !force && (vmCount > 0 || len(activeMigs) > 0) {
+	if !force && (len(union) > 0 || len(activeMigs) > 0) {
 		return store.NodeDeleteOutcome{}, &store.ResourceInUseError{Resources: map[string]int64{
-			"vms":               vmCount,
+			"vms":               int64(len(union)),
 			"active_migrations": int64(len(activeMigs)),
 		}}
 	}
 
 	var out store.NodeDeleteOutcome
 	if force {
-		// Cancel the active migrations and orphan the vm_runtime rows through their
-		// own per-row ModRevision CAS (NOT as blind puts in the node cascade below):
-		// a concurrent cutover/heartbeat that commits between our snapshot and this
-		// write must WIN, so we never clobber a just-completed cutover (migration
-		// -> cancelled over completed, runtime -> orphaned over live-on-target). On
-		// CAS-retry exhaustion these return an error and we abort the whole delete
-		// BEFORE the node soft-delete, so a genuinely-active migration never leaves
-		// a dangling active-per-VM guard on a soft-deleted node (fail toward
-		// inaction; the operator retries).
+		// Cancel the active migrations and evacuate the VMs through their own per-row
+		// CAS (NOT as blind puts in the node cascade below): a concurrent
+		// cutover/heartbeat that commits between our snapshot and this write must WIN,
+		// so we never clobber a just-completed cutover. On CAS-retry exhaustion these
+		// return an error and we abort the whole delete BEFORE the node soft-delete
+		// (fail toward inaction; the operator retries).
 		reason := fmt.Sprintf("source/target node %s force-deleted by user %s", id, callerID)
 		out.MigrationsCancelled, err = s.cancelNodeMigrations(ctx, activeMigs, reason)
 		if err != nil {
 			return store.NodeDeleteOutcome{}, err
 		}
-		out.VMsOrphaned, err = s.orphanNodeVMRuntimes(ctx, id)
+		// Route each VM by runtime existence: observed -> orphan (keeps disk),
+		// pinned-but-unobserved -> full bind-rollback (returns it to unscheduled).
+		out.VMsOrphaned, out.VMsRolledBack, err = s.evacuateNodeVMs(ctx, id, union)
 		if err != nil {
 			return store.NodeDeleteOutcome{}, err
 		}
 	}
 
-	wgRec, err := s.agentWireguardRecordForDelete(ctx, id)
+	certsRevoked, err := s.softDeleteNodeRow(ctx, n, intentKey, myRev)
 	if err != nil {
 		return store.NodeDeleteOutcome{}, err
 	}
+	out.CertsRevoked = certsRevoked
+	finalized = true
+	return out, nil
+}
 
+// softDeleteNodeRow assembles and commits the node-soft-delete cascade - the
+// WireGuard fabric purge, the agent-cert revocation, the per-node leaf reap
+// (gateway memberships + tenant-IP reservations + published-listener status), the
+// name-guard delete, and the node put - under the delete-intent finalize CAS
+// (commitCascadeWithNodeIntent). The leaf reap and cert revoke are ordered ahead
+// of the node soft-delete (see nodeDeleteCascade) so a crash+retry can re-run them
+// idempotently. Returns the number of agent certs revoked.
+func (s *Store) softDeleteNodeRow(ctx context.Context, n store.Node, intentKey string, myRev int64) (int64, error) {
+	id := n.ID
+	wgRec, err := s.agentWireguardRecordForDelete(ctx, id)
+	if err != nil {
+		return 0, err
+	}
 	now := time.Now().UTC()
 	certOps, certsRevoked, err := s.revokeNodeAgentCertsOps(ctx, id, now, "node deleted")
 	if err != nil {
-		return store.NodeDeleteOutcome{}, fmt.Errorf("revoke agent certs for node delete: %v", err)
+		return 0, fmt.Errorf("revoke agent certs for node delete: %v", err)
 	}
-	out.CertsRevoked = certsRevoked
-
-	// Reap the node's per-node leaf state that carries no per-node index and no
-	// backstop reaper: gateway memberships + their tenant-IP reservations, and
-	// the node's observed published-listener status rows. Ordered ahead of the
-	// node soft-delete (see nodeDeleteCascade) so a crash+retry can re-run them;
-	// the periodic gateway reconcile is a backstop for memberships, not the
-	// primary path.
 	reapOps, err := s.nodeDeleteReapOps(ctx, id)
 	if err != nil {
-		return store.NodeDeleteOutcome{}, err
+		return 0, err
 	}
-
 	n.DeletedAt = &now
 	n.UpdatedAt = now
 	val, err := etcd.Marshal(n)
 	if err != nil {
-		return store.NodeDeleteOutcome{}, err
+		return 0, err
 	}
-
 	cascade := nodeDeleteCascade(id, n.Name, string(val), certOps, reapOps, wgRec)
-	if err := s.commitInChunks(ctx, cascade); err != nil {
-		return store.NodeDeleteOutcome{}, fmt.Errorf("force-delete node cascade: %v", err)
+	if err := s.commitCascadeWithNodeIntent(ctx, cascade, intentKey, myRev); err != nil {
+		// Final-chunk CAS lost (intent severed) or a txn error: the node row is NOT
+		// soft-deleted. The head chunks and per-VM evacuations are idempotent/safe to
+		// re-run; a retry re-derives a smaller union. (On a CAS loss the deferred
+		// clear in DeleteNode is a guarded no-op.)
+		return 0, fmt.Errorf("force-delete node cascade: %v", err)
 	}
-	return out, nil
+	return certsRevoked, nil
 }
 
 // nodeDeleteCascade assembles the ordered force-delete op slice. The
@@ -1192,36 +1224,6 @@ func (s *Store) cancelNodeMigrations(ctx context.Context, migs []store.Migration
 				return n, fmt.Errorf("cancel migration %s for node delete: %v", mig.ID, err)
 			}
 			break
-		}
-	}
-	return n, nil
-}
-
-// orphanNodeVMRuntimes marks every vm_runtime still homed on the node being
-// force-deleted as orphaned (phase=orphaned, current_node_id=nil) and drops its
-// by-node index entry, each through a per-row ModRevision CAS so a concurrent
-// cutover/heartbeat wins. A runtime whose current_node_id has already moved off
-// the node (a cutover landed) is SKIPPED - only its stale by-node index entry is
-// reaped - so we never clobber a live-on-target runtime. Returns the count
-// actually orphaned; a runtime that keeps losing the CAS past
-// nodeDeleteCASAttempts returns an error and aborts the delete.
-func (s *Store) orphanNodeVMRuntimes(ctx context.Context, nodeID uuid.UUID) (int64, error) {
-	items, err := s.c.Range(ctx, vmRuntimeNodeIndexPrefix(nodeID))
-	if err != nil {
-		return 0, err
-	}
-	var n int64
-	for _, kv := range items {
-		id, perr := uuid.Parse(string(kv.Value))
-		if perr != nil {
-			return n, fmt.Errorf("corrupt vm_runtime node index %q: %v", kv.Key, perr)
-		}
-		orphaned, oerr := s.orphanOneVMRuntime(ctx, id, nodeID, kv.Key)
-		if oerr != nil {
-			return n, oerr
-		}
-		if orphaned {
-			n++
 		}
 	}
 	return n, nil

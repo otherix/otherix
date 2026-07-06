@@ -236,6 +236,7 @@ type RedeemClusterJoinResult struct {
 // orphaned, the migrations cancelled, and the agent certs revoked.
 type NodeDeleteOutcome struct {
 	VMsOrphaned         int64
+	VMsRolledBack       int64
 	MigrationsCancelled int64
 	CertsRevoked        int64
 }
