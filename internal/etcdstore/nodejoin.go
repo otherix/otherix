@@ -89,13 +89,23 @@ func (s *Store) RedeemJoinToken(ctx context.Context, p store.RedeemJoinTokenPara
 		return store.RedeemJoinTokenResult{}, err
 	}
 
-	if err := s.commitNodeRedemption(ctx, token, node, p, certPutOps); err != nil {
-		// The authoritative max_uses CAS rejected (or the txn errored) AFTER we
-		// created a fresh row above. Compensate that leak best-effort: delete only
-		// the row THIS call created, gated to fail toward inaction (see
-		// deleteOrphanedJoinNode). A reused row (created==false) is a legitimate
-		// prior node and is never touched. The delete never masks the commit error.
-		if created {
+	if err := commitNodeRedemptionFn(s, ctx, token, node, p, certPutOps); err != nil {
+		// The authoritative max_uses CAS rejected AFTER we created a fresh row
+		// above. Compensate that leak best-effort: delete only the row THIS call
+		// created, gated to fail toward inaction (see deleteOrphanedJoinNode). A
+		// reused row (created==false) is a legitimate prior node and is never
+		// touched. The delete never masks the commit error.
+		//
+		// Fire only on ErrJoinTokenExhausted: that is the sole error class
+		// returned BEFORE commitNodeRedemption runs its Txn().Commit(), so no
+		// server-side write is possible and the fresh row is provably orphaned. A
+		// transport/timeout error, by contrast, may accompany a raft proposal that
+		// commits LATE (after the client observed the error): deleting then would
+		// destroy a node whose redemption actually succeeded, burning single-use
+		// budget and defeating the reuse-on-retry recovery. On those errors we
+		// leave the pending row (recoverable, and reusable by the retry) rather
+		// than perform a destructive delete on an ambiguous outcome.
+		if created && errors.Is(err, store.ErrJoinTokenExhausted) {
 			if delErr := s.deleteOrphanedJoinNode(ctx, node.ID); delErr != nil {
 				s.log.WarnContext(ctx, "etcdstore: compensating delete of orphaned join node failed",
 					slog.String("node_id", node.ID.String()), slog.String("error", delErr.Error()))
@@ -162,6 +172,13 @@ func (s *Store) precheckNodeMaxUses(ctx context.Context, token store.JoinToken, 
 		return store.ErrJoinTokenExhausted
 	}
 	return nil
+}
+
+// commitNodeRedemptionFn is a seam over commitNodeRedemption so tests can force a
+// specific commit outcome (in particular a non-exhaustion transport-style error)
+// and assert the compensating delete fires only on ErrJoinTokenExhausted.
+var commitNodeRedemptionFn = func(s *Store, ctx context.Context, token store.JoinToken, node store.Node, p store.RedeemJoinTokenParams, certPutOps []clientv3.Op) error {
+	return s.commitNodeRedemption(ctx, token, node, p, certPutOps)
 }
 
 // commitNodeRedemption commits the new agent cert guarded by a compare-and-set
