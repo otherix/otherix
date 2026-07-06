@@ -89,6 +89,10 @@ func Timeout(d time.Duration) func(http.Handler) http.Handler {
 
 			select {
 			case <-done:
+				// Handler returned before the deadline. Flush any headers it
+				// set but never wrote (an implicit-200, no-body response), so
+				// the buffered map is not silently dropped - net/http parity.
+				gw.finish()
 				return
 			case <-ctx.Done():
 				if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -171,6 +175,21 @@ func (g *guardedWriter) Write(b []byte) (int, error) {
 		g.wroteHeader = true
 	}
 	return g.w.Write(b)
+}
+
+// finish flushes buffered handler headers that were never written through
+// WriteHeader/Write (a handler that set headers and returned with an implicit
+// 200 and no body). It runs on the non-timeout done path, after the handler
+// goroutine has fully returned (done is closed last), so the lock only guards
+// against the parent's own timeout path having latched first. A no-op once the
+// handler already wrote a header or the deadline fired.
+func (g *guardedWriter) finish() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.timedOut || g.wroteHeader {
+		return
+	}
+	g.flushHeadersLocked()
 }
 
 // flushHeadersLocked copies the buffered handler headers onto the underlying

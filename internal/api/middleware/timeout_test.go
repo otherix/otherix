@@ -166,3 +166,23 @@ func TestTimeout_LateHandlerHeaderWriteDoesNotRaceThe503(t *testing.T) {
 		t.Errorf("status = %d, want 503", rec.Code)
 	}
 }
+
+// TestTimeout_HeaderOnlyImplicit200FlushesHeaders pins that a fast handler which
+// sets a response header and returns with an implicit 200 and no body still has
+// that header on the wire. guardedWriter buffers headers into a private map
+// flushed on WriteHeader/Write, so the non-timeout (done) path must flush them
+// too, matching net/http.TimeoutHandler - otherwise a header-only response is
+// silently dropped.
+func TestTimeout_HeaderOnlyImplicit200FlushesHeaders(t *testing.T) {
+	h := middleware.Timeout(time.Second)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Custom", "present")
+		// Returns with an implicit 200 and no body: never calls WriteHeader/Write.
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got := rec.Header().Get("X-Custom"); got != "present" {
+		t.Errorf("X-Custom = %q, want %q (header-only implicit-200 must flush)", got, "present")
+	}
+}
