@@ -130,6 +130,16 @@ func TestProjectVMCreateSuccessSkipsRuntimeOnTombstone(t *testing.T) {
 // The invariant across every interleaving is that no runtime row may survive on a
 // soft-deleted VM - the vm-row ModRevision CAS on the create side holds it (a
 // create cannot commit the runtime after the delete bumped the vm rev).
+//
+// This is a PROBABILISTIC seam guard, not a deterministic CAS regression test:
+// the dangerous window (a delete committing between the create's internal
+// vmWithRev read and its guarded commit) is not reproducible from outside without
+// a store-level injection seam, so this test can pass even without the CAS. The
+// deterministic teeth for the skip-on-tombstone behaviour are in
+// TestProjectVMCreateSuccessSkipsRuntimeOnTombstone; the CAS closing the residual
+// mid-projection window is carried by reasoning (the only vm_runtime deleter,
+// vmDeleteBaseOps, always also writes vmKey, so the create's vmKey CAS serializes
+// against it).
 func TestProjectVMCreateSuccessRacesDeleteNoResurrect(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
