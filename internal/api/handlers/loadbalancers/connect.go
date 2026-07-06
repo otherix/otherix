@@ -83,17 +83,21 @@ func (h *Handler) Connect(w http.ResponseWriter, r *http.Request) {
 	// (a backend can pass CP-eligibility yet momentarily lack a converged
 	// gateway). At most one session credential is minted (for the chosen one).
 	shuffleVMs(candidates)
+	var hardErr error
 	for _, vm := range candidates {
 		res, rerr := h.broker.ResolveIngress(r.Context(), vm, int(lb.Port))
 		if rerr != nil {
 			if errors.Is(rerr, gateways.ErrIngressUnavailable) {
 				continue
 			}
+			// A hard resolve error for THIS backend (e.g. a transient store/gateway
+			// read). Log it and try the remaining candidates rather than failing the
+			// whole connect on one bad backend; remember it so an all-hard-error
+			// outcome still surfaces a 500 instead of a benign "no reachable backend".
 			h.log.ErrorContext(r.Context(), "loadbalancers.connect resolve ingress",
 				"lb", lb.ID, "vm", vm.ID, "error", rerr.Error())
-			response.WriteError(w, r, http.StatusInternalServerError,
-				response.CodeInternal, "resolve ingress", nil)
-			return
+			hardErr = rerr
+			continue
 		}
 		resp := lbConnectResponse{
 			Transport: res.Transport,
@@ -111,7 +115,15 @@ func (h *Handler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Every eligible backend failed to resolve (e.g. no converged gateway yet).
+	// Every eligible backend failed to resolve. If at least one failed with a hard
+	// error (not the benign not-yet-converged signal), surface it as internal
+	// rather than masking a systemic resolve failure as a benign unavailability.
+	if hardErr != nil {
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "resolve ingress", nil)
+		return
+	}
+	// Every eligible backend was merely unconverged (no converged gateway yet).
 	response.WriteError(w, r, http.StatusConflict,
 		response.CodeIngressUnavailable, "no reachable backend for load balancer", nil)
 }
