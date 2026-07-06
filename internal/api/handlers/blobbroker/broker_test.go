@@ -21,15 +21,16 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 // broker drives so the test can assert the saga lifecycle alongside the agent
 // call order.
 type storeStub struct {
-	holders       []uuid.UUID
-	imageHolders  []uuid.UUID
-	nodeEndp      map[uuid.UUID]string
-	nodeName      map[uuid.UUID]string
-	nodeStatus    map[uuid.UUID]store.NodeStatus
-	phases        []store.PullSagaPhase
-	token         string
-	blobSize      int64
-	imageBlobSize int64
+	holders          []uuid.UUID
+	imageHolders     []uuid.UUID
+	nodeEndp         map[uuid.UUID]string
+	nodeName         map[uuid.UUID]string
+	nodeStatus       map[uuid.UUID]store.NodeStatus
+	phases           []store.PullSagaPhase
+	completePhaseErr error
+	token            string
+	blobSize         int64
+	imageBlobSize    int64
 }
 
 func (s *storeStub) BlobHolders(_ context.Context, _ string) ([]uuid.UUID, error) {
@@ -67,6 +68,9 @@ func (s *storeStub) UpdatePullSagaServeEndpoint(_ context.Context, _ uuid.UUID, 
 
 func (s *storeStub) SetPullSagaPhase(_ context.Context, _ uuid.UUID, phase store.PullSagaPhase) error {
 	s.phases = append(s.phases, phase)
+	if phase == store.PullSagaPhaseComplete {
+		return s.completePhaseErr
+	}
 	return nil
 }
 
@@ -337,6 +341,29 @@ func TestBrokerPullAllLiveHoldersFailReturnsLastCause(t *testing.T) {
 	// Every attempt tore its serve down: teardown count == attempt count, no leak.
 	if spy.stopCount != 2 {
 		t.Errorf("stop count = %d, want 2 (teardown per attempt, no serve listener leak)", spy.stopCount)
+	}
+}
+
+// TestBrokerPullCompletePhaseWriteBestEffort: the pull has already succeeded, so
+// a failure to write the (non-authoritative) terminal "complete" saga phase must
+// NOT report the successful pull as failed - that would trigger a spurious
+// re-replication of a blob the consumer already holds. Mirrors the failure arm,
+// which already treats the phase write as best-effort.
+func TestBrokerPullCompletePhaseWriteBestEffort(t *testing.T) {
+	holder, consumer := uuid.New(), uuid.New()
+	st := &storeStub{
+		holders:          []uuid.UUID{holder},
+		nodeEndp:         map[uuid.UUID]string{holder: "https://holder:9443", consumer: "https://consumer:9443"},
+		nodeName:         map[uuid.UUID]string{holder: "node-1", consumer: "node-2"},
+		token:            "otx_pull_x",
+		blobSize:         65536,
+		completePhaseErr: errors.New("etcd write failed"),
+	}
+	spy := &agentSpy{serveEndp: "https://holder:49252"}
+	b := New(st, spy, testLogger())
+
+	if err := b.BrokerPull(context.Background(), "abc", consumer, TierArtifact); err != nil {
+		t.Fatalf("BrokerPull = %v; a failed complete-phase write must not fail a successful pull", err)
 	}
 }
 
