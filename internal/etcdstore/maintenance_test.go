@@ -8,11 +8,14 @@ package etcdstore_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
@@ -432,6 +435,90 @@ func TestMarkNodesGoneNeverHeartbeated(t *testing.T) {
 	}
 	if n, _ := s.NodeByID(ctx, old); n.Status != store.NodeStatusGone {
 		t.Errorf("old never-heartbeated node status = %v, want gone (past grace)", n.Status)
+	}
+}
+
+// TestMarkNodesGoneSkipsHeartbeatInWindow proves MarkNodesGone re-validates
+// staleness on the FRESH read: a heartbeat that lands between the liveNodes
+// snapshot and the per-node gone write refreshes last_heartbeat_at, and the node
+// must NOT be reaped to the terminal 'gone'. The racing writer is a
+// status-guarded promote (unreachable -> ready + fresh heartbeat, a no-op if the
+// node is no longer unreachable), so a final "gone with a fresh heartbeat" state
+// can only arise from MarkNodesGone clobbering a promote that had already
+// committed - the pre-fix bug (casNodeStatus re-read fresh but never re-checked
+// staleness).
+func TestMarkNodesGoneSkipsHeartbeatInWindow(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	goneBefore := time.Now().Add(-5 * time.Minute)
+	old := time.Now().Add(-10 * time.Minute)
+
+	seed := func(name string, hb time.Time) uuid.UUID {
+		id := uuid.New()
+		n := store.Node{
+			ID: id, Name: uniqueNodeName(name), Architecture: store.CpuArchAmd64,
+			AdvertisedEndpoint: "https://node.example:9443", MigrationHost: "10.0.0.1",
+			Status: store.NodeStatusUnreachable, LastHeartbeatAt: &hb,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		if err := cli.PutJSON(ctx, etcd.Key("nodes", id.String()), n); err != nil {
+			t.Fatalf("seed node %q: %v", name, err)
+		}
+		return id
+	}
+
+	// promote refreshes the heartbeat and flips unreachable -> ready under a
+	// ModRevision CAS, refusing if the node is no longer unreachable.
+	promote := func(id uuid.UUID) {
+		key := etcd.Key("nodes", id.String())
+		resp, err := cli.Raw().Get(ctx, key)
+		if err != nil || len(resp.Kvs) == 0 {
+			return
+		}
+		var n store.Node
+		if err := json.Unmarshal(resp.Kvs[0].Value, &n); err != nil {
+			return
+		}
+		if n.Status != store.NodeStatusUnreachable {
+			return
+		}
+		now := time.Now().UTC()
+		n.Status = store.NodeStatusReady
+		n.LastHeartbeatAt = &now
+		n.UpdatedAt = now
+		val, err := etcd.Marshal(n)
+		if err != nil {
+			return
+		}
+		_, _ = cli.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(key), "=", resp.Kvs[0].ModRevision)).
+			Then(clientv3.OpPut(key, string(val))).
+			Commit()
+	}
+
+	// Decoy stale-unreachable nodes lengthen MarkNodesGone's per-node loop after
+	// the liveNodes snapshot, widening the window in which the racing promote can
+	// land before the target's own gone write.
+	for d := 0; d < 8; d++ {
+		seed(fmt.Sprintf("decoy%d", d), old)
+	}
+
+	for i := 0; i < 60; i++ {
+		id := seed(fmt.Sprintf("race%d", i), old)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = s.MarkNodesGone(ctx, goneBefore) }()
+		go func() { defer wg.Done(); promote(id) }()
+		wg.Wait()
+
+		n, err := s.NodeByID(ctx, id)
+		if err != nil {
+			t.Fatalf("iter %d NodeByID: %v", i, err)
+		}
+		if n.Status == store.NodeStatusGone && n.LastHeartbeatAt != nil && !n.LastHeartbeatAt.Before(goneBefore) {
+			t.Fatalf("iter %d: node reaped 'gone' despite a fresh heartbeat (hb=%v, goneBefore=%v)",
+				i, n.LastHeartbeatAt, goneBefore)
+		}
 	}
 }
 

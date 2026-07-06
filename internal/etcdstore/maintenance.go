@@ -444,7 +444,7 @@ func (s *Store) MarkNodesGone(ctx context.Context, goneBefore time.Time) ([]stor
 		if !staleSince.Before(goneBefore) {
 			continue
 		}
-		_, written, err := s.casNodeStatus(ctx, n.ID, store.NodeStatusGone)
+		_, written, err := s.casNodeGoneIfStale(ctx, n.ID, goneBefore)
 		if err != nil {
 			return nil, err
 		}
@@ -492,6 +492,58 @@ func (s *Store) casNodeStatus(ctx context.Context, id uuid.UUID, status store.No
 		Commit()
 	if err != nil {
 		return store.Node{}, false, fmt.Errorf("set node status txn: %v", err)
+	}
+	if !resp.Succeeded {
+		return store.Node{}, false, nil
+	}
+	return n, true, nil
+}
+
+// casNodeGoneIfStale flips a node to the terminal 'gone' status ONLY if, on a
+// FRESH re-read, it is still unreachable, still stale past goneBefore, and not
+// draining - all committed under a ModRevision CAS on that fresh read.
+//
+// Unlike casNodeStatus it RE-VALIDATES the staleness/status precondition on the
+// fresh row rather than trusting MarkNodesGone's liveNodes snapshot. A heartbeat
+// landing between that snapshot and this write refreshes last_heartbeat_at (and
+// PromoteHealthyNodes may flip the node back to ready); casNodeStatus re-read the
+// fresh row but never re-checked, so it reaped a node that had just proven
+// liveness. 'gone' is terminal (recovered only by an operator readmit), so this
+// transition must fail toward inaction: a fresh heartbeat, a status that is no
+// longer unreachable, an active drain, or a lost CAS all skip the node (returns
+// false, no write) and the next sweep re-evaluates it.
+func (s *Store) casNodeGoneIfStale(ctx context.Context, id uuid.UUID, goneBefore time.Time) (store.Node, bool, error) {
+	n, modRev, err := s.nodeWithRev(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return store.Node{}, false, nil
+		}
+		return store.Node{}, false, err
+	}
+	if n.Status != store.NodeStatusUnreachable || n.DrainTaskID != nil {
+		return store.Node{}, false, nil
+	}
+	// Re-derive staleness from the FRESH row (mirrors MarkNodesGone: never-reported
+	// nodes are measured from created_at, not treated as infinitely stale).
+	staleSince := n.LastHeartbeatAt
+	if staleSince == nil {
+		staleSince = &n.CreatedAt
+	}
+	if !staleSince.Before(goneBefore) {
+		return store.Node{}, false, nil
+	}
+	n.Status = store.NodeStatusGone
+	n.UpdatedAt = time.Now().UTC()
+	val, err := etcd.Marshal(n)
+	if err != nil {
+		return store.Node{}, false, err
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
+		Then(clientv3.OpPut(nodeKey(id), string(val))).
+		Commit()
+	if err != nil {
+		return store.Node{}, false, fmt.Errorf("mark node gone txn: %v", err)
 	}
 	if !resp.Succeeded {
 		return store.Node{}, false, nil
