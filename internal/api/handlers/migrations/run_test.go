@@ -1275,6 +1275,160 @@ func TestVanishedSourceTask_OfflineFailsToSourceNoProbe(t *testing.T) {
 	}
 }
 
+// hookStore wraps a MigrationWorkerStore to inject a deterministic mid-run state
+// change: onBind fires once before the real BindMigrationTarget, onTaskByID once
+// before the first real TaskByID. Used to simulate an operator cancel racing the
+// placement / handshake-setup window.
+type hookStore struct {
+	migrations.MigrationWorkerStore
+	onBind     func()
+	onTaskByID func()
+	bindFired  bool
+	taskFired  bool
+}
+
+func (s *hookStore) BindMigrationTarget(ctx context.Context, migID, tgt uuid.UUID, pool string) error {
+	if s.onBind != nil && !s.bindFired {
+		s.bindFired = true
+		s.onBind()
+	}
+	return s.MigrationWorkerStore.BindMigrationTarget(ctx, migID, tgt, pool)
+}
+
+func (s *hookStore) TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error) {
+	if s.onTaskByID != nil && !s.taskFired {
+		s.taskFired = true
+		s.onTaskByID()
+	}
+	return s.MigrationWorkerStore.TaskByID(ctx, id)
+}
+
+// seedSourcelessMigration seeds a migration whose SourceNodeID is nil (the VM was
+// unscheduled at create time), plus its backing task.
+func seedSourcelessMigration(t *testing.T, s *etcdstore.Store, vmID uuid.UUID) (store.Migration, uuid.UUID) {
+	t.Helper()
+	taskID := uuid.New()
+	migID := uuid.New()
+	resID := migID
+	m, err := s.CreateMigration(context.Background(), store.CreateMigrationParams{
+		ID:           migID,
+		VmID:         vmID,
+		SourceNodeID: nil,
+		Reason:       store.MigrationReasonManual,
+		Live:         true,
+		Task: store.CreateTaskParams{
+			ID: taskID, Type: "vm.migrate", Status: store.TaskStatusPending,
+			ResourceType: "migration", ResourceID: &resID, MaxAttempts: 25,
+		},
+	}, migrationJobArgsStub{TaskID: taskID, MigrationID: migID})
+	if err != nil {
+		t.Fatalf("CreateMigration(sourceless): %v", err)
+	}
+	return m, taskID
+}
+
+// TestPlaceAndBind_RacedToTerminalReconcilesCancelled: a node-less migration that
+// is cancelled the instant the worker binds (BindMigrationTarget -> terminal)
+// must reconcile the task to CANCELLED, not drive a zero-value migration into a
+// bogus "migration <nil> has no target" failure. The agent is never contacted.
+func TestPlaceAndBind_RacedToTerminalReconcilesCancelled(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedNodelessMigration(t, s, vm.ID, nodeA.ID, false) // offline: cancel reconcile skips the source probe
+
+	agent := &fakeMigrationAgent{}
+	placer := &fakePlacer{decision: scheduler.PlacementDecision{
+		Node:         store.NodeEffectiveAvailability{ID: nodeB.ID, Name: nodeB.Name, Status: store.NodeStatusReady},
+		PoolInstance: store.PoolEffectiveCapacity{Name: "default"},
+	}}
+	hs := &hookStore{MigrationWorkerStore: s, onBind: func() { _, _ = s.CancelMigration(ctx, m.ID, "raced") }}
+
+	h := migrations.MigrateHandler(hs, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(raced-bind) = %v, want nil (reconcile to cancelled)", err)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusCancelled {
+		t.Errorf("task status = %q, want cancelled (raced-terminal reconciles, not a bogus 'no target' fail)", task.Status)
+	}
+	if agent.incomingCalls != 0 || agent.outgoingCalls != 0 {
+		t.Errorf("agent contacted (incoming=%d outgoing=%d), want 0 for a raced-terminal migration", agent.incomingCalls, agent.outgoingCalls)
+	}
+}
+
+// TestStartOrResume_CancelBeforeAgentPostReconciles: an operator cancel that
+// lands between the worker's entry terminal-check and the agent POSTs must abort
+// the handshake - startOrResume's pre-POST phase re-check reconciles the task to
+// cancelled and the agent is never contacted.
+func TestStartOrResume_CancelBeforeAgentPostReconciles(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	// TaskByID is reloaded in driveHandshake right before startOrResume; cancel there.
+	hs := &hookStore{MigrationWorkerStore: s, onTaskByID: func() { _, _ = s.CancelMigration(ctx, m.ID, "raced") }}
+
+	h := migrations.MigrateHandler(hs, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(cancel-before-post) = %v, want nil (reconcile to cancelled)", err)
+	}
+	if agent.incomingCalls != 0 || agent.outgoingCalls != 0 {
+		t.Errorf("agent contacted (incoming=%d outgoing=%d) after a pre-POST cancel; want 0", agent.incomingCalls, agent.outgoingCalls)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusCancelled {
+		t.Errorf("task status = %q, want cancelled", task.Status)
+	}
+}
+
+// TestRunMigration_NilSourceMarksMigrationFailed: a migration whose SourceNodeID
+// is nil (unscheduled VM at create time) must mark the MIGRATION failed
+// (terminal), not just the task - otherwise the per-VM active-migration guard is
+// held forever and the VM is permanently un-migratable.
+func TestRunMigration_NilSourceMarksMigrationFailed(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+	_, _, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedSourcelessMigration(t, s, vm.ID)
+
+	agent := &fakeMigrationAgent{}
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(nil-source) = %v, want nil (terminal, not requeued)", err)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseFailed {
+		t.Errorf("migration phase = %q, want failed (must not leave the guard held forever)", got.Phase)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusFailed {
+		t.Errorf("task status = %q, want failed", task.Status)
+	}
+	// The headline invariant: the terminal write must RELEASE the per-VM active-
+	// migration guard, else the VM stays un-migratable forever (the wedge). Assert
+	// no active migration remains for the VM.
+	if _, active, aerr := s.ActiveMigrationForVM(ctx, vm.ID); aerr != nil {
+		t.Fatalf("ActiveMigrationForVM: %v", aerr)
+	} else if active {
+		t.Errorf("active migration still held after terminal fail; the per-VM guard leaked (VM un-migratable)")
+	}
+}
+
 // TestDriveHandshake_LiveSourceFailureCancelsTarget pins the rule: when a LIVE
 // migration's source outgoing task ends terminal-failure pre-cutover, the worker
 // tells the bound TARGET to reap its incoming setup (best-effort

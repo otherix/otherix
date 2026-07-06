@@ -25,6 +25,13 @@ import (
 // source and the migration waits for the pool to appear, rather than failing.
 var errTargetPoolNotReady = errors.New("target pool not ready on node")
 
+// errMigrationRacedTerminal signals that a migration reached a terminal phase
+// (operator cancel / lifecycle supersede) concurrently while the worker was
+// placing or setting up the handshake. It is NOT a failure - the worker
+// reconciles the backing task to the now-terminal migration rather than driving
+// a stale / zero-value migration into a bogus failure.
+var errMigrationRacedTerminal = errors.New("migration raced to terminal during placement/setup")
+
 // Run-form migration worker for the etcd job runtime. It drains a vm.migrate job
 // and drives the migration to a terminal outcome against the agent two-phase
 // handshake, implementing node-less placement, PinnedNodeID staying
@@ -202,9 +209,18 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 		return finalizeForTerminalMigration(ctx, st, agent, log, taskID, m)
 	}
 	if m.SourceNodeID == nil {
-		// A migration with no source is malformed - it can never be driven. Fail
-		// terminally rather than burning the retry budget.
-		return failTerminal(ctx, st, log, taskID, "internal", fmt.Errorf("migration %s has no source node", m.ID))
+		// A migration with no source (the VM was unscheduled - PinnedNodeID nil - at
+		// create time) can never be driven. Mark the MIGRATION terminal too, not just
+		// the task: failTerminal alone would finalize the task but leave the migration
+		// row non-terminal, holding the per-VM active-migration guard forever and
+		// making the VM permanently un-migratable. The API edge deliberately still
+		// ACCEPTS this create (documented HTTP contract, apie2e
+		// TestMigrationLifecycle_HTTPContract); the worker is the sole place that
+		// fails it cleanly - do NOT assume it "can't happen" and drop this arm.
+		return failMigration(ctx, st, log, taskID, m.ID, agentclient.TaskTerminal{
+			Status: "failed",
+			Error:  &agentclient.AgentError{Code: "internal", Message: "migration has no source node (vm was not scheduled to a node)"},
+		})
 	}
 
 	vm, err := st.VMByID(ctx, m.VmID)
@@ -229,6 +245,13 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 	if m.TargetNodeID == nil {
 		bound, perr := placeAndBind(ctx, st, placer, cfg, log, m, vm)
 		if perr != nil {
+			if errors.Is(perr, errMigrationRacedTerminal) {
+				// The migration raced to terminal (operator cancel / lifecycle
+				// supersede) during placement. Reconcile the task to the now-terminal
+				// migration instead of driving a zero-value migration into a bogus
+				// "no target" failure.
+				return reconcileRacedTerminal(ctx, st, agent, log, taskID, m.ID)
+			}
 			return perr
 		}
 		m = bound
@@ -314,9 +337,12 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 	winnerPool := decision.PoolInstance.Name
 	if err := st.BindMigrationTarget(ctx, m.ID, decision.Node.ID, winnerPool); err != nil {
 		if errors.Is(err, store.ErrMigrationTerminal) {
-			// Raced to terminal (cancel / lifecycle supersede) between read and
-			// bind: idempotent reconcile, nothing to do.
-			return store.Migration{}, nil
+			// Raced to terminal (cancel / lifecycle supersede) between read and bind.
+			// Signal the caller to reconcile the task to the now-terminal migration:
+			// returning a zero-value Migration with nil error here would make
+			// runMigration drive an empty migration into driveHandshake's "no target"
+			// failTerminal with a nil-uuid message.
+			return store.Migration{}, errMigrationRacedTerminal
 		}
 		// ErrConcurrentUpdate or a transient store error is retryable.
 		return store.Migration{}, fmt.Errorf("bind migration target: %v", err)
@@ -354,6 +380,12 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 
 	agentTaskID, err := startOrResume(ctx, st, agent, log, taskID, task, vm, m, source, target)
 	if err != nil {
+		if errors.Is(err, errMigrationRacedTerminal) {
+			// The migration was cancelled/superseded between the worker's entry check
+			// and the agent POSTs. No agent was contacted; reconcile the task to the
+			// now-terminal migration instead of failing it.
+			return reconcileRacedTerminal(ctx, st, agent, log, taskID, m.ID)
+		}
 		if errors.Is(err, errTargetPoolNotReady) {
 			// The bound target lacks the migration's pool: record
 			// pending and requeue, VM stays on source, agent never contacted.
@@ -648,6 +680,16 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 
 	advancePhase(ctx, st, log, m.ID, store.MigrationPhaseSetup)
 
+	// Re-check the migration phase right before contacting the agents: an operator
+	// cancel (or lifecycle supersede) between the worker's entry terminal-check and
+	// here must abort the agent POSTs, not start an incoming/outgoing handshake for
+	// a cancelled migration. advancePhase swallows the terminal CAS loss (progress
+	// is observational), so this explicit reload is the gate. A reload error is
+	// non-fatal - fall through and let the downstream poll/reconcile handle it.
+	if reloaded, rerr := st.MigrationByID(ctx, m.ID); rerr == nil && isTerminalPhase(reloaded.Phase) {
+		return uuid.Nil, errMigrationRacedTerminal
+	}
+
 	spec, disks, err := incomingVMSpec(ctx, st, m, vm)
 	if err != nil {
 		return uuid.Nil, err
@@ -866,6 +908,18 @@ func failMigration(ctx context.Context, st MigrationWorkerStore, log *slog.Logge
 	log.WarnContext(ctx, "migration failed pre-cutover (vm stays on source)",
 		slog.String("migration_id", migID.String()), slog.String("code", code), slog.String("error", msg))
 	return nil
+}
+
+// reconcileRacedTerminal reloads a migration that reached a terminal phase
+// (operator cancel / lifecycle supersede) concurrently during placement or
+// handshake setup and reconciles the backing task to that terminal outcome. It
+// is the shared tail of the placement and setup raced-terminal arms.
+func reconcileRacedTerminal(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, taskID, migID uuid.UUID) error {
+	reloaded, err := st.MigrationByID(ctx, migID)
+	if err != nil {
+		return fmt.Errorf("reload raced-terminal migration %s: %v", migID, err)
+	}
+	return finalizeForTerminalMigration(ctx, st, agent, log, taskID, reloaded)
 }
 
 // finalizeForTerminalMigration reconciles a still-non-terminal backing task to a
