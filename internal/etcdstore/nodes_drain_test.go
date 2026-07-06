@@ -534,7 +534,7 @@ func TestReconcileStuckDrainCordonsTerminalTask(t *testing.T) {
 		t.Fatalf("force task failed: %v", err)
 	}
 
-	n, err := s.ReconcileStuckDrain(ctx)
+	n, err := s.ReconcileStuckDrain(ctx, reconciledDrainResult)
 	if err != nil {
 		t.Fatalf("ReconcileStuckDrain: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestReconcileStuckDrainCordonsMissingTask(t *testing.T) {
 		t.Fatalf("precondition: TaskByID(deleted) = %v, want store.ErrNotFound", terr)
 	}
 
-	n, err := s.ReconcileStuckDrain(ctx)
+	n, err := s.ReconcileStuckDrain(ctx, reconciledDrainResult)
 	if err != nil {
 		t.Fatalf("ReconcileStuckDrain: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestReconcileStuckDrainCordonsTornNilPointer(t *testing.T) {
 		t.Fatalf("PutJSON node: %v", err)
 	}
 
-	n, err := s.ReconcileStuckDrain(ctx)
+	n, err := s.ReconcileStuckDrain(ctx, reconciledDrainResult)
 	if err != nil {
 		t.Fatalf("ReconcileStuckDrain: %v", err)
 	}
@@ -639,7 +639,7 @@ func TestReconcileStuckDrainSkipsLiveDrain(t *testing.T) {
 		t.Fatalf("UpdateTaskRunning: %v", err)
 	}
 
-	n, err := s.ReconcileStuckDrain(ctx)
+	n, err := s.ReconcileStuckDrain(ctx, reconciledDrainResult)
 	if err != nil {
 		t.Fatalf("ReconcileStuckDrain: %v", err)
 	}
@@ -697,7 +697,7 @@ func TestReconcileStuckDrainCordonsRunningTaskWithDeadJob(t *testing.T) {
 		t.Fatalf("delete backing job: job %v not present", task.JobID)
 	}
 
-	n, err := s.ReconcileStuckDrain(ctx)
+	n, err := s.ReconcileStuckDrain(ctx, reconciledDrainResult)
 	if err != nil {
 		t.Fatalf("ReconcileStuckDrain: %v", err)
 	}
@@ -713,6 +713,101 @@ func TestReconcileStuckDrainCordonsRunningTaskWithDeadJob(t *testing.T) {
 	}
 	if got.DrainTaskID != nil {
 		t.Errorf("node DrainTaskID = %v, want nil", got.DrainTaskID)
+	}
+}
+
+// reconciledDrainResult is the opaque task-result payload the drain backstop
+// stamps on a wedged drain task it finalizes. The store treats it as opaque
+// bytes (the drain handler owns the real DrainResult shape); the tests use a
+// fixed payload and assert it round-trips onto the finalized task.
+var reconciledDrainResult = []byte(`{"code":"drain_reconciled"}`)
+
+// TestReconcileStuckDrainFinalizesWedgedTask locks the wedge fix: a draining
+// node whose drain task is non-terminal (running) but whose backing job is dead
+// must have that TASK finalized to a terminal state, not merely have the node
+// cordoned. A left-running task is never reaped by retention (which keys on
+// finished_at) and a cancel against it is a dead letter. The backstop must stamp
+// finished_at and the reconciled result so retention reaps it.
+func TestReconcileStuckDrainFinalizesWedgedTask(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	node, taskID := startDrain(t, s, ctx, "drain-finalize-wedged")
+
+	if _, err := s.UpdateTaskRunning(ctx, taskID); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if deleted, err := cli.Delete(ctx, drainJobKey(t, task.JobID)); err != nil || !deleted {
+		t.Fatalf("delete backing job: deleted=%v err=%v", deleted, err)
+	}
+
+	if _, err := s.ReconcileStuckDrain(ctx, reconciledDrainResult); err != nil {
+		t.Fatalf("ReconcileStuckDrain: %v", err)
+	}
+
+	got, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID after reconcile: %v", err)
+	}
+	if got.Status != store.TaskStatusFailed {
+		t.Errorf("wedged drain task status = %v, want failed (terminal, reapable)", got.Status)
+	}
+	if got.FinishedAt == nil {
+		t.Error("wedged drain task finished_at = nil, want stamped (retention reaps by finished_at)")
+	}
+	if string(got.Result) != string(reconciledDrainResult) {
+		t.Errorf("wedged drain task result = %q, want %q", got.Result, reconciledDrainResult)
+	}
+	n, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if n.Status != store.NodeStatusCordoned {
+		t.Errorf("node status = %v, want cordoned", n.Status)
+	}
+}
+
+// TestReconcileStuckDrainDoesNotClobberTerminalTask pins the fail-toward-inaction
+// guard: if a drain task already reached a terminal status (its saga recorded the
+// outcome) while the node was left draining (a torn crash between task-finalize
+// and node-flip), the backstop cordons the node but must NOT clobber the recorded
+// terminal result. Finalizing a settled success to failed would corrupt the
+// operator-visible outcome.
+func TestReconcileStuckDrainDoesNotClobberTerminalTask(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	node, taskID := startDrain(t, s, ctx, "drain-no-clobber")
+
+	settled := []byte(`{"code":"","migrated":1,"remaining":0}`)
+	if err := s.UpdateTaskFinalized(ctx, store.UpdateTaskFinalizedParams{
+		ID: taskID, Status: store.TaskStatusSuccess, Result: settled,
+	}); err != nil {
+		t.Fatalf("UpdateTaskFinalized: %v", err)
+	}
+
+	if _, err := s.ReconcileStuckDrain(ctx, reconciledDrainResult); err != nil {
+		t.Fatalf("ReconcileStuckDrain: %v", err)
+	}
+
+	got, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID after reconcile: %v", err)
+	}
+	if got.Status != store.TaskStatusSuccess {
+		t.Errorf("settled drain task status = %v, want success (must not be clobbered)", got.Status)
+	}
+	if string(got.Result) != string(settled) {
+		t.Errorf("settled drain task result = %q, want %q (must not be clobbered)", got.Result, settled)
+	}
+	n, err := s.NodeByID(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if n.Status != store.NodeStatusCordoned {
+		t.Errorf("node status = %v, want cordoned", n.Status)
 	}
 }
 

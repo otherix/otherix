@@ -44,6 +44,9 @@ type DrainWorkerStore interface {
 const (
 	drainCodeTimeout         = "drain_timeout"
 	drainCodeNodeUnreachable = "node_unreachable"
+	// drainCodeReconciled marks a drain task the stuck-drain backstop finalized
+	// because its backing job died (the saga never recorded its own outcome).
+	drainCodeReconciled = "drain_reconciled"
 )
 
 // Placer decides a target for a VM without binding (read-only). It is the
