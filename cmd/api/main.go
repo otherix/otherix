@@ -641,11 +641,9 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 	s.Register("heartbeat.reconcile", positiveOr(cfg.Workers.Heartbeat.Interval, 30*time.Second), true,
 		heartbeathandlers.ReconcileFunc(st, heartbeathandlers.ReconcileConfig{
 			StaleThreshold: cfg.Workers.Heartbeat.StaleThreshold,
-			GoneGrace:      cfg.Workers.Heartbeat.RebalanceGrace,
 			Interval:       cfg.Workers.Heartbeat.Interval,
 		}, log,
-			storagepoolshandlers.EnsureDefaultPoolsFunc(st, cfg.StoragePools.AllowedPathPrefixes[0], log),
-			replicationhandlers.PruneGoneNodeBlobsFunc(st, log)))
+			storagepoolshandlers.EnsureDefaultPoolsFunc(st, cfg.StoragePools.AllowedPathPrefixes[0], log)))
 
 	s.Register("vms.schedule", 2*time.Second, true,
 		vmshandlers.ScheduleFunc(st, vmshandlers.ScheduleConfig{Algorithm: cfg.Placement.Algorithm}, log,

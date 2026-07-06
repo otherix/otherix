@@ -70,7 +70,7 @@ type DrainConfig struct {
 	PollInterval time.Duration // how often to re-poll the VM list; default 5s
 	// DeadNodeGrace is how stale a node's last heartbeat may be before the drain
 	// treats it as dead and finalizes (the heartbeat reconciler skips draining
-	// nodes, so the saga owns liveness). Wire it from the reconciler's GoneGrace.
+	// nodes, so the saga owns liveness). Wire it from the heartbeat RebalanceGrace.
 	DeadNodeGrace time.Duration
 }
 
@@ -180,9 +180,10 @@ func drainEvaluate(ctx context.Context, st DrainWorkerStore, clk clock, cfg Drai
 	}
 
 	// Liveness: the heartbeat reconciler SKIPS draining nodes (it never marks a
-	// draining node unreachable/gone), so the saga must detect a dead node itself.
-	// A node stale beyond DeadNodeGrace (the reconciler's gone threshold) is dead;
-	// stop and cordon it (non-destructive) rather than burning the full timeout.
+	// draining node unreachable), so the saga must detect a dead node itself.
+	// A node stale beyond DeadNodeGrace (the heartbeat reconciler's staleness
+	// grace) is dead; stop and cordon it (non-destructive) rather than burning
+	// the full timeout.
 	if node.LastHeartbeatAt != nil && clk.Now().Sub(*node.LastHeartbeatAt) > cfg.DeadNodeGrace {
 		inFlight, _ := st.ActiveSourceMigrationCount(ctx, args.NodeID) // informational metadata; ignore a read error
 		return nil, true, finalize(ctx, st, args, store.TaskStatusFailed, DrainResult{

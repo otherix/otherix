@@ -18,11 +18,12 @@ import (
 )
 
 // reconcileStoreFake is a hand-rolled ReconcileStore: it promotes a fixed set
-// of rows and returns empty unreachable/gone sets so the test can assert the
-// promotion -> onReady seam in isolation.
+// of rows, records whether the gone-rewrite sweep ran, and returns empty
+// unreachable/rewrite sets so the test can assert the promotion -> onReady seam
+// in isolation.
 type reconcileStoreFake struct {
-	promoted []store.PromoteHealthyNodesRow
-	gone     []store.MarkNodesGoneRow
+	promoted     []store.PromoteHealthyNodesRow
+	rewriteCalls int
 }
 
 func (f *reconcileStoreFake) PromoteHealthyNodes(ctx context.Context, freshAfter time.Time) ([]store.PromoteHealthyNodesRow, error) {
@@ -33,8 +34,9 @@ func (f *reconcileStoreFake) MarkNodesUnreachable(ctx context.Context, staleBefo
 	return nil, nil
 }
 
-func (f *reconcileStoreFake) MarkNodesGone(ctx context.Context, goneBefore time.Time) ([]store.MarkNodesGoneRow, error) {
-	return f.gone, nil
+func (f *reconcileStoreFake) RewriteGoneNodesToUnreachable(ctx context.Context) ([]store.MarkNodesUnreachableRow, error) {
+	f.rewriteCalls++
+	return nil, nil
 }
 
 func reconcileTestLogger() *slog.Logger {
@@ -51,7 +53,7 @@ func TestReconcileFunc_InvokesOnReadyWithPromoted(t *testing.T) {
 		return nil
 	}
 
-	fn := ReconcileFunc(st, ReconcileConfig{}, reconcileTestLogger(), spy, nil)
+	fn := ReconcileFunc(st, ReconcileConfig{}, reconcileTestLogger(), spy)
 	if err := fn(context.Background()); err != nil {
 		t.Fatalf("ReconcileFunc returned error: %v", err)
 	}
@@ -69,7 +71,7 @@ func TestReconcileFunc_OnReadyErrorDoesNotFailReconcile(t *testing.T) {
 		return errors.New("provisioning hiccup")
 	}
 
-	fn := ReconcileFunc(st, ReconcileConfig{}, reconcileTestLogger(), failing, nil)
+	fn := ReconcileFunc(st, ReconcileConfig{}, reconcileTestLogger(), failing)
 	if err := fn(context.Background()); err != nil {
 		t.Fatalf("ReconcileFunc returned error from best-effort hook: %v", err)
 	}
@@ -78,28 +80,21 @@ func TestReconcileFunc_OnReadyErrorDoesNotFailReconcile(t *testing.T) {
 func TestReconcileFunc_NilOnReadyIsValid(t *testing.T) {
 	st := &reconcileStoreFake{promoted: []store.PromoteHealthyNodesRow{{ID: uuid.New(), Name: "node-a"}}}
 
-	fn := ReconcileFunc(st, ReconcileConfig{}, reconcileTestLogger(), nil, nil)
+	fn := ReconcileFunc(st, ReconcileConfig{}, reconcileTestLogger(), nil)
 	if err := fn(context.Background()); err != nil {
 		t.Fatalf("ReconcileFunc with nil hook returned error: %v", err)
 	}
 }
 
-func TestReconcileFunc_InvokesOnGoneWithGoneNodes(t *testing.T) {
-	goneRow := store.MarkNodesGoneRow{ID: uuid.New(), Name: "node-gone"}
-	st := &reconcileStoreFake{gone: []store.MarkNodesGoneRow{goneRow}}
+func TestReconcileFunc_RunsGoneRewriteSweep(t *testing.T) {
+	st := &reconcileStoreFake{}
 
-	var seen []store.MarkNodesGoneRow
-	spy := func(ctx context.Context, gone []store.MarkNodesGoneRow) error {
-		seen = gone
-		return nil
-	}
-
-	fn := ReconcileFunc(st, ReconcileConfig{}, reconcileTestLogger(), nil, spy)
+	fn := ReconcileFunc(st, ReconcileConfig{}, reconcileTestLogger(), nil)
 	if err := fn(context.Background()); err != nil {
 		t.Fatalf("ReconcileFunc returned error: %v", err)
 	}
 
-	if diff := cmp.Diff([]store.MarkNodesGoneRow{goneRow}, seen); diff != "" {
-		t.Errorf("onGone received wrong rows (-want +got):\n%s", diff)
+	if st.rewriteCalls != 1 {
+		t.Errorf("RewriteGoneNodesToUnreachable calls = %d, want 1", st.rewriteCalls)
 	}
 }
