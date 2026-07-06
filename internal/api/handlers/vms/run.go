@@ -457,8 +457,8 @@ func DeleteHandler(st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleG
 
 // nodeTerminallyDead reports whether the VM's owning node is beyond any agent
 // teardown, so the delete must be projected directly rather than dispatched to
-// an agent. True when the node row is gone or force-deleted (ErrNotFound), or
-// when the node has been unseen for longer than staleGrace.
+// an agent. True when the node row is force-deleted (ErrNotFound), or when the
+// node has been unseen for longer than staleGrace.
 //
 // 'unreachable' with a fresh heartbeat is NOT terminal - the node may merely be
 // partitioned with qemu still running, and the agent's VM reconciler does not
@@ -467,13 +467,13 @@ func DeleteHandler(st WorkerStore, exec DeleteExecutor, log *slog.Logger, staleG
 // gets a best-effort agent teardown first, falling back to a direct projection
 // only when that fails.
 //
-// The staleness arm covers a cordoned/draining node that dies: it never
-// advances to 'gone' (the reaper only flips ready/pending), so without it the
-// VM delete would failRun forever. Its worst case is skipping the agent for a
-// node that healed within the window, leaking one qemu (the accepted leak
-// scale) - it keys on a durable timestamp, not inferred state.
+// The staleness arm covers a node that dies and never returns (there is no
+// terminal 'gone' status any more; a dead node stays 'unreachable'). Its worst
+// case is skipping the agent for a node that healed within the window, leaking
+// one qemu (the accepted leak scale) - it keys on a durable timestamp, not
+// inferred state.
 func nodeTerminallyDead(node store.Node, nodeErr error, staleGrace time.Duration) bool {
-	if errors.Is(nodeErr, store.ErrNotFound) || node.Status == store.NodeStatusGone {
+	if errors.Is(nodeErr, store.ErrNotFound) {
 		return true
 	}
 	return node.LastHeartbeatAt == nil || node.LastHeartbeatAt.Before(time.Now().Add(-staleGrace))
