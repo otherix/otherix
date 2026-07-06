@@ -135,6 +135,14 @@ func (h heartbeatProjection) FilterExistingVMIDs(ctx context.Context, ids []uuid
 	return out, nil
 }
 
+// VMWithRev returns a non-deleted vms row and its ModRevision, or
+// store.ErrNotFound for a missing or soft-deleted row. It exposes the
+// store-internal vmWithRev to the heartbeat projection so applyVMReport reads the
+// pin and the CAS rev from one call.
+func (h heartbeatProjection) VMWithRev(ctx context.Context, id uuid.UUID) (store.VM, int64, error) {
+	return h.s.vmWithRev(ctx, id)
+}
+
 // FilterVMIDsPinnedToNode returns the subset of ids whose live vms row is
 // pinned to nodeID, or which have an active (non-terminal) migration whose
 // target is nodeID. The pin is read from the row itself (the field the
@@ -215,8 +223,34 @@ func (h heartbeatProjection) UpsertVMRuntime(ctx context.Context, arg store.Upse
 	if arg.CurrentNodeID != nil && (oldNode == nil || *oldNode != *arg.CurrentNodeID) {
 		ops = append(ops, clientv3.OpPut(vmRuntimeNodeIndexKey(*arg.CurrentNodeID, arg.VmID), arg.VmID.String()))
 	}
-	if _, err := h.s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
+	// Guard the write on the vms row the heartbeat decided this claim against
+	// (arg.VMRowModRevision). A soft-delete (sets deleted_at) and a migration
+	// cutover (flips the pin) both WRITE the vms row, so either landing between
+	// the heartbeat's read and this commit bumps the ModRevision and fails the
+	// compare - the stale write is skipped rather than resurrecting a runtime row
+	// on a deleted VM or regressing current_node_id after cutover. A zero rev
+	// means the caller wants an unconditional write (etcd revisions are >= 1).
+	//
+	// The compare is on vmKey, NOT vmRuntimeKey: it fences vms-row moves
+	// (delete/cutover), not concurrent runtime writers - the Then-ops here do not
+	// touch vmKey, so two heartbeats reading the same vmRev both pass. That is
+	// benign: outside a move only one node is pinned, and during a move the epoch
+	// fence makes source and target write the same current_node_id (the source).
+	// Cutover itself CASes on vmRuntimeKey's rev, so it and a runtime write are
+	// serialized both ways.
+	txn := h.s.c.Raw().Txn(ctx)
+	if arg.VMRowModRevision != 0 {
+		txn = txn.If(clientv3.Compare(clientv3.ModRevision(vmKey(arg.VmID)), "=", arg.VMRowModRevision))
+	}
+	resp, err := txn.Then(ops...).Commit()
+	if err != nil {
 		return fmt.Errorf("upsert vm_runtime txn: %v", err)
+	}
+	if arg.VMRowModRevision != 0 && !resp.Succeeded {
+		// The vms row moved under us; fail toward inaction. The next heartbeat
+		// re-reads the fresh row and converges (agents report absolute observed
+		// state each tick, so a dropped update re-lands - not a delta stream).
+		return nil
 	}
 	return nil
 }
