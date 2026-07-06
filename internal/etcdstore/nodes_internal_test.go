@@ -96,16 +96,32 @@ func TestNodeDeleteCascadeNoWireguard(t *testing.T) {
 
 	cascade := nodeDeleteCascade(nodeID, nodeName, "node-val", nil, nil, nil)
 
-	if len(cascade) != 2 {
-		t.Fatalf("nodeDeleteCascade with no wg/cert/reap ops = %d ops, want 2", len(cascade))
+	// The fixed tail is the blob-inventory delete, the name-guard delete, and the
+	// node soft-delete put.
+	if len(cascade) != 3 {
+		t.Fatalf("nodeDeleteCascade with no wg/cert/reap ops = %d ops, want 3", len(cascade))
 	}
 	wantLast := nodeKey(nodeID)
 	if gotLast := string(cascade[len(cascade)-1].KeyBytes()); gotLast != wantLast {
 		t.Errorf("cascade last op key = %q, want %q", gotLast, wantLast)
 	}
-	for _, op := range cascade {
-		if string(op.KeyBytes()) == agentWireguardKey(nodeID) {
+	blobIdx, nodePutIdx := -1, -1
+	for i, op := range cascade {
+		key := string(op.KeyBytes())
+		if key == agentWireguardKey(nodeID) {
 			t.Errorf("cascade unexpectedly contains a WireGuard op when wgRec is nil")
 		}
+		switch key {
+		case nodeBlobInventoryKey(nodeID):
+			blobIdx = i
+		case nodeKey(nodeID):
+			nodePutIdx = i
+		}
+	}
+	if blobIdx < 0 {
+		t.Fatalf("cascade missing node_blobs inventory delete op")
+	}
+	if blobIdx >= nodePutIdx {
+		t.Errorf("node_blobs delete op at index %d, want before node soft-delete at index %d", blobIdx, nodePutIdx)
 	}
 }

@@ -597,6 +597,44 @@ func TestNodeForceDeleteReapsGatewayMemberships(t *testing.T) {
 	}
 }
 
+// TestNodeForceDeletePrunesNodeBlobs proves the node-delete cascade also clears
+// the deleted node's observed blob inventory, so a removed node stops counting as
+// an observed holder and leaks no phantom digests into the durability scan.
+func TestNodeForceDeletePrunesNodeBlobs(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	p := nodeParams(uniqueNodeName("blob-del"))
+	if _, err := s.CreateNode(ctx, p); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	if err := s.UpsertNodeBlobInventory(ctx, p.ID, []store.NodeBlob{
+		{Digest: "sha256:aa", SizeBytes: 10},
+		{Digest: "sha256:bb", SizeBytes: 20},
+	}); err != nil {
+		t.Fatalf("UpsertNodeBlobInventory: %v", err)
+	}
+
+	if _, err := s.DeleteNode(ctx, p.ID, true, uuid.New()); err != nil {
+		t.Fatalf("DeleteNode(force): %v", err)
+	}
+
+	inv, err := s.NodeBlobInventory(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("NodeBlobInventory: %v", err)
+	}
+	if len(inv) != 0 {
+		t.Errorf("inventory after force-delete = %+v, want none", inv)
+	}
+	digests, err := s.AllNodeBlobDigests(ctx)
+	if err != nil {
+		t.Fatalf("AllNodeBlobDigests: %v", err)
+	}
+	if len(digests) != 0 {
+		t.Errorf("AllNodeBlobDigests after force-delete = %v, want none", digests)
+	}
+}
+
 func TestSetNodeGatewayRole(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()

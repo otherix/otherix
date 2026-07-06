@@ -908,7 +908,7 @@ func (s *Store) softDeleteNodeRow(ctx context.Context, n store.Node, intentKey s
 // backstop reaper for agent_wireguard, so the leaked pubkey guard would later
 // fail a node re-bootstrap with ErrAgentWireguardPubkeyInUse.
 func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, certOps, reapOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
-	cascade := make([]clientv3.Op, 0, len(certOps)+len(reapOps)+4)
+	cascade := make([]clientv3.Op, 0, len(certOps)+len(reapOps)+5)
 	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
 	// stops appearing in the mesh and its pubkey becomes reusable - before the
 	// node soft-delete so a retry can re-run it.
@@ -927,6 +927,11 @@ func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, certOps, reap
 	// after the node-put plus a crash would leak those rows and reserved addresses
 	// the gone node can never re-derive.
 	cascade = append(cascade, reapOps...)
+	// Prune the node's observed blob inventory so a deleted node stops counting as
+	// an observed holder and leaks no phantom digests into the durability scan. A
+	// single fixed delete op, ordered ahead of the node soft-delete for the same
+	// crash+retry reason.
+	cascade = append(cascade, clientv3.OpDelete(nodeBlobInventoryKey(nodeID)))
 	// The name-guard delete precedes the nodePut so the nodePut (which flips the
 	// row's DeletedAt and thus makes NodeByID short-circuit) is the genuine LAST
 	// op: a crash before it leaves the node row present and a retry re-runs the
