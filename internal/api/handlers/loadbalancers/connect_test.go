@@ -100,6 +100,69 @@ func TestConnectBalancesOverEligibleBackends(t *testing.T) {
 	_ = lb
 }
 
+// scriptedBroker returns a configured error for specific backends and a gateway
+// success for the rest, so a connect test can exercise per-backend resolve
+// failures.
+type scriptedBroker struct {
+	fail map[uuid.UUID]error
+}
+
+func (b *scriptedBroker) ResolveIngress(_ context.Context, vm store.VM, port int) (vms.IngressResult, error) {
+	if err := b.fail[vm.ID]; err != nil {
+		return vms.IngressResult{}, err
+	}
+	return vms.IngressResult{
+		Transport: "gateway", VMID: vm.ID, VMName: vm.Name, Port: port,
+		SplicerAddr: "https://gw.test:9444", SplicerServerName: "node-gw.agents.otherix.local", SessionCred: "cred",
+	}, nil
+}
+
+// TestConnectTriesRemainingBackendsAfterHardError: a hard (non-ErrIngressUnavailable)
+// resolve error on one backend must not fail the whole connect - the handler tries
+// the remaining candidates. Backend A always hard-errors, B always resolves; over
+// many shuffled iterations the connect must always succeed via B.
+func TestConnectTriesRemainingBackendsAfterHardError(t *testing.T) {
+	st := newFakeStore()
+	owner := uuid.New()
+	st.seedLB(t, "web", owner, 8080, map[string]string{"app": "web"})
+	a := st.seedRunningVM(t, owner, `{"app":"web"}`)
+	b := st.seedRunningVM(t, owner, `{"app":"web"}`)
+	broker := &scriptedBroker{fail: map[uuid.UUID]error{a.ID: errors.New("transient resolve failure")}}
+	h := loadbalancers.New(st, broker, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	u := &auth.User{ID: owner, Role: auth.RoleDeveloper}
+
+	for i := 0; i < 40; i++ {
+		rec := doAuthedRequest(t, h.Connect, u, http.MethodPost, "/v1/loadbalancers/web/connect", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("iter %d: connect status = %d (a hard error on one backend must not fail the connect), body=%s", i, rec.Code, rec.Body.String())
+		}
+	}
+	_ = b
+}
+
+// TestConnectAllHardErrorsReturns500: when EVERY backend hits a hard resolve error
+// (not the benign ErrIngressUnavailable), the connect must still surface a 500 -
+// the resilience fix must not mask a systemic resolve failure as a benign "no
+// reachable backend".
+func TestConnectAllHardErrorsReturns500(t *testing.T) {
+	st := newFakeStore()
+	owner := uuid.New()
+	st.seedLB(t, "web", owner, 8080, map[string]string{"app": "web"})
+	a := st.seedRunningVM(t, owner, `{"app":"web"}`)
+	b := st.seedRunningVM(t, owner, `{"app":"web"}`)
+	broker := &scriptedBroker{fail: map[uuid.UUID]error{
+		a.ID: errors.New("transient resolve failure"),
+		b.ID: errors.New("transient resolve failure"),
+	}}
+	h := loadbalancers.New(st, broker, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	u := &auth.User{ID: owner, Role: auth.RoleDeveloper}
+
+	rec := doAuthedRequest(t, h.Connect, u, http.MethodPost, "/v1/loadbalancers/web/connect", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("all-hard-error connect status = %d, want 500", rec.Code)
+	}
+}
+
 // TestConnectSurfacesSplicerServerName proves the connect response carries the
 // gateway node's identity ServerName (node-<name>.agents.otherix.local) the
 // broker resolved, so the client pins the ingress TLS ServerName to the node
