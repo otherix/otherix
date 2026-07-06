@@ -90,6 +90,50 @@ func TestTeardownNICs_DeletesEachTap(t *testing.T) {
 	}
 }
 
+// TestSweepOrphanTaps_DeletesOrphansWhenReplayComplete is the happy path: with a
+// complete replay, a tap the fabric reports that belongs to no replayed VM is a
+// genuine leak and is reclaimed, while a tap owned by a replayed VM is kept.
+func TestSweepOrphanTaps_DeletesOrphansWhenReplayComplete(t *testing.T) {
+	keptNIC := sampleNIC()
+	keptTap := keptNIC.TapName()
+	orphanTap := "ot-deadbeef-orphan"
+
+	fake := &netfabric.FakeFabric{ListTapsResult: []string{keptTap, orphanTap}}
+	vmID := uuid.New()
+	m := &Manager{
+		fabric: fake,
+		log:    discardLogger(),
+		vms:    map[uuid.UUID]*VM{vmID: {ID: vmID, NICs: []netfabric.NIC{keptNIC}}},
+	}
+
+	m.sweepOrphanTaps(true)
+
+	if got := fake.DeleteTapCalls; len(got) != 1 || got[0] != orphanTap {
+		t.Errorf("DeleteTapCalls = %v, want exactly [%s] (kept tap %s must survive)", got, orphanTap, keptTap)
+	}
+}
+
+// TestSweepOrphanTaps_SkipsAllDeletesWhenReplayIncomplete is the Fix-Risk-Gate
+// guard: when replay was INCOMPLETE (ScanState skipped a corrupt/missing-meta VM
+// dir), the expected-tap set may miss a live VM, so the destructive sweep must do
+// NOTHING - even a tap that looks orphaned could belong to the skipped-but-live
+// VM. Fail toward inaction: leak the tap, never sever a running VM's networking.
+func TestSweepOrphanTaps_SkipsAllDeletesWhenReplayIncomplete(t *testing.T) {
+	orphanTap := "ot-deadbeef-orphan"
+	fake := &netfabric.FakeFabric{ListTapsResult: []string{orphanTap}}
+	m := &Manager{fabric: fake, log: discardLogger(), vms: map[uuid.UUID]*VM{}}
+
+	m.sweepOrphanTaps(false)
+
+	if len(fake.DeleteTapCalls) != 0 {
+		t.Errorf("DeleteTapCalls = %v, want none (incomplete replay must not delete any tap)", fake.DeleteTapCalls)
+	}
+	// It must not even enumerate taps: the decision is made before listing.
+	if fake.ListTapsCalls != 0 {
+		t.Errorf("ListTapsCalls = %d, want 0 (sweep short-circuits on incomplete replay)", fake.ListTapsCalls)
+	}
+}
+
 func TestNICMetaRoundTrip(t *testing.T) {
 	nic := sampleNIC()
 	want := []netfabric.NIC{nic}

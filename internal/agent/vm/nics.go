@@ -46,17 +46,31 @@ func (m *Manager) teardownNICs(nics []netfabric.NIC) {
 
 // sweepOrphanTaps reclaims host taps that belong to no replayed VM. It
 // runs once at manager startup, after the VM set has been rebuilt from
-// disk, so the expected-tap set is authoritative. The guard set is the
-// union of TapName() over every NIC of every replayed VM; any tap the
-// fabric reports outside that set is a leak (a crash before teardown, or
-// a VM whose meta.json was corrupt and skipped during replay) and is
-// best-effort deleted.
+// disk. The guard set is the union of TapName() over every NIC of every
+// replayed VM; any tap the fabric reports outside that set is a leak (a
+// crash before teardown) and is best-effort deleted.
 //
-// The sweep is best-effort and never fails startup: a ListTaps error is
-// logged at WARN and the sweep is skipped; a DeleteTap error is logged
-// at WARN and the loop continues. Callers must hold no manager lock; the
-// method reads m.vms under m.mu itself.
-func (m *Manager) sweepOrphanTaps() {
+// It is a DESTRUCTIVE reconcile driven off "not in the replayed set", so
+// its input must be COMPLETE. replayComplete is false when ScanState
+// skipped >=1 VM directory (corrupt/missing meta.json): the expected-tap
+// set is then incomplete, and a tap outside it may belong to a
+// skipped-but-live VM whose NICs are unreadable - deleting it would sever
+// a running VM's networking. So on an incomplete replay the sweep does
+// NOTHING (fail toward inaction): the orphan taps leak until a later clean
+// restart (no skips) reclaims them, which is strictly better than severing
+// a live VM. This is the Fix-Risk-Gate rule - a destructive action wired to
+// a fail-open producer (ScanState skips corrupt entries) must fail closed.
+//
+// Otherwise the sweep is best-effort and never fails startup: a ListTaps
+// error is logged at WARN and the sweep is skipped; a DeleteTap error is
+// logged at WARN and the loop continues. Callers must hold no manager
+// lock; the method reads m.vms under m.mu itself.
+func (m *Manager) sweepOrphanTaps(replayComplete bool) {
+	if !replayComplete {
+		m.log.Warn("orphan-tap sweep skipped: replay incomplete (a VM meta.json was unreadable), so the expected-tap set may miss a live VM; leaking orphan taps until a clean restart")
+		return
+	}
+
 	m.mu.Lock()
 	expected := make(map[string]struct{})
 	for _, v := range m.vms {

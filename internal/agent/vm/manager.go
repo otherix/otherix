@@ -492,7 +492,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	m.probeIncoming = probeRecoveredIncoming
 	m.killIncoming = func(v *VM) { killRecoveredIncoming(m, v) }
 
-	metas, err := state.ScanState(cfg.StatePath, log)
+	metas, skippedDirs, err := state.ScanState(cfg.StatePath, log)
 	if err != nil {
 		return nil, fmt.Errorf("scan state: %w", err)
 	}
@@ -546,10 +546,12 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	}
 
 	// Reclaim host taps left behind by VMs that no longer exist (crash
-	// before teardown, or a meta.json skipped during replay). Runs once
-	// here, with the replayed-VM set authoritative; best-effort, never
-	// fails startup.
-	m.sweepOrphanTaps()
+	// before teardown). Runs once here; best-effort, never fails startup.
+	// Only safe when replay was COMPLETE: a skipped (corrupt/missing-meta)
+	// VM directory means the expected-tap set is incomplete, so the sweep is
+	// disabled (fail toward inaction) rather than risk severing a
+	// skipped-but-live VM's taps. See sweepOrphanTaps.
+	m.sweepOrphanTaps(skippedDirs == 0)
 
 	log.Info("vm manager initialized",
 		"state_dir", cfg.StatePath,
