@@ -161,10 +161,11 @@ type fakeMigrationAgent struct {
 	// source arbitration). getMigration stages the source's migration record;
 	// getMigrationErr stages a probe failure. Default (both zero) returns a 404
 	// AgentError - the source was never contacted.
-	getMigrationCalls int
-	getMigration      agentapi.Migration
-	getMigrationErr   error
-	getMigrationSet   bool
+	getMigrationCalls     int
+	getMigrationEndpoints []string // every endpoint GetMigration was probed at
+	getMigration          agentapi.Migration
+	getMigrationErr       error
+	getMigrationSet       bool
 
 	// sourceVM is what VM(...) returns - the worker reads its
 	// BootDiskVirtualSizeBytes to size the destination disk. Default to a sane
@@ -260,10 +261,11 @@ func (f *fakeMigrationAgent) CancelMigration(_ context.Context, endpoint, vmName
 	return agentapi.Migration{}, nil
 }
 
-func (f *fakeMigrationAgent) GetMigration(_ context.Context, _, _, _ string) (agentapi.Migration, error) {
+func (f *fakeMigrationAgent) GetMigration(_ context.Context, endpoint, _, _ string) (agentapi.Migration, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.getMigrationCalls++
+	f.getMigrationEndpoints = append(f.getMigrationEndpoints, endpoint)
 	if f.getMigrationErr != nil {
 		return agentapi.Migration{}, f.getMigrationErr
 	}
@@ -1088,6 +1090,15 @@ func TestPollOutgoing_BudgetElapsedRequeues(t *testing.T) {
 	if got.Phase != store.MigrationPhaseActive {
 		t.Errorf("migration phase = %q, want active (requeued, NOT a false terminal)", got.Phase)
 	}
+	// The requeue must NOT finalize the task failed (the migration is healthy) -
+	// a failed envelope would only flicker failed->running on redelivery.
+	task, terr := s.TaskByID(ctx, taskID)
+	if terr != nil {
+		t.Fatalf("TaskByID: %v", terr)
+	}
+	if task.Status == store.TaskStatusFailed {
+		t.Errorf("task finalized failed on budget requeue; want left non-terminal")
+	}
 }
 
 // TestPollOutgoing_ShutdownCancelDoesNotFinalize pins the shutdown arm: a
@@ -1139,6 +1150,13 @@ func TestVanishedSourceTask_LiveTargetCompletedCommits(t *testing.T) {
 	}
 	if agent.getMigrationCalls != 1 {
 		t.Errorf("target probe calls = %d, want 1", agent.getMigrationCalls)
+	}
+	// The probe MUST hit the TARGET endpoint, never the source: a source restart
+	// wipes the source record, so probing the source would 404 even after a
+	// completed handoff and wrongly fail the migration (split-brain). Pin it.
+	if len(agent.getMigrationEndpoints) != 1 || agent.getMigrationEndpoints[0] != nodeB.AdvertisedEndpoint {
+		t.Errorf("probe endpoints = %v, want [%q] (TARGET, not source %q)",
+			agent.getMigrationEndpoints, nodeB.AdvertisedEndpoint, nodeA.AdvertisedEndpoint)
 	}
 	got, err := s.MigrationByID(ctx, m.ID)
 	if err != nil {

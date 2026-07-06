@@ -447,8 +447,12 @@ func pollOutgoing(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 			if cfg.now().After(deadline) {
 				log.WarnContext(ctx, "migration poll budget elapsed; requeueing to free the worker slot",
 					slog.String("migration_id", m.ID.String()), slog.String("budget", cfg.maxPollDuration().String()))
-				return nil, failTask(ctx, st, log, taskID, ErrCodeTargetUnreachable,
-					fmt.Errorf("migration %s poll budget %s elapsed; requeueing", m.ID, cfg.maxPollDuration()))
+				// Return a bare RETRYABLE error (do NOT finalize the task): the
+				// migration is healthy and still active, so writing a failed envelope
+				// would only flicker the task failed->running on redelivery. The
+				// dispatcher requeues (attempt bump) and the next delivery resumes the
+				// poll via the persisted agent_task_id.
+				return nil, fmt.Errorf("migration %s poll budget %s elapsed; requeueing", m.ID, cfg.maxPollDuration())
 			}
 			continue
 		}
