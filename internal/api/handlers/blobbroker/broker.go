@@ -245,7 +245,12 @@ func (b *Broker) pullFromHolder(ctx context.Context, digest string, holder, cons
 		_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseFailed)
 		return fmt.Errorf("consumer pull: %v", pullErr)
 	}
-	return b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseComplete)
+	// best-effort (same as the failure arm): the pull has already succeeded, so a
+	// failure to write the non-authoritative "complete" phase must not report the
+	// successful pull as failed and trigger a spurious re-replication of a blob the
+	// consumer already holds.
+	_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseComplete)
+	return nil
 }
 
 // isLive reports whether a node may serve a blob pull: not soft-deleted and not
