@@ -108,17 +108,26 @@ func signCred(t *testing.T, signer crypto.Signer, c auth.SessionCredClaims) stri
 	return tok
 }
 
-// fakeOverlays is a static OverlayResolver: it returns Bridge/NetworkID/OK for
-// every IP. Its session counters are no-ops; tests that assert session
+// fakeOverlays is a static OverlayResolver. By default it yields a single
+// candidate {bridge, networkID} when ok, or no candidate otherwise. Tests that
+// need overlapping-overlay behaviour set candidates directly, which takes
+// precedence. Its session counters are no-ops; tests that assert session
 // accounting use spyOverlays instead.
 type fakeOverlays struct {
-	bridge    string
-	networkID string
-	ok        bool
+	bridge     string
+	networkID  string
+	ok         bool
+	candidates []overlayCandidate
 }
 
-func (f fakeOverlays) OverlayNetworkForIP(netip.Addr) (string, string, bool) {
-	return f.bridge, f.networkID, f.ok
+func (f fakeOverlays) OverlayCandidatesForIP(netip.Addr) []overlayCandidate {
+	if f.candidates != nil {
+		return f.candidates
+	}
+	if !f.ok {
+		return nil
+	}
+	return []overlayCandidate{{Device: f.bridge, NetworkID: f.networkID}}
 }
 
 func (fakeOverlays) AcquireSession(string) {}
@@ -403,6 +412,122 @@ func TestConnectAntiSSRFRefusesUnresolvedAndOffOverlay(t *testing.T) {
 	}
 }
 
+// TestConnectDisambiguatesOverlappingOverlaysByMAC proves the connect handler
+// picks the candidate overlay whose neighbor MAC matches the credential when two
+// overlays share the same subnet, independent of candidate order. The guest IP
+// resolves to a different MAC on the first candidate (otvg100) and to the
+// credential MAC only on the second (otvg200), so the dial must bind to otvg200.
+// The pre-fix single-return resolver would have surfaced only otvg100 and refused.
+func TestConnectDisambiguatesOverlappingOverlaysByMAC(t *testing.T) {
+	echoAddr, _ := startEcho(t)
+	host, portStr, err := net.SplitHostPort(echoAddr)
+	if err != nil {
+		t.Fatalf("split echo addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	ip := netip.MustParseAddr(host)
+
+	signer, pubPEM := newTestSessionCA(t)
+	macOther, err := net.ParseMAC(testMACB)
+	if err != nil {
+		t.Fatalf("parse mac: %v", err)
+	}
+	macCred, err := net.ParseMAC(testMACA)
+	if err != nil {
+		t.Fatalf("parse mac: %v", err)
+	}
+	fabric := &netfabric.FakeFabric{
+		NeighborResult: map[string]netfabric.NeighborOutcome{
+			netfabric.NeighborKey("otvg100", ip): {MAC: macOther, OK: true},
+			netfabric.NeighborKey("otvg200", ip): {MAC: macCred, OK: true},
+		},
+	}
+	deviceCh := make(chan string, 1)
+	h := &ConnectHandler{
+		dial: func(ctx context.Context, network, addr, device string) (net.Conn, error) {
+			select {
+			case deviceCh <- device:
+			default:
+			}
+			return netDial(ctx, network, addr, device)
+		},
+		fabric: fabric,
+		overlays: fakeOverlays{candidates: []overlayCandidate{
+			{Device: "otvg100", NetworkID: "net-A"},
+			{Device: "otvg200", NetworkID: "net-B"},
+		}},
+		caStore: storeWith(t, pubPEM),
+		slots:   newConnectSlots(8, 256),
+		log:     discardLogger(),
+	}
+	srv := gatedConnect(t, h)
+	token := signCred(t, signer, auth.SessionCredClaims{
+		VMID: uuid.New(), NICMAC: testMACA, GuestIP: ip, Port: port,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	})
+
+	c, _, status := rawConnectCred(t, srv.Listener.Addr().String(), token)
+	defer func() { _ = c.Close() }()
+	if !strings.Contains(status, "200") {
+		t.Fatalf("status = %q, want 200 (must dial the MAC-matching overlay)", strings.TrimSpace(status))
+	}
+	select {
+	case dev := <-deviceCh:
+		if dev != "otvg200" {
+			t.Errorf("dial device = %q, want otvg200 (the overlay whose neighbor MAC matches the credential)", dev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dial never happened")
+	}
+}
+
+// TestConnectRefusesWhenNoCandidateMACMatches proves the handler fails closed when
+// several candidate overlays contain the guest IP but none resolves it to the
+// credential MAC: it refuses 403 without dialing, having probed every candidate.
+func TestConnectRefusesWhenNoCandidateMACMatches(t *testing.T) {
+	signer, pubPEM := newTestSessionCA(t)
+	ip := netip.MustParseAddr("10.42.0.5")
+	macX, err := net.ParseMAC("02:00:00:00:00:98")
+	if err != nil {
+		t.Fatalf("parse mac: %v", err)
+	}
+	macY, err := net.ParseMAC(testMACB)
+	if err != nil {
+		t.Fatalf("parse mac: %v", err)
+	}
+	fabric := &netfabric.FakeFabric{
+		NeighborResult: map[string]netfabric.NeighborOutcome{
+			netfabric.NeighborKey("otvg100", ip): {MAC: macX, OK: true},
+			netfabric.NeighborKey("otvg200", ip): {MAC: macY, OK: true},
+		},
+	}
+	h := &ConnectHandler{
+		dial:   failDial(t),
+		fabric: fabric,
+		overlays: fakeOverlays{candidates: []overlayCandidate{
+			{Device: "otvg100", NetworkID: "net-A"},
+			{Device: "otvg200", NetworkID: "net-B"},
+		}},
+		caStore: storeWith(t, pubPEM),
+		slots:   newConnectSlots(8, 256),
+		log:     discardLogger(),
+	}
+	srv := gatedConnect(t, h)
+	token := signCred(t, signer, auth.SessionCredClaims{
+		VMID: uuid.New(), NICMAC: testMACA, GuestIP: ip, Port: 22,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	})
+
+	resp := doConnect(t, srv.URL, token)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (no candidate MAC matches)", resp.StatusCode)
+	}
+	if got := len(h.fabric.(*netfabric.FakeFabric).NeighborMACCalls); got != 2 {
+		t.Errorf("NeighborMAC calls = %d, want 2 (both candidates probed before refusing)", got)
+	}
+}
+
 // TestConnectCredFailures covers every credential-gate rejection: an absent
 // bearer, a non-ingress token, a tampered signature, and an expired credential
 // all collapse to 401; a credential that cannot be verified because no session CA
@@ -539,6 +664,52 @@ func TestConnectRefusedAtCapacityThenReleased(t *testing.T) {
 	defer func() { _ = c.Close() }()
 	if !strings.Contains(status, "200") {
 		t.Fatalf("post-release status = %q, want 200", strings.TrimSpace(status))
+	}
+}
+
+// TestConnectAcquiresSlotBeforeNeighborProbe proves the concurrency slot is
+// acquired BEFORE the ~2s anti-SSRF neighbor probe, not after. With the gateway's
+// single slot already exhausted, a connect must refuse 503 without ever running
+// the neighbor probe: a reusable credential replayed to open unbounded concurrent
+// requests must be bounded at the per-VM/per-gateway ceiling on the expensive
+// probe phase, not merely on the post-probe splice. The teeth are the
+// NeighborMACCalls==0 assertion; the sibling capacity test does not check it and
+// passes whether the probe runs before or after acquire.
+func TestConnectAcquiresSlotBeforeNeighborProbe(t *testing.T) {
+	signer, pubPEM := newTestSessionCA(t)
+	ip := netip.MustParseAddr("10.42.0.5")
+	bridge := "otvg100"
+
+	// Exhaust the single gateway slot before the handler runs.
+	slots := newConnectSlots(1, 1)
+	if err := slots.acquire("other-vm"); err != nil {
+		t.Fatalf("pre-acquire: %v", err)
+	}
+
+	h := &ConnectHandler{
+		dial:     failDial(t),
+		fabric:   fabricResolving(t, bridge, ip, testMACA),
+		overlays: fakeOverlays{bridge: bridge, ok: true},
+		caStore:  storeWith(t, pubPEM),
+		slots:    slots,
+		log:      discardLogger(),
+	}
+	srv := gatedConnect(t, h)
+	token := signCred(t, signer, auth.SessionCredClaims{
+		VMID: uuid.New(), NICMAC: testMACA, GuestIP: ip, Port: 22,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	})
+
+	resp := doConnect(t, srv.URL, token)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("at-capacity status = %d, want 503 (refused before the probe)", resp.StatusCode)
+	}
+	if code := errorCode(t, resp); code != "ingress_unavailable" {
+		t.Errorf("error code = %q, want ingress_unavailable", code)
+	}
+	if got := len(h.fabric.(*netfabric.FakeFabric).NeighborMACCalls); got != 0 {
+		t.Errorf("NeighborMAC calls = %d, want 0 (slot must be acquired before the neighbor probe)", got)
 	}
 }
 

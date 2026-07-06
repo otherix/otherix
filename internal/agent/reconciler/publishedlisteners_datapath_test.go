@@ -301,31 +301,50 @@ func (a *addrConn) isClosed(d time.Duration) bool {
 	}
 }
 
-// fakeDeviceResolver is a scripted deviceResolver seam.
+// fakeDeviceResolver is a scripted deviceResolver seam. By default it yields a
+// single candidate {device, netID} when ok, or none otherwise. Tests that need
+// overlapping-overlay behaviour set candidates directly, which takes precedence.
 type fakeDeviceResolver struct {
-	device string
-	netID  string
-	ok     bool
+	device     string
+	netID      string
+	ok         bool
+	candidates []OverlayCandidate
 }
 
-func (f *fakeDeviceResolver) OverlayNetworkForIP(netip.Addr) (string, string, bool) {
-	return f.device, f.netID, f.ok
+func (f *fakeDeviceResolver) OverlayCandidatesForIP(netip.Addr) []OverlayCandidate {
+	if f.candidates != nil {
+		return f.candidates
+	}
+	if !f.ok {
+		return nil
+	}
+	return []OverlayCandidate{{Device: f.device, NetworkID: f.netID}}
 }
 
 // fakeNeighborResolver is a scripted neighborResolver seam that counts calls so
-// a test can prove the slot cap gates the probe (acquire before probe).
+// a test can prove the slot cap gates the probe (acquire before probe). When
+// byDevice is non-nil the result is keyed per device (a device present in the map
+// resolves to its MAC with ok=true; an absent device is unresolved), so an
+// overlapping-overlay test can make only one candidate veth resolve to the backend
+// MAC. Otherwise the single mac/ok/err is returned for every device.
 type fakeNeighborResolver struct {
-	mu    sync.Mutex
-	calls int
-	mac   net.HardwareAddr
-	ok    bool
-	err   error
+	mu       sync.Mutex
+	calls    int
+	mac      net.HardwareAddr
+	ok       bool
+	err      error
+	byDevice map[string]net.HardwareAddr
 }
 
-func (f *fakeNeighborResolver) NeighborMAC(string, netip.Addr) (net.HardwareAddr, bool, error) {
+func (f *fakeNeighborResolver) NeighborMAC(device string, _ netip.Addr) (net.HardwareAddr, bool, error) {
 	f.mu.Lock()
 	f.calls++
+	byDevice := f.byDevice
 	f.mu.Unlock()
+	if byDevice != nil {
+		m, ok := byDevice[device]
+		return m, ok, nil
+	}
 	return f.mac, f.ok, f.err
 }
 
@@ -479,6 +498,71 @@ func TestHandleConnNeighborMismatch(t *testing.T) {
 	}
 	if got := dialer.callCount(); got != 0 {
 		t.Errorf("dialer calls on neighbor mismatch = %d, want 0", got)
+	}
+}
+
+// TestHandleConnDisambiguatesOverlappingOverlaysByMAC proves the datapath picks
+// the candidate veth whose neighbor MAC matches the CP-declared backend MAC when
+// two overlays share the same subnet, independent of candidate order. Here only
+// otvg2 resolves the backend IP to the backend MAC, so the dial must bind to
+// otvg2 even though otvg1 is first.
+func TestHandleConnDisambiguatesOverlappingOverlaysByMAC(t *testing.T) {
+	dev := &fakeDeviceResolver{candidates: []OverlayCandidate{
+		{Device: "otvg1", NetworkID: "net-1"},
+		{Device: "otvg2", NetworkID: "net-2"},
+	}}
+	nbr := &fakeNeighborResolver{byDevice: map[string]net.HardwareAddr{
+		"otvg1": mustParseMAC(t, "02:00:00:00:00:99"), // different MAC on the first candidate
+		"otvg2": mustParseMAC(t, testBackendMAC),      // the backend MAC on the second
+	}}
+	upstream, testUpstream := net.Pipe()
+	t.Cleanup(func() { _ = testUpstream.Close() })
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return upstream, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	c, _ := newAddrConn("192.0.2.10:50000")
+	cfg := oneBackendCfg([]string{"192.0.2.0/24"})
+	go r.handleConn(context.Background(), c, cfg)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for dialer.callCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("dial never happened; the MAC-matching candidate was not selected")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if dialer.lastDevice != "otvg2" {
+		t.Errorf("dial device = %q, want otvg2 (the overlay whose neighbor MAC matches the backend)", dialer.lastDevice)
+	}
+}
+
+// TestHandleConnRefusesWhenNoCandidateMACMatches proves the datapath fails closed
+// when several candidate overlays contain the backend IP but none resolves it to
+// the CP-declared backend MAC: the connection is closed, no dial happens, and
+// every candidate was probed.
+func TestHandleConnRefusesWhenNoCandidateMACMatches(t *testing.T) {
+	dev := &fakeDeviceResolver{candidates: []OverlayCandidate{
+		{Device: "otvg1", NetworkID: "net-1"},
+		{Device: "otvg2", NetworkID: "net-2"},
+	}}
+	nbr := &fakeNeighborResolver{byDevice: map[string]net.HardwareAddr{
+		"otvg1": mustParseMAC(t, "02:00:00:00:00:98"),
+		"otvg2": mustParseMAC(t, "02:00:00:00:00:99"),
+	}}
+	dialer := &fakeDatapathDialer{fn: func() (net.Conn, error) { return nil, nil }}
+	r := datapathReconciler(dev, nbr, dialer)
+
+	c, _ := newAddrConn("192.0.2.10:50000")
+	r.handleConn(context.Background(), c, oneBackendCfg(nil))
+
+	if !c.isClosed(time.Second) {
+		t.Error("no-candidate-match conn not closed")
+	}
+	if got := dialer.callCount(); got != 0 {
+		t.Errorf("dialer calls when no candidate MAC matches = %d, want 0", got)
+	}
+	if got := nbr.callCount(); got != 2 {
+		t.Errorf("neighbor probes = %d, want 2 (every candidate probed before refusing)", got)
 	}
 }
 
