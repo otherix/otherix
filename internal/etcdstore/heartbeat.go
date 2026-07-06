@@ -230,6 +230,14 @@ func (h heartbeatProjection) UpsertVMRuntime(ctx context.Context, arg store.Upse
 	// compare - the stale write is skipped rather than resurrecting a runtime row
 	// on a deleted VM or regressing current_node_id after cutover. A zero rev
 	// means the caller wants an unconditional write (etcd revisions are >= 1).
+	//
+	// The compare is on vmKey, NOT vmRuntimeKey: it fences vms-row moves
+	// (delete/cutover), not concurrent runtime writers - the Then-ops here do not
+	// touch vmKey, so two heartbeats reading the same vmRev both pass. That is
+	// benign: outside a move only one node is pinned, and during a move the epoch
+	// fence makes source and target write the same current_node_id (the source).
+	// Cutover itself CASes on vmRuntimeKey's rev, so it and a runtime write are
+	// serialized both ways.
 	txn := h.s.c.Raw().Txn(ctx)
 	if arg.VMRowModRevision != 0 {
 		txn = txn.If(clientv3.Compare(clientv3.ModRevision(vmKey(arg.VmID)), "=", arg.VMRowModRevision))

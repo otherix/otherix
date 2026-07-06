@@ -1392,7 +1392,10 @@ func (h *Handler) applyVMReport(ctx context.Context, hp store.HeartbeatProjectio
 	// cutover can land in the window between that gate and this write. Deciding
 	// and CAS-ing off the same fresh read closes both TOCTOUs: a row that moves
 	// after this read fails the compare, and a pin that already moved before it is
-	// caught here.
+	// caught here. A benign vms-row writer (a user PATCH, a scheduler bind) landing
+	// in this tiny read-to-commit window can also fail the compare and drop this
+	// tick's runtime update; that self-heals on the next heartbeat, which re-reads
+	// a fresh rev.
 	vm, vmRev, err := hp.VMWithRev(ctx, r.VMUUID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

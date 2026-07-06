@@ -293,3 +293,78 @@ func TestApplyVMReportSkipsWhenPinMovedOrDeleted(t *testing.T) {
 		}
 	})
 }
+
+// TestApplyVMReportClaimAuthorityBranches pins down the remaining arms of the
+// claim-authority switch: case A (pinned node) must win WITHOUT consulting the
+// migration, and the migration-target arm must fail closed when the source is
+// nil or the reporter is not this move's target.
+func TestApplyVMReportClaimAuthorityBranches(t *testing.T) {
+	reporting := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	source := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	target := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+	vmID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	t.Run("pinned node wins without consulting the migration", func(t *testing.T) {
+		// The VM is pinned to the reporting node AND an active migration exists
+		// whose source is a different node. Case A must claim the reporting node;
+		// if the switch wrongly consulted the migration it would claim source.
+		spy := &vmRuntimeSpy{
+			existing: []uuid.UUID{vmID},
+			pinned:   []uuid.UUID{vmID},
+			vmRev:    9,
+			vmRows:   map[uuid.UUID]store.VM{vmID: {ID: vmID, PinnedNodeID: &reporting}},
+			activeMigrations: map[uuid.UUID]store.Migration{
+				vmID: {SourceNodeID: &source, TargetNodeID: &target},
+			},
+		}
+		h := newQuietHandler()
+		if err := h.applyVMs(context.Background(), spy, reporting, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
+			t.Fatalf("applyVMs(...) = %v, want nil", err)
+		}
+		want := []store.UpsertVMRuntimeParams{{
+			VmID: vmID, CurrentNodeID: &reporting, Phase: store.VMPhase("running"), VMRowModRevision: 9,
+		}}
+		if diff := cmp.Diff(want, spy.upserts); diff != "" {
+			t.Errorf("claim mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("target arm skips when the migration source is nil", func(t *testing.T) {
+		spy := &vmRuntimeSpy{
+			existing: []uuid.UUID{vmID},
+			pinned:   []uuid.UUID{vmID},
+			vmRev:    9,
+			vmRows:   map[uuid.UUID]store.VM{vmID: {ID: vmID, PinnedNodeID: &source}},
+			activeMigrations: map[uuid.UUID]store.Migration{
+				vmID: {TargetNodeID: &target}, // SourceNodeID nil
+			},
+		}
+		h := newQuietHandler()
+		if err := h.applyVMs(context.Background(), spy, target, []vmReport{{VMUUID: vmID, Phase: "migrating"}}); err != nil {
+			t.Fatalf("applyVMs(...) = %v, want nil", err)
+		}
+		if len(spy.upserts) != 0 {
+			t.Errorf("applyVMs upserted %d rows with a nil migration source; want 0 (skip)", len(spy.upserts))
+		}
+	})
+
+	t.Run("target arm skips when the reporter is not this move's target", func(t *testing.T) {
+		bystander := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
+		spy := &vmRuntimeSpy{
+			existing: []uuid.UUID{vmID},
+			pinned:   []uuid.UUID{vmID}, // stale gate admits the bystander
+			vmRev:    9,
+			vmRows:   map[uuid.UUID]store.VM{vmID: {ID: vmID, PinnedNodeID: &source}},
+			activeMigrations: map[uuid.UUID]store.Migration{
+				vmID: {SourceNodeID: &source, TargetNodeID: &target}, // target != bystander
+			},
+		}
+		h := newQuietHandler()
+		if err := h.applyVMs(context.Background(), spy, bystander, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
+			t.Fatalf("applyVMs(...) = %v, want nil", err)
+		}
+		if len(spy.upserts) != 0 {
+			t.Errorf("applyVMs upserted %d rows for a non-target reporter; want 0 (skip)", len(spy.upserts))
+		}
+	})
+}
