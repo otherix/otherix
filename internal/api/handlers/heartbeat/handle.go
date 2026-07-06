@@ -203,9 +203,13 @@ type heartbeatOutcome struct {
 	sessionCAPublicPEM     *string
 }
 
-// project runs the full state projection in a single transaction.
-// It returns the post-commit heartbeatOutcome (currently only pressure
-// state transitions) and a typed *projectionError for HTTP-shaped
+// project runs the full state projection. The steps are a SEQUENCE OF
+// INDEPENDENT WRITES (RunHeartbeatProjection is not a single etcd transaction),
+// so the node capability + last_heartbeat_at write (applyNodeUpdate) is stamped
+// LAST, only after every observed/declared step has committed - a partially
+// applied heartbeat therefore never refreshes liveness on a node whose state
+// never landed. It returns the post-commit heartbeatOutcome (currently only
+// pressure state transitions) and a typed *projectionError for HTTP-shaped
 // failures (404 / 409); any other error is treated as internal.
 func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestBody) (heartbeatOutcome, error) {
 	var outcome heartbeatOutcome
@@ -239,9 +243,6 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 			}
 		}
 
-		if err := h.applyNodeUpdate(ctx, hp, agent.NodeID, body); err != nil {
-			return err
-		}
 		now := time.Now().UTC()
 		memKind, err := h.applyMemoryPressure(ctx, hp, agent.NodeID, node, body, now)
 		if err != nil {
@@ -256,7 +257,21 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 		if err := h.applyObservedReports(ctx, hp, agent.NodeID, body); err != nil {
 			return err
 		}
-		return h.loadDeclared(ctx, hp, agent.NodeID, &outcome)
+		if err := h.loadDeclared(ctx, hp, agent.NodeID, &outcome); err != nil {
+			return err
+		}
+		// applyNodeUpdate runs LAST. RunHeartbeatProjection is NOT a single etcd
+		// transaction (it is a sequence of independent writes), so if the node
+		// capability + last_heartbeat_at write ran first (as it used to) any later
+		// step that persistently fails - e.g. a WireGuard pubkey collision throwing
+		// 409 every tick - would still refresh last_heartbeat_at each time. The
+		// reaper would then never mark the node unreachable/gone and the scheduler
+		// would keep placing on it, while none of its observed state ever lands.
+		// Stamping liveness only after every observed/declared step above committed
+		// makes a persistently-failing projection stop looking alive. Nothing above
+		// reads the fields this writes (capabilities, migration triple, ingress
+		// endpoint), so the order change is behaviour-preserving on success.
+		return h.applyNodeUpdate(ctx, hp, agent.NodeID, body)
 	})
 	if err != nil {
 		return outcome, err
