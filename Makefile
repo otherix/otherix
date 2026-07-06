@@ -91,7 +91,7 @@ INTEGRATION_TAGS := integration,$(TEST_TAGS)
 
 # The etcd-backed suites share one in-process member per test binary (TestMain),
 # so the wall-clock is dominated by the work, not member churn.
-ETCD_TEST_PKGS := ./internal/etcd/... ./internal/etcdstore/... ./internal/api/handlers/migrations/... ./tests/apie2e/...
+ETCD_TEST_PKGS := ./internal/etcd/... ./internal/etcdstore/... ./internal/api/handlers/migrations/... ./cmd/api/... ./tests/apie2e/...
 test: ## Run unit tests with race detector and coverage
 	$(GO) test ./... -race -tags=$(TEST_TAGS) -coverprofile=coverage.out
 
