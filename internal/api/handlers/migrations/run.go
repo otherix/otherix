@@ -106,11 +106,39 @@ type Placer interface {
 	Place(ctx context.Context, req scheduler.PlacementRequest) (scheduler.PlacementDecision, error)
 }
 
+// defaultMigrationMaxPollDuration bounds how long the worker will loop-poll a
+// single outgoing task before freeing its dispatcher slot with a retryable
+// requeue. It is deliberately generous - comfortably longer than any real
+// migration and the agent's live ConvergenceTimeout - so it fires ONLY on a
+// genuinely stuck source task (e.g. a hung offline qemu-img convert, which has
+// no source-side timeout), never on a healthy long migration.
+const defaultMigrationMaxPollDuration = 24 * time.Hour
+
 // MigrateConfig threads the worker's non-placement knobs. DefaultPoolName is the
 // cluster default the worker falls back to when a migration carries no explicit
 // TargetPoolName (the placement algorithm + resource gating live on the Placer).
+// MaxPollDuration bounds the outgoing-task loop-poll (zero -> the default); Now
+// is the clock seam for that bound (nil -> time.Now), overridden only by tests.
 type MigrateConfig struct {
 	DefaultPoolName string
+	MaxPollDuration time.Duration
+	Now             func() time.Time
+}
+
+// maxPollDuration returns the configured loop-poll bound or the default.
+func (c MigrateConfig) maxPollDuration() time.Duration {
+	if c.MaxPollDuration > 0 {
+		return c.MaxPollDuration
+	}
+	return defaultMigrationMaxPollDuration
+}
+
+// now returns the configured clock or time.Now.
+func (c MigrateConfig) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 // schedulerPlacer is the production Placer: it runs scheduler.SchedulePlacement
@@ -206,7 +234,7 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 		m = bound
 	}
 
-	return driveHandshake(ctx, st, agent, log, taskID, m, vm)
+	return driveHandshake(ctx, st, agent, cfg, log, taskID, m, vm)
 }
 
 // placeAndBind scores a target for a node-less migration and binds it. On an
@@ -304,7 +332,7 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 // migration and polls the SOURCE outgoing task to terminal. On success it commits
 // the atomic cutover (re-pin source -> target); on failure it marks the migration
 // failed WITHOUT ever re-pinning (fail-safe-to-source).
-func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, taskID uuid.UUID, m store.Migration, vm store.VM) error {
+func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, cfg MigrateConfig, log *slog.Logger, taskID uuid.UUID, m store.Migration, vm store.VM) error {
 	if m.TargetNodeID == nil {
 		// Defensive: a bound migration always has a target. A nil here is a bug, not
 		// a retryable condition.
@@ -342,14 +370,20 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 	// source outgoing task to terminal.
 	advancePhase(ctx, st, log, m.ID, store.MigrationPhaseActive)
 
-	terminal, perr := agent.PollTask(ctx, source.AdvertisedEndpoint, agentTaskID)
+	terminal, perr := pollOutgoing(ctx, st, agent, cfg, log, taskID, m, vm, source, agentTaskID)
 	if perr != nil {
-		return failTask(ctx, st, log, taskID, ErrCodeTargetUnreachable, fmt.Errorf("poll outgoing task: %v", perr))
+		return perr
 	}
+	if terminal == nil {
+		// The poll classified the result into a terminal/retryable outcome and
+		// already finalized (or requeued); nothing more for this delivery.
+		return nil
+	}
+	t := *terminal
 
-	switch terminal.Status {
+	switch t.Status {
 	case "success":
-		if err := commitCutover(ctx, st, log, taskID, m.ID, terminal); err != nil {
+		if err := commitCutover(ctx, st, log, taskID, m.ID, t); err != nil {
 			return err
 		}
 		// Post-cutover convergence. Reached ONLY after CommitMigrationCutover
@@ -374,9 +408,164 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 			return finalizeForTerminalMigration(ctx, st, agent, log, taskID, reloaded)
 		}
 		cancelTargetIncoming(ctx, agent, log, m, vm, target)
-		return failMigration(ctx, st, log, taskID, m.ID, terminal)
+		return failMigration(ctx, st, log, taskID, m.ID, t)
 	default:
-		return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("unexpected agent terminal status %q", terminal.Status))
+		return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("unexpected agent terminal status %q", t.Status))
+	}
+}
+
+// pollOutgoing polls the source outgoing task to terminal, classifying every poll
+// error so a healthy long migration is never failed for a mere poll-budget
+// timeout (#4) and a vanished source task (agent restart) is arbitrated on
+// positive target evidence rather than blindly re-driven (#5). It returns:
+//
+//   - (&terminal, nil) when the agent task reached a terminal status; the caller
+//     runs the success/failed/cancelled switch.
+//   - (nil, err) when it has already resolved this delivery here: err is the value
+//     the worker must return - nil when a terminal/requeue was finalized, or a
+//     retryable / propagating error otherwise.
+//
+// The loop-poll runs under the dispatcher's job-lease renewer (which renews for
+// the handler's whole lifetime), so a multi-hour migration never loses its lease.
+// It is bounded by cfg.maxPollDuration so a genuinely stuck source task (a hung
+// offline convert has no source-side timeout) frees the dispatcher slot via a
+// retryable requeue instead of pinning it forever.
+func pollOutgoing(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, cfg MigrateConfig, log *slog.Logger, taskID uuid.UUID, m store.Migration, vm store.VM, source store.Node, agentTaskID uuid.UUID) (*agentclient.TaskTerminal, error) {
+	deadline := cfg.now().Add(cfg.maxPollDuration())
+	for {
+		terminal, perr := agent.PollTask(ctx, source.AdvertisedEndpoint, agentTaskID)
+		if perr == nil {
+			return &terminal, nil
+		}
+
+		var te *agentclient.TimeoutError
+		if errors.As(perr, &te) {
+			// Poll budget elapsed, the agent task is still alive. Keep polling - do
+			// NOT finalize, do NOT consume an attempt - unless the overall budget is
+			// spent, in which case free the dispatcher slot with a RETRYABLE requeue
+			// (the migration stays active; redelivery resumes via agent_task_id).
+			if cfg.now().After(deadline) {
+				log.WarnContext(ctx, "migration poll budget elapsed; requeueing to free the worker slot",
+					slog.String("migration_id", m.ID.String()), slog.String("budget", cfg.maxPollDuration().String()))
+				// Return a bare RETRYABLE error (do NOT finalize the task): the
+				// migration is healthy and still active, so writing a failed envelope
+				// would only flicker the task failed->running on redelivery. The
+				// dispatcher requeues (attempt bump) and the next delivery resumes the
+				// poll via the persisted agent_task_id.
+				return nil, fmt.Errorf("migration %s poll budget %s elapsed; requeueing", m.ID, cfg.maxPollDuration())
+			}
+			continue
+		}
+		if errors.Is(perr, context.Canceled) {
+			// Graceful shutdown cancelled the run ctx. Return the ctx error WITHOUT
+			// finalizing the task: the dispatcher's shutdown arm requeues to pending
+			// with NO attempt bump and the next boot resumes via the persisted
+			// agent_task_id. Finalizing here would durably mark the task failed on a
+			// mere deploy.
+			return nil, perr
+		}
+		var ae *agentclient.AgentError
+		if errors.As(perr, &ae) && ae.Status == http.StatusNotFound {
+			// The source agent lost the in-memory task - a source restart is the only
+			// deleter of an agent task, and it wipes the in-memory migration record
+			// with it. Do NOT blind re-POST (destructive re-drive) and do NOT probe
+			// the source (its record is gone regardless of how far the push got).
+			// Arbitrate on positive TARGET evidence instead.
+			return nil, reconcileVanishedSourceTask(ctx, st, agent, log, taskID, m, vm)
+		}
+		// Genuine transient poll failure (5xx budget-exhausted, network): retryable,
+		// consume an attempt (unchanged pre-hardening behaviour).
+		return nil, failTask(ctx, st, log, taskID, ErrCodeTargetUnreachable,
+			fmt.Errorf("poll outgoing task: %v", perr))
+	}
+}
+
+// reconcileVanishedSourceTask arbitrates an outgoing task that 404s mid-poll -
+// reachable essentially only by a source-agent restart, which erases BOTH the
+// in-memory agent task AND the in-memory migration record. Because the source
+// record is gone whether or not the live push already handed off, its ABSENCE is
+// NOT evidence the migration failed: the source may have completed the push and
+// the guest may already be running on the TARGET. So the terminal verdict is
+// gated on positive TARGET evidence (the target is the node that did NOT restart
+// in this scenario), never on the source record. It always fails toward inaction:
+// it commits only on a confirmed target handoff, fails only on confirmed
+// non-handoff, and retries on any uncertainty - never destroying or stranding a
+// live guest.
+func reconcileVanishedSourceTask(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, taskID uuid.UUID, m store.Migration, vm store.VM) error {
+	failToSource := func(reason string) error {
+		// The guest is on the source (or down, to be restarted on source from the
+		// intact source disk by the VM reconciler). Reap the bound target's incoming
+		// (best-effort) and mark the migration failed (fail-safe-to-source).
+		reapTargetIncoming(ctx, st, agent, log, m)
+		log.WarnContext(ctx, "source task vanished; migration failed to source ("+reason+")",
+			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
+		return failMigration(ctx, st, log, taskID, m.ID,
+			agentclient.TaskTerminal{Status: "failed", Error: &agentclient.AgentError{
+				Code: ErrCodeConvergenceFailed, Message: "source agent restarted mid-migration (" + reason + ")",
+			}})
+	}
+
+	if !m.Live {
+		// An offline target adopts a STOPPED copy the CP never started pre-cutover
+		// (the CP starts it only in convergePostCutover AFTER a committed cutover),
+		// and the source disk is intact. So an offline source restart leaves the
+		// guest running nowhere and failing toward source is fully recoverable - no
+		// target probe needed (mirrors the cancel arbiter's !m.Live short-circuit).
+		return failToSource("offline migration; nothing handed off")
+	}
+	if m.TargetNodeID == nil {
+		// A live migration with no bound target never handed off; guest on source.
+		return failToSource("no bound target")
+	}
+	target, err := st.NodeByID(ctx, *m.TargetNodeID)
+	if err != nil {
+		// Target node unresolved: outcome UNKNOWN. Retry; touch nothing.
+		return fmt.Errorf("load target node for vanished-task migration %s: %v", m.ID, err)
+	}
+
+	srcHandoff, err := agent.GetMigration(ctx, target.AdvertisedEndpoint, vm.Name, m.ID.String())
+	if err != nil {
+		var ae *agentclient.AgentError
+		if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+			// The TARGET has no record either (both nodes restarted, or the target
+			// record was also lost): outcome UNKNOWN. Retry; do NOT finalize (fail
+			// toward inaction - degrades at worst to the recoverable pre-fix wedge).
+			return fmt.Errorf("vanished-task migration %s: target has no record; retry", m.ID)
+		}
+		// Target unreachable / 5xx: outcome UNKNOWN. Retry; touch nothing.
+		return fmt.Errorf("probe target migration %s: %v", m.ID, err)
+	}
+
+	switch srcHandoff.Phase {
+	case agentapi.MigrationPhaseCompleted:
+		// The handoff LANDED: the guest resumed on the target (the target stamps its
+		// record completed on cont). Commit the cutover (idempotent re-pin
+		// source->target) - the ONLY non-loss outcome. This is the positive evidence
+		// that makes a terminal verdict safe.
+		log.WarnContext(ctx, "source task vanished but target confirms handoff; completing to target",
+			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
+		if err := commitCutover(ctx, st, log, taskID, m.ID, agentclient.TaskTerminal{Status: "success"}); err != nil {
+			return err
+		}
+		source, serr := st.NodeByID(ctx, *m.SourceNodeID)
+		if serr != nil {
+			// Cutover committed; a source-node load failure only skips best-effort
+			// post-cutover cleanup (leak, never a loss). Nothing to fail.
+			log.WarnContext(ctx, "post-cutover source-node load failed; skipping convergence",
+				slog.String("migration_id", m.ID.String()), slog.String("error", serr.Error()))
+			return nil
+		}
+		convergePostCutover(ctx, st, agent, log, m.ID, vm, source, target, m.Live)
+		return nil
+	case agentapi.MigrationPhaseFailed, agentapi.MigrationPhaseCancelled,
+		agentapi.MigrationPhaseSetup, agentapi.MigrationPhaseActive, agentapi.MigrationPhasePostcopyActive:
+		// The target shows the handoff did NOT land (aborted, or still mid-flight and
+		// now orphaned because the source that was driving it is gone). Positive
+		// evidence the guest is NOT running on the target -> fail toward source.
+		return failToSource("target confirms no handoff (phase " + string(srcHandoff.Phase) + ")")
+	default:
+		// An unknown target phase: outcome UNKNOWN. Retry; do NOT finalize.
+		return fmt.Errorf("vanished-task migration %s: unexpected target phase %q; retry", m.ID, srcHandoff.Phase)
 	}
 }
 
