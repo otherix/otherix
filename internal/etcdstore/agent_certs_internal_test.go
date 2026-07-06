@@ -115,7 +115,7 @@ func TestRevokeNodeAgentCertsOps_StaleIndex(t *testing.T) {
 		t.Fatalf("plant stale index: %v", err)
 	}
 
-	ops, count, err := s.revokeNodeAgentCertsOps(ctx, node.ID, time.Now().UTC())
+	ops, count, err := s.revokeNodeAgentCertsOps(ctx, node.ID, time.Now().UTC(), "node deleted")
 	if err != nil {
 		t.Fatalf("revokeNodeAgentCertsOps: %v", err)
 	}

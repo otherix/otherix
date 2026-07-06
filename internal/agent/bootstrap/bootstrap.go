@@ -52,9 +52,12 @@ type Result struct {
 //  4. POST /v1/nodes/join over a transport that verifies the CP
 //     serving cert against the operator-pinned cluster CA ONLY (not the
 //     full TOFU-served bundle) - the token is never sent to a server
-//     not authenticated by the pinned CA. **The token is consumed at
-//     the CP side once HTTP returns 201, even if the agent never
-//     observes the response** - retry requires a fresh token.
+//     not authenticated by the pinned CA. If HTTP returns 201 but the
+//     agent never observes the response, re-running bootstrap with the
+//     SAME token recovers: CP-side redemption is re-runnable for an
+//     unconfirmed node (it supersedes the undelivered cert and re-issues
+//     without spending additional max_uses). A fresh token is needed only
+//     once the node has heartbeated (it is then confirmed-owned).
 //  5. Re-verify the returned CA matches the pinned fingerprint,
 //     then verify the leaf cert chains to the same CA.
 //
