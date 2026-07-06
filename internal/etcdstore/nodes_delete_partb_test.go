@@ -231,6 +231,54 @@ func TestDeleteNodeForceOrphansObservedVMKeepsDisk(t *testing.T) {
 	}
 }
 
+// TestDeleteNodeForceAbortsOnInFlightCreate is the cardinal-invariant guard: a VM
+// whose create is EXECUTING on the agent (create task=running, no vm_runtime row
+// yet - the window inside exec.Execute before ProjectVMCreateSuccess) must NOT be
+// rolled back. Routing sees no runtime row, so it reaches the rollback; the rollback
+// must detect the running create and ABORT the whole force-delete (fail toward
+// inaction), leaving the disk, the pin, and the node intact - never tearing down an
+// in-flight create's disk and stranding a runtime row on a deleted node.
+func TestDeleteNodeForceAbortsOnInFlightCreate(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	nodeID, poolID, _ := schedulingFixture(t, s)
+
+	vmID, createTask := pinnedUnobservedVM(t, s, nodeID, poolID, nil, "")
+	// The dispatcher claimed the create: task -> running, still no runtime row.
+	if _, err := s.UpdateTaskRunning(ctx, createTask); err != nil {
+		t.Fatalf("UpdateTaskRunning: %v", err)
+	}
+
+	if _, err := s.DeleteNode(ctx, nodeID, true, uuid.New()); !errors.Is(err, store.ErrConcurrentUpdate) {
+		t.Fatalf("DeleteNode(force) with an in-flight create = %v, want ErrConcurrentUpdate (abort)", err)
+	}
+
+	// Node NOT soft-deleted; VM still pinned; disk intact (nothing torn down).
+	if _, err := s.NodeByID(ctx, nodeID); err != nil {
+		t.Errorf("node soft-deleted despite abort = %v, want still present", err)
+	}
+	vm, err := s.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if vm.PinnedNodeID == nil || *vm.PinnedNodeID != nodeID {
+		t.Errorf("VM unpinned despite abort, want still pinned to %v", nodeID)
+	}
+	disks, err := s.ListVMDisksByVM(ctx, vmID)
+	if err != nil {
+		t.Fatalf("ListVMDisksByVM: %v", err)
+	}
+	if len(disks) != 1 {
+		t.Errorf("disks = %d, want 1 (in-flight create's disk must survive)", len(disks))
+	}
+	// The delete-intent must be cleared on abort so binds are not stuck.
+	if _, found, err := cli.Get(ctx, etcd.Key("deleting", "nodes", nodeID.String())); err != nil {
+		t.Fatalf("get node intent: %v", err)
+	} else if found {
+		t.Errorf("node delete-intent still present after abort, want cleared")
+	}
+}
+
 // TestBindBlockedWhileNodeDeleting proves the producer guard: while a node's
 // delete-intent key is present, a bind onto that node loses the guard CAS and
 // leaves the VM unscheduled (the scheduler retries; once the node soft-deletes

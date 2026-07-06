@@ -214,25 +214,25 @@ func (s *Store) buildRollbackOps(ctx context.Context, vm *store.VM, nodeID uuid.
 		clientv3.Compare(clientv3.CreateRevision(vmRuntimeKey(vm.ID)), "=", 0),
 	}
 
-	// Cancel the pending create task and delete its backing job in the SAME Txn, so
-	// the create never executes against the dead node and does not double-create on
-	// re-bind. Guarded on the job's ModRevision: if the dispatcher claimed it between
-	// our read and commit, the CAS loses and we retry; if it is not cleanly pending
-	// at read time, abort (fail toward inaction - never rewind an in-flight create).
-	task, found, err := s.pendingCreateTaskForVM(ctx, vm.ID)
+	// Neutralize the ACTIVE (non-terminal) create so it never executes against the
+	// dead node and does not double-create on re-bind. The routing already saw no
+	// runtime row, but a create can be MID-EXECUTION on the agent with no runtime row
+	// yet (the worker passed UpdateTaskRunning -> task=running, then sits in
+	// exec.Execute; ProjectVMCreateSuccess writes the runtime row only afterward). A
+	// pending-only lookup would miss that state and roll a running VM back, tearing
+	// down its disk and stranding a runtime row on the deleted node. So we abort the
+	// whole force-delete (fail toward inaction) whenever the create is executing -
+	// task=running OR its job claimed=running - and neutralize only a create that is
+	// provably not in flight (pending, or failed awaiting retry): cancel the task and
+	// delete its job in this Txn, guarded on the job's ModRevision so a dispatcher
+	// claim between our read and commit loses the CAS (we retry and re-check).
+	task, found, err := s.activeCreateTaskForVM(ctx, vm.ID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if found {
-		if task.JobID == nil {
-			return nil, nil, fmt.Errorf("rollback vm %s: create task %s has no backing job", vm.ID, task.ID)
-		}
-		job, jobRev, jobFound, jerr := s.jobWithRev(ctx, *task.JobID)
-		if jerr != nil {
-			return nil, nil, jerr
-		}
-		if !jobFound || job.State != JobStatePending {
-			return nil, nil, fmt.Errorf("rollback vm %s: create job %d not cleanly pending: %w", vm.ID, *task.JobID, store.ErrConcurrentUpdate)
+		if task.Status == store.TaskStatusRunning {
+			return nil, nil, fmt.Errorf("rollback vm %s: create task %s is running: %w", vm.ID, task.ID, store.ErrConcurrentUpdate)
 		}
 		task.Status = store.TaskStatusCancelled
 		task.FinishedAt = &now
@@ -240,11 +240,20 @@ func (s *Store) buildRollbackOps(ctx context.Context, vm *store.VM, nodeID uuid.
 		if merr != nil {
 			return nil, nil, merr
 		}
-		ops = append(ops,
-			clientv3.OpPut(taskKey(task.ID), string(tVal)),
-			clientv3.OpDelete(jobKey(*task.JobID)),
-		)
-		conds = append(conds, clientv3.Compare(clientv3.ModRevision(jobKey(*task.JobID)), "=", jobRev))
+		ops = append(ops, clientv3.OpPut(taskKey(task.ID), string(tVal)))
+		if task.JobID != nil {
+			job, jobRev, jobFound, jerr := s.jobWithRev(ctx, *task.JobID)
+			if jerr != nil {
+				return nil, nil, jerr
+			}
+			if jobFound {
+				if job.State == JobStateRunning {
+					return nil, nil, fmt.Errorf("rollback vm %s: create job %d is running: %w", vm.ID, *task.JobID, store.ErrConcurrentUpdate)
+				}
+				ops = append(ops, clientv3.OpDelete(jobKey(*task.JobID)))
+				conds = append(conds, clientv3.Compare(clientv3.ModRevision(jobKey(*task.JobID)), "=", jobRev))
+			}
+		}
 	}
 
 	// Return the VM to unscheduled (mirrors the shape CreateUnscheduledVM lands):
@@ -269,10 +278,15 @@ func (s *Store) buildRollbackOps(ctx context.Context, vm *store.VM, nodeID uuid.
 	return ops, conds, nil
 }
 
-// pendingCreateTaskForVM returns the pending vm.create task for the VM (the one a
-// bind enqueued), found by a bounded task-prefix scan. A bind leaves exactly one
-// pending vm.create task per VM; prior rolled-back binds' tasks are cancelled.
-func (s *Store) pendingCreateTaskForVM(ctx context.Context, vmID uuid.UUID) (store.Task, bool, error) {
+// activeCreateTaskForVM returns the ACTIVE (non-committed-terminal: pending,
+// running, or failed-awaiting-retry) vm.create task for the VM, found by a bounded
+// task-prefix scan. A VM has at most one active create task at a time: a bind
+// enqueues one, and a prior rolled-back bind's task is cancelled (committed
+// terminal, excluded here); success is excluded too (a succeeded create has a
+// runtime row, so the VM routes to orphan, not rollback). Returning the running /
+// failed states - not just pending - is load-bearing: it lets the rollback detect
+// a create executing on the agent and abort rather than tear it down.
+func (s *Store) activeCreateTaskForVM(ctx context.Context, vmID uuid.UUID) (store.Task, bool, error) {
 	items, err := s.c.Range(ctx, taskPrefix())
 	if err != nil {
 		return store.Task{}, false, err
@@ -282,7 +296,7 @@ func (s *Store) pendingCreateTaskForVM(ctx context.Context, vmID uuid.UUID) (sto
 		if !s.decodeOrQuarantine(ctx, kv.Key, kv.Value, &t, "task") {
 			continue
 		}
-		if t.Type != "vm.create" || t.Status != store.TaskStatusPending {
+		if t.Type != "vm.create" || isCommittedTerminal(t.Status) {
 			continue
 		}
 		if t.ResourceID == nil || *t.ResourceID != vmID {
