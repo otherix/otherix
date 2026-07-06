@@ -235,13 +235,6 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 				},
 			}
 		}
-		if node.Status == store.NodeStatusGone {
-			return &projectionError{
-				status: http.StatusConflict, code: response.CodeConflict,
-				message: "node is in gone status; heartbeats rejected",
-				details: map[string]any{"reason": "node_gone"},
-			}
-		}
 
 		now := time.Now().UTC()
 		memKind, err := h.applyMemoryPressure(ctx, hp, agent.NodeID, node, body, now)

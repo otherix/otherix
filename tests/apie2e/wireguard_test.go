@@ -601,6 +601,15 @@ func wgStartAgentTLSServer(t *testing.T, h *harness, caCert *x509.Certificate, c
 // pins the test CA as its server trust root.
 func wgSeedAgent(t *testing.T, h *harness, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, name string) wgAgent {
 	t.Helper()
+	return wgSeedAgentWithStatus(t, h, caCert, caKey, name, store.NodeStatusReady)
+}
+
+// wgSeedAgentWithStatus is wgSeedAgent parameterised by the node's initial
+// status. Callers that need a terminal / operator-pinned state (e.g. a gone
+// node exercising heartbeat self-heal) seed it here; wgSeedAgent wraps this at
+// the common ready status.
+func wgSeedAgentWithStatus(t *testing.T, h *harness, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, name string, status store.NodeStatus) wgAgent {
+	t.Helper()
 	ctx := context.Background()
 	nodeID := uuid.New()
 	if _, err := h.store.CreateNode(ctx, store.CreateNodeParams{
@@ -611,7 +620,7 @@ func wgSeedAgent(t *testing.T, h *harness, caCert *x509.Certificate, caKey *ecds
 		MigrationHost:           name + ".example",
 		MigrationPortRangeStart: 49152,
 		MigrationPortRangeEnd:   49251,
-		Status:                  store.NodeStatusReady,
+		Status:                  status,
 	}); err != nil {
 		t.Fatalf("CreateNode(%s): %v", name, err)
 	}

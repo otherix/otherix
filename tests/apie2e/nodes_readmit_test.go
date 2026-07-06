@@ -121,8 +121,8 @@ func TestNodeReadmit(t *testing.T) {
 // TestNodeReadmit_PromotesToReady is the seam test the spec requires: readmit
 // takes a gone node to pending, and the real promotion path (not a re-read of
 // the store flip) advances it back to ready on a fresh heartbeat. This drives
-// the cross-component contract - the heartbeat handler rejects ONLY gone, so a
-// pending node clears that gate, and PromoteHealthyNodes then promotes it.
+// the cross-component contract - readmit flips the row to pending and
+// PromoteHealthyNodes then promotes it once a fresh heartbeat lands.
 // Testing the store flip alone would re-test the ReadmitNode unit, not the seam.
 func TestNodeReadmit_PromotesToReady(t *testing.T) {
 	h := newE2E(t)
@@ -140,7 +140,7 @@ func TestNodeReadmit_PromotesToReady(t *testing.T) {
 		t.Fatalf("NodeByID: %v", err)
 	}
 	if n.Status != store.NodeStatusPending {
-		t.Fatalf("after readmit status = %v, want pending (heartbeats would stay node_gone-rejected)", n.Status)
+		t.Fatalf("after readmit status = %v, want pending", n.Status)
 	}
 
 	// Stamp a fresh heartbeat and drive the real promotion sweep: pending -> ready.
