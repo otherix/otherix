@@ -1419,6 +1419,14 @@ func TestRunMigration_NilSourceMarksMigrationFailed(t *testing.T) {
 	if task.Status != store.TaskStatusFailed {
 		t.Errorf("task status = %q, want failed", task.Status)
 	}
+	// The headline invariant: the terminal write must RELEASE the per-VM active-
+	// migration guard, else the VM stays un-migratable forever (the wedge). Assert
+	// no active migration remains for the VM.
+	if _, active, aerr := s.ActiveMigrationForVM(ctx, vm.ID); aerr != nil {
+		t.Fatalf("ActiveMigrationForVM: %v", aerr)
+	} else if active {
+		t.Errorf("active migration still held after terminal fail; the per-VM guard leaked (VM un-migratable)")
+	}
 }
 
 // TestDriveHandshake_LiveSourceFailureCancelsTarget pins the rule: when a LIVE

@@ -213,8 +213,10 @@ func runMigration(ctx context.Context, st MigrationWorkerStore, agent MigrationA
 		// create time) can never be driven. Mark the MIGRATION terminal too, not just
 		// the task: failTerminal alone would finalize the task but leave the migration
 		// row non-terminal, holding the per-VM active-migration guard forever and
-		// making the VM permanently un-migratable. The API edge (start.go) now rejects
-		// this up front; this is the defense-in-depth for any pre-existing / racing row.
+		// making the VM permanently un-migratable. The API edge deliberately still
+		// ACCEPTS this create (documented HTTP contract, apie2e
+		// TestMigrationLifecycle_HTTPContract); the worker is the sole place that
+		// fails it cleanly - do NOT assume it "can't happen" and drop this arm.
 		return failMigration(ctx, st, log, taskID, m.ID, agentclient.TaskTerminal{
 			Status: "failed",
 			Error:  &agentclient.AgentError{Code: "internal", Message: "migration has no source node (vm was not scheduled to a node)"},
