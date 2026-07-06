@@ -547,7 +547,7 @@ func (s *Store) CountDrainingNodes(ctx context.Context) (int, error) {
 //     finalize, exactly as for a missing or terminal task.
 //
 // A nil task.JobID (defensive; EnqueueTask always stamps one) is treated as dead.
-func (s *Store) ReconcileStuckDrain(ctx context.Context) (int, error) {
+func (s *Store) ReconcileStuckDrain(ctx context.Context, reconciledResult []byte) (int, error) {
 	nodes, err := s.listNodesByStatus(ctx, store.NodeStatusDraining)
 	if err != nil {
 		return 0, err
@@ -560,6 +560,18 @@ func (s *Store) ReconcileStuckDrain(ctx context.Context) (int, error) {
 		}
 		if live {
 			continue // a live drain is in progress; leave it
+		}
+		// Finalize a wedged non-terminal drain task BEFORE cordoning. cordonStuckDrain
+		// clears drain_task_id and flips the node out of draining, so the backstop
+		// never revisits it; a task left running would then never reach a terminal
+		// state (retention reaps by finished_at) and a cancel against it would be a
+		// dead letter. Finalizing first is crash-safe: a crash between the task
+		// finalize and the cordon leaves the node draining, so the next pass re-runs
+		// (the now-terminal task is skipped by drainStillLive) and cordons.
+		if n.DrainTaskID != nil {
+			if ferr := s.finalizeStuckDrainTask(ctx, *n.DrainTaskID, reconciledResult); ferr != nil {
+				return fixed, ferr
+			}
 		}
 		cordoned, cerr := s.cordonStuckDrain(ctx, n.ID)
 		if cerr != nil {
@@ -640,6 +652,45 @@ func (s *Store) drainJobLive(ctx context.Context, jobID *int64) (bool, error) {
 		return false, nil
 	}
 	return job.State == JobStatePending || job.State == JobStateRunning, nil
+}
+
+// finalizeStuckDrainTask finalizes a wedged drain task to failed under a
+// ModRevision CAS, stamping finished_at and the caller-supplied reconciled
+// result so retention (which keys on finished_at) reaps it and a cancel is no
+// longer a dead letter. It fails toward inaction: a task that is missing
+// (already reaped) or already terminal (its saga recorded an outcome) is left
+// untouched, and a lost CAS (a concurrent writer moved the task) is a no-op.
+// reconciledResult is opaque to the store - the drain handler owns its shape.
+func (s *Store) finalizeStuckDrainTask(ctx context.Context, taskID uuid.UUID, reconciledResult []byte) error {
+	t, modRev, err := s.taskWithRev(ctx, taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil // task reaped while the node stayed draining
+	}
+	if err != nil {
+		return err
+	}
+	if isTerminalTaskStatus(t.Status) {
+		return nil // the saga already recorded a terminal outcome; do not clobber
+	}
+	t.Status = store.TaskStatusFailed
+	t.Result = reconciledResult
+	now := time.Now().UTC()
+	t.FinishedAt = &now
+	val, err := etcd.Marshal(t)
+	if err != nil {
+		return err
+	}
+	// A lost CAS (Succeeded false) means a concurrent writer moved the task since
+	// our read; leave it (they win) - fail toward inaction. No retry: with a dead
+	// backing job there is no live worker to race, so at most a peer reconcile pass
+	// beat us to the same finalize.
+	if _, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(taskKey(taskID)), "=", modRev)).
+		Then(clientv3.OpPut(taskKey(taskID), string(val))).
+		Commit(); err != nil {
+		return fmt.Errorf("finalize stuck drain task txn: %v", err)
+	}
+	return nil
 }
 
 // nodeMatchesListFilters reports whether node n passes the optional

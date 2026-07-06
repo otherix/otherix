@@ -40,6 +40,23 @@ func (s *Store) TaskByID(ctx context.Context, id uuid.UUID) (store.Task, error) 
 	return t, nil
 }
 
+// taskWithRev returns the task and its ModRevision, or store.ErrNotFound. Used
+// by CAS writers that must guard against a concurrent task mutation.
+func (s *Store) taskWithRev(ctx context.Context, id uuid.UUID) (store.Task, int64, error) {
+	resp, err := s.c.Raw().Get(ctx, taskKey(id))
+	if err != nil {
+		return store.Task{}, 0, fmt.Errorf("get task %s: %v", id, err)
+	}
+	if len(resp.Kvs) == 0 {
+		return store.Task{}, 0, store.ErrNotFound
+	}
+	var t store.Task
+	if err := json.Unmarshal(resp.Kvs[0].Value, &t); err != nil {
+		return store.Task{}, 0, fmt.Errorf("unmarshal task %s: %v", id, err)
+	}
+	return t, resp.Kvs[0].ModRevision, nil
+}
+
 // isTerminalTaskStatus reports whether a task status is terminal in the
 // committed sense used by FinishNodeDrain's idempotent re-entry: success,
 // failed, or cancelled. Unlike isCommittedTerminal (which excludes failed
