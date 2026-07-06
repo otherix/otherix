@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -134,5 +135,34 @@ func TestTimeout_PanicWithErrAbortHandlerSilentlyAborts(t *testing.T) {
 	}
 	if logBuf.Len() != 0 {
 		t.Errorf("expected no log output for ErrAbortHandler, got: %s", logBuf.String())
+	}
+}
+
+// TestTimeout_LateHandlerHeaderWriteDoesNotRaceThe503 pins that a handler still
+// setting response headers after the deadline fired cannot race the parent's
+// 503 write on the same header map. guardedWriter.Header() must hand out a
+// buffered map private to the handler, not the underlying writer's map, so a
+// late Header().Set() and the parent's WriteError never touch the same map
+// concurrently. Before the fix both mutated the underlying map with no
+// synchronisation - a fatal "concurrent map writes" throw that crashes the api
+// process. Run under -race to catch the regression.
+func TestTimeout_LateHandlerHeaderWriteDoesNotRaceThe503(t *testing.T) {
+	handlerDone := make(chan struct{})
+	h := middleware.Timeout(10 * time.Millisecond)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		// A late handler keeps mutating the response header map while the
+		// parent writes the timeout 503 for the very same request.
+		for i := 0; i < 2000; i++ {
+			w.Header().Set("X-Late", strconv.Itoa(i))
+		}
+		close(handlerDone)
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	<-handlerDone // let the detached goroutine finish before asserting
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
 	}
 }

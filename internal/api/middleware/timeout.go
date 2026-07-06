@@ -114,33 +114,43 @@ func Timeout(d time.Duration) func(http.Handler) http.Handler {
 
 // guardedWriter serialises access to an underlying ResponseWriter shared
 // between the Timeout parent goroutine and the detached handler goroutine.
-// It mirrors the writer net/http.TimeoutHandler installs: once the
-// deadline fires the parent stamps timedOut, after which every handler
-// write is dropped so the client keeps the 503 the parent already sent.
+// It mirrors the writer net/http.TimeoutHandler installs: the handler sees a
+// private buffered header map (h), never the underlying writer's map, and
+// once the deadline fires the parent stamps timedOut, after which every
+// handler write is dropped so the client keeps the 503 the parent already
+// sent. The private map is what lets a late Header() mutation from the
+// detached handler run without a lock and still never touch the same map the
+// parent's 503 write mutates on the underlying writer.
 type guardedWriter struct {
 	mu          sync.Mutex
 	w           http.ResponseWriter
+	h           http.Header
 	timedOut    bool
 	wroteHeader bool
 }
 
-// Header returns the underlying header map. It is read/written only before
-// the first WriteHeader, so it needs no further guarding beyond the mutex
-// the write path already holds.
+// Header returns a header map private to the handler goroutine. The handler
+// mutates it freely; it is flushed onto the underlying writer under the mutex
+// on the first WriteHeader/Write, so the underlying writer's map is never
+// touched concurrently with the parent's timeout 503 write. Only the handler
+// goroutine ever reads or writes this map, so no lock is needed here.
 func (g *guardedWriter) Header() http.Header {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.w.Header()
+	if g.h == nil {
+		g.h = make(http.Header)
+	}
+	return g.h
 }
 
 // WriteHeader forwards the status to the underlying writer unless the
-// request has already timed out or a header was already written.
+// request has already timed out or a header was already written. The
+// buffered handler headers are flushed onto the underlying writer first.
 func (g *guardedWriter) WriteHeader(status int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.timedOut || g.wroteHeader {
 		return
 	}
+	g.flushHeadersLocked()
 	g.wroteHeader = true
 	g.w.WriteHeader(status)
 }
@@ -156,8 +166,25 @@ func (g *guardedWriter) Write(b []byte) (int, error) {
 		// cannot corrupt the response or race the abandoned writer.
 		return len(b), nil
 	}
-	g.wroteHeader = true
+	if !g.wroteHeader {
+		g.flushHeadersLocked()
+		g.wroteHeader = true
+	}
 	return g.w.Write(b)
+}
+
+// flushHeadersLocked copies the buffered handler headers onto the underlying
+// writer's map. It runs under g.mu on the write path, before the first
+// WriteHeader lands and gated by !timedOut, so it is mutually exclusive with
+// the parent's 503 write - the two never mutate the underlying map at once.
+func (g *guardedWriter) flushHeadersLocked() {
+	if g.h == nil {
+		return
+	}
+	dst := g.w.Header()
+	for k, vv := range g.h {
+		dst[k] = vv
+	}
 }
 
 // timeout latches the timed-out state, after which every handler write is
