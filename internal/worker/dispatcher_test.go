@@ -5,6 +5,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -17,21 +18,25 @@ import (
 // jobSourceFake is an in-memory JobSource for dispatcher unit tests. Safe for
 // concurrent handler goroutines.
 type jobSourceFake struct {
-	mu        sync.Mutex
-	jobs      map[int64]etcdstore.Job
-	completed map[int64]bool
-	retried   map[int64]int32 // id -> last maxAttempts passed to RetryJob
-	requeued  map[int64]int   // id -> RequeueJob call count
-	renewed   map[int64]int   // id -> RenewJobLease call count
+	mu         sync.Mutex
+	jobs       map[int64]etcdstore.Job
+	completed  map[int64]bool
+	retried    map[int64]int32  // id -> last maxAttempts passed to RetryJob
+	requeued   map[int64]int    // id -> RequeueJob call count
+	renewed    map[int64]int    // id -> RenewJobLease call count
+	claimToken map[int64]string // id -> token minted by ClaimJob
+	seenToken  map[int64]string // id -> token last passed to a bookkeeping/renew call
 }
 
 func newJobSourceFake() *jobSourceFake {
 	return &jobSourceFake{
-		jobs:      make(map[int64]etcdstore.Job),
-		completed: make(map[int64]bool),
-		retried:   make(map[int64]int32),
-		requeued:  make(map[int64]int),
-		renewed:   make(map[int64]int),
+		jobs:       make(map[int64]etcdstore.Job),
+		completed:  make(map[int64]bool),
+		retried:    make(map[int64]int32),
+		requeued:   make(map[int64]int),
+		renewed:    make(map[int64]int),
+		claimToken: make(map[int64]string),
+		seenToken:  make(map[int64]string),
 	}
 }
 
@@ -53,16 +58,19 @@ func (f *jobSourceFake) PendingJobs(context.Context) ([]etcdstore.Job, error) {
 	return out, nil
 }
 
-func (f *jobSourceFake) ClaimJob(_ context.Context, id int64) (bool, error) {
+func (f *jobSourceFake) ClaimJob(_ context.Context, id int64) (bool, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	j, ok := f.jobs[id]
 	if !ok || j.State != etcdstore.JobStatePending {
-		return false, nil
+		return false, "", nil
 	}
+	token := fmt.Sprintf("tok-%d", id)
 	j.State = etcdstore.JobStateRunning
+	j.ClaimToken = token
 	f.jobs[id] = j
-	return true, nil
+	f.claimToken[id] = token
+	return true, token, nil
 }
 
 func (f *jobSourceFake) CompleteJob(_ context.Context, id int64) error {
@@ -73,10 +81,11 @@ func (f *jobSourceFake) CompleteJob(_ context.Context, id int64) error {
 	return nil
 }
 
-func (f *jobSourceFake) RetryJob(_ context.Context, id int64, maxAttempts int32) (bool, error) {
+func (f *jobSourceFake) RetryJob(_ context.Context, id int64, token string, maxAttempts int32) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retried[id] = maxAttempts
+	f.seenToken[id] = token
 	j := f.jobs[id]
 	j.Attempts++
 	if j.Attempts < maxAttempts {
@@ -88,20 +97,22 @@ func (f *jobSourceFake) RetryJob(_ context.Context, id int64, maxAttempts int32)
 	return j.State == etcdstore.JobStatePending, nil
 }
 
-func (f *jobSourceFake) RequeueJob(_ context.Context, id int64) error {
+func (f *jobSourceFake) RequeueJob(_ context.Context, id int64, token string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requeued[id]++
+	f.seenToken[id] = token
 	j := f.jobs[id]
 	j.State = etcdstore.JobStatePending
 	f.jobs[id] = j
 	return nil
 }
 
-func (f *jobSourceFake) RenewJobLease(_ context.Context, id int64) (bool, error) {
+func (f *jobSourceFake) RenewJobLease(_ context.Context, id int64, token string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.renewed[id]++
+	f.seenToken[id] = token
 	j, ok := f.jobs[id]
 	return ok && j.State == etcdstore.JobStateRunning, nil
 }
@@ -129,7 +140,7 @@ func TestExecuteRenewsLeaseWhileBlocked(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		d.execute(context.Background(), etcdstore.Job{ID: 20, Kind: "test.job"}, reg)
+		d.execute(context.Background(), etcdstore.Job{ID: 20, Kind: "test.job"}, "tok-20", reg)
 		close(done)
 	}()
 
@@ -179,14 +190,17 @@ type renewStopSourceFake struct {
 func (f *renewStopSourceFake) PendingJobs(context.Context) ([]etcdstore.Job, error) {
 	return nil, nil
 }
-func (f *renewStopSourceFake) ClaimJob(context.Context, int64) (bool, error) { return false, nil }
-func (f *renewStopSourceFake) CompleteJob(context.Context, int64) error      { return nil }
-func (f *renewStopSourceFake) RetryJob(context.Context, int64, int32) (bool, error) {
+
+func (f *renewStopSourceFake) ClaimJob(context.Context, int64) (bool, string, error) {
+	return false, "", nil
+}
+func (f *renewStopSourceFake) CompleteJob(context.Context, int64) error { return nil }
+func (f *renewStopSourceFake) RetryJob(context.Context, int64, string, int32) (bool, error) {
 	return false, nil
 }
-func (f *renewStopSourceFake) RequeueJob(context.Context, int64) error { return nil }
+func (f *renewStopSourceFake) RequeueJob(context.Context, int64, string) error { return nil }
 
-func (f *renewStopSourceFake) RenewJobLease(_ context.Context, _ int64) (bool, error) {
+func (f *renewStopSourceFake) RenewJobLease(_ context.Context, _ int64, _ string) (bool, error) {
 	f.mu.Lock()
 	f.calls++
 	n := f.calls
@@ -218,7 +232,7 @@ func TestExecuteRenewerStopsOnLostLease(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		d.execute(context.Background(), etcdstore.Job{ID: 30, Kind: "test.job"}, reg)
+		d.execute(context.Background(), etcdstore.Job{ID: 30, Kind: "test.job"}, "tok-30", reg)
 		close(done)
 	}()
 
@@ -267,7 +281,7 @@ func TestExecuteRequeuesOnShutdown(t *testing.T) {
 		d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		d.execute(ctx, etcdstore.Job{ID: 10, Kind: "test.job"}, abortOnCancel)
+		d.execute(ctx, etcdstore.Job{ID: 10, Kind: "test.job"}, "tok-10", abortOnCancel)
 		src.mu.Lock()
 		defer src.mu.Unlock()
 		if src.requeued[10] != 1 {
@@ -287,7 +301,7 @@ func TestExecuteRequeuesOnShutdown(t *testing.T) {
 		src.add(etcdstore.Job{ID: 11, Kind: "test.job", State: etcdstore.JobStateRunning})
 		d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
 		boom := registration{handler: func(context.Context, []byte) error { return context.DeadlineExceeded }, maxAttempts: 5}
-		d.execute(context.Background(), etcdstore.Job{ID: 11, Kind: "test.job"}, boom)
+		d.execute(context.Background(), etcdstore.Job{ID: 11, Kind: "test.job"}, "tok-11", boom)
 		src.mu.Lock()
 		defer src.mu.Unlock()
 		if src.retried[11] != 5 {
@@ -367,6 +381,32 @@ func TestDispatcherRetriesOnError(t *testing.T) {
 	}
 }
 
+// TestDispatcherThreadsClaimTokenToBookkeeping drives the REAL drain->execute path
+// and pins the claim-fencing seam: the token ClaimJob mints must be the exact
+// token threaded into the post-handler bookkeeping (here RetryJob on a failing
+// handler). A regression that dropped the token or read it from the pre-claim job
+// snapshot would fail here.
+func TestDispatcherThreadsClaimTokenToBookkeeping(t *testing.T) {
+	src := newJobSourceFake()
+	src.add(etcdstore.Job{ID: 42, Kind: "test.job", State: etcdstore.JobStatePending})
+	d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
+	d.Register("test.job", 5, func(context.Context, []byte) error { return context.DeadlineExceeded })
+
+	d.drain(context.Background())
+	d.wg.Wait()
+
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	claim := src.claimToken[42]
+	seen := src.seenToken[42]
+	if claim == "" {
+		t.Fatal("ClaimJob minted no token")
+	}
+	if seen != claim {
+		t.Errorf("RetryJob got token %q, want the claim token %q (the dispatcher must thread the claim token, not the pre-claim snapshot)", seen, claim)
+	}
+}
+
 // TestExecuteRecoversHandlerPanic drives the real execute path with a handler
 // that panics: execute must NOT propagate the panic (which would unwind the
 // worker goroutine and crash the whole api-server process, embedded etcd with
@@ -382,7 +422,7 @@ func TestExecuteRecoversHandlerPanic(t *testing.T) {
 	d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
 
 	// Must return normally (recovered), not panic out of execute.
-	d.execute(context.Background(), etcdstore.Job{ID: 30, Kind: "poison"}, reg)
+	d.execute(context.Background(), etcdstore.Job{ID: 30, Kind: "poison"}, "tok-30", reg)
 
 	src.mu.Lock()
 	_, retried := src.retried[30]

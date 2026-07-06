@@ -19,25 +19,34 @@ import (
 )
 
 // JobSource is the queue surface the dispatcher consumes. *etcdstore.Store
-// satisfies it.
+// satisfies it (asserted below so a signature drift surfaces here, not at a
+// distant call site).
 type JobSource interface {
 	// PendingJobs returns jobs awaiting a worker, oldest first.
 	PendingJobs(ctx context.Context) ([]etcdstore.Job, error)
-	// ClaimJob transitions a pending job to running; false means another worker
-	// won or the job is gone.
-	ClaimJob(ctx context.Context, id int64) (bool, error)
-	// CompleteJob removes a finished job.
+	// ClaimJob transitions a pending job to running and returns the claim token
+	// the caller threads into its lease renew + bookkeeping; false (empty token)
+	// means another worker won or the job is gone.
+	ClaimJob(ctx context.Context, id int64) (bool, string, error)
+	// CompleteJob removes a finished job. It runs only on handler success, so a
+	// blind delete is correct: job ids are never reused, so it only ever removes
+	// the genuinely-completed work.
 	CompleteJob(ctx context.Context, id int64) error
 	// RetryJob requeues a failed job while under maxAttempts, else fails it;
-	// returns whether it was requeued.
-	RetryJob(ctx context.Context, id int64, maxAttempts int32) (bool, error)
+	// returns whether it was requeued. token fences the write to the caller's claim.
+	RetryJob(ctx context.Context, id int64, token string, maxAttempts int32) (bool, error)
 	// RequeueJob returns a running job to pending without an attempt bump, used
-	// on the graceful-shutdown path (a deploy is not a real failure).
-	RequeueJob(ctx context.Context, id int64) error
+	// on the graceful-shutdown path (a deploy is not a real failure). token fences
+	// the write to the caller's claim.
+	RequeueJob(ctx context.Context, id int64, token string) error
 	// RenewJobLease refreshes a running job's lease; false means the renewer must
-	// stop (the job is gone, no longer running, or lost a compare race).
-	RenewJobLease(ctx context.Context, id int64) (bool, error)
+	// stop (the job is gone, no longer running, not the caller's claim, or lost a
+	// compare race). token fences the renew to the caller's claim.
+	RenewJobLease(ctx context.Context, id int64, token string) (bool, error)
 }
+
+// The etcd store is the production JobSource; assert conformance at compile time.
+var _ JobSource = (*etcdstore.Store)(nil)
 
 // bookkeepingTimeout bounds the post-handler queue bookkeeping run on a context
 // that survives the shutdown cancel (context.WithoutCancel), so an in-flight job
@@ -135,7 +144,7 @@ func (d *Dispatcher) drain(ctx context.Context) {
 		default:
 			continue // pool full; pick it up next drain
 		}
-		claimed, err := d.src.ClaimJob(ctx, j.ID)
+		claimed, token, err := d.src.ClaimJob(ctx, j.ID)
 		if err != nil || !claimed {
 			<-d.sem
 			if err != nil {
@@ -144,11 +153,11 @@ func (d *Dispatcher) drain(ctx context.Context) {
 			continue
 		}
 		d.wg.Add(1)
-		go func(job etcdstore.Job, reg registration) {
+		go func(job etcdstore.Job, token string, reg registration) {
 			defer d.wg.Done()
 			defer func() { <-d.sem }()
-			d.execute(ctx, job, reg)
-		}(j, reg)
+			d.execute(ctx, job, token, reg)
+		}(j, token, reg)
 	}
 }
 
@@ -164,10 +173,10 @@ func (d *Dispatcher) drain(ctx context.Context) {
 // in-flight wg.Wait feeds) BEFORE the deferred etcd teardown in serve.go, so
 // these writes land. The bg context is bounded by bookkeepingTimeout so teardown
 // is not blocked indefinitely.
-func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, reg registration) {
+func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, token string, reg registration) {
 	done := make(chan struct{})
 	defer close(done)
-	d.startRenewer(ctx, j.ID, done)
+	d.startRenewer(ctx, j.ID, token, done)
 
 	herr := guardPanic(ctx, d.log, j.Kind, func() error { return reg.handler(ctx, j.Args) })
 	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
@@ -177,12 +186,12 @@ func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, reg registrat
 		// Graceful shutdown cancelled the run ctx and the handler aborted on it:
 		// requeue the job to pending WITHOUT penalising the attempt counter (a
 		// deploy is not a real failure) so the next boot redelivers it.
-		if rerr := d.src.RequeueJob(bg, j.ID); rerr != nil {
+		if rerr := d.src.RequeueJob(bg, j.ID, token); rerr != nil {
 			d.log.ErrorContext(bg, "worker dispatcher: shutdown requeue failed", "job_id", j.ID, "error", rerr)
 		}
 	case herr != nil:
 		d.log.WarnContext(ctx, "worker job failed", "kind", j.Kind, "job_id", j.ID, "attempts", j.Attempts, "error", herr)
-		requeued, rerr := d.src.RetryJob(bg, j.ID, reg.maxAttempts)
+		requeued, rerr := d.src.RetryJob(bg, j.ID, token, reg.maxAttempts)
 		if rerr != nil {
 			d.log.ErrorContext(bg, "worker dispatcher: retry bookkeeping failed", "job_id", j.ID, "error", rerr)
 			return
@@ -204,7 +213,7 @@ func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, reg registrat
 // an in-flight job (mirroring the post-handler bookkeeping). The goroutine stops
 // when done closes (handler returned) or RenewJobLease reports the lease is no
 // longer ours. It is tracked on the WaitGroup so it cannot outlive shutdown.
-func (d *Dispatcher) startRenewer(ctx context.Context, id int64, done <-chan struct{}) {
+func (d *Dispatcher) startRenewer(ctx context.Context, id int64, token string, done <-chan struct{}) {
 	renewCtx := context.WithoutCancel(ctx)
 	d.wg.Add(1)
 	go func() {
@@ -216,7 +225,7 @@ func (d *Dispatcher) startRenewer(ctx context.Context, id int64, done <-chan str
 			case <-done:
 				return
 			case <-t.C:
-				ok, err := d.src.RenewJobLease(renewCtx, id)
+				ok, err := d.src.RenewJobLease(renewCtx, id, token)
 				if err != nil {
 					d.log.WarnContext(renewCtx, "worker dispatcher: renew lease failed", "job_id", id, "error", err)
 					continue

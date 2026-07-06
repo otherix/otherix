@@ -44,11 +44,11 @@ func TestJobConsumeLifecycle(t *testing.T) {
 
 	first := pending[0].ID
 	// Claim transitions pending -> running; a second claim fails.
-	claimed, err := s.ClaimJob(ctx, first)
+	claimed, _, err := s.ClaimJob(ctx, first)
 	if err != nil || !claimed {
 		t.Fatalf("ClaimJob = (%v, %v), want claimed", claimed, err)
 	}
-	again, err := s.ClaimJob(ctx, first)
+	again, _, err := s.ClaimJob(ctx, first)
 	if err != nil || again {
 		t.Errorf("second ClaimJob = (%v, %v), want not claimed", again, err)
 	}
@@ -76,12 +76,13 @@ func TestJobRetryAndFail(t *testing.T) {
 		t.Fatalf("enqueue: %v", err)
 	}
 	job := mustPending(t, s)[0]
-	if _, err := s.ClaimJob(ctx, job.ID); err != nil {
+	_, token, err := s.ClaimJob(ctx, job.ID)
+	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
 	// maxAttempts=2: first retry requeues (attempts 1 < 2), it becomes pending again.
-	requeued, err := s.RetryJob(ctx, job.ID, 2)
+	requeued, err := s.RetryJob(ctx, job.ID, token, 2)
 	if err != nil || !requeued {
 		t.Fatalf("RetryJob#1 = (%v, %v), want requeued", requeued, err)
 	}
@@ -95,10 +96,11 @@ func TestJobRetryAndFail(t *testing.T) {
 	}
 
 	// Claim + retry again: attempts reaches 2 == max => failed, not pending.
-	if _, err := s.ClaimJob(ctx, job.ID); err != nil {
+	_, token, err = s.ClaimJob(ctx, job.ID)
+	if err != nil {
 		t.Fatalf("claim#2: %v", err)
 	}
-	requeued, err = s.RetryJob(ctx, job.ID, 2)
+	requeued, err = s.RetryJob(ctx, job.ID, token, 2)
 	if err != nil || requeued {
 		t.Fatalf("RetryJob#2 = (%v, %v), want not requeued (failed)", requeued, err)
 	}
@@ -117,10 +119,11 @@ func TestRequeueJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, _ := s.TaskByID(ctx, p.ID)
-	if ok, _ := s.ClaimJob(ctx, *task.JobID); !ok {
+	ok, token, _ := s.ClaimJob(ctx, *task.JobID)
+	if !ok {
 		t.Fatal("claim")
 	}
-	if err := s.RequeueJob(ctx, *task.JobID); err != nil {
+	if err := s.RequeueJob(ctx, *task.JobID, token); err != nil {
 		t.Fatalf("RequeueJob: %v", err)
 	}
 	pending, _ := s.PendingJobs(ctx)
@@ -142,8 +145,9 @@ func TestRequeueJob(t *testing.T) {
 	}
 
 	// A second requeue (job now pending, not running) is a no-op: it must not
-	// touch the job.
-	if err := s.RequeueJob(ctx, *task.JobID); err != nil {
+	// touch the job. The stale token no longer matches the (now tokenless pending)
+	// row either, so the fence skips it too.
+	if err := s.RequeueJob(ctx, *task.JobID, token); err != nil {
 		t.Fatalf("RequeueJob (non-running) = %v, want nil no-op", err)
 	}
 	pending, _ = s.PendingJobs(ctx)
@@ -170,7 +174,7 @@ func TestRetryJobOnlyRequeuesRunning(t *testing.T) {
 	}
 	job := mustPending(t, s)[0] // pending, never claimed
 
-	requeued, err := s.RetryJob(ctx, job.ID, 5)
+	requeued, err := s.RetryJob(ctx, job.ID, "tok", 5)
 	if err != nil {
 		t.Fatalf("RetryJob(pending) = %v", err)
 	}
@@ -236,7 +240,7 @@ func TestClaimJobStampsClaimedAt(t *testing.T) {
 	}
 
 	before := time.Now().UTC()
-	if ok, err := s.ClaimJob(ctx, job.ID); err != nil || !ok {
+	if ok, _, err := s.ClaimJob(ctx, job.ID); err != nil || !ok {
 		t.Fatalf("ClaimJob = (%v, %v), want claimed", ok, err)
 	}
 
@@ -273,7 +277,7 @@ func TestRenewJobLease(t *testing.T) {
 	job := mustPending(t, s)[0]
 
 	// Pending (un-claimed) job: renew is a no-op, returns false.
-	ok, err := s.RenewJobLease(ctx, job.ID)
+	ok, err := s.RenewJobLease(ctx, job.ID, "tok")
 	if err != nil {
 		t.Fatalf("RenewJobLease(pending) error = %v", err)
 	}
@@ -282,7 +286,7 @@ func TestRenewJobLease(t *testing.T) {
 	}
 
 	// Missing job: returns false.
-	ok, err = s.RenewJobLease(ctx, 9_999_999)
+	ok, err = s.RenewJobLease(ctx, 9_999_999, "tok")
 	if err != nil {
 		t.Fatalf("RenewJobLease(missing) error = %v", err)
 	}
@@ -291,7 +295,8 @@ func TestRenewJobLease(t *testing.T) {
 	}
 
 	// Claim it (stamps ClaimedAt), then renew advances ClaimedAt and returns true.
-	if claimed, err := s.ClaimJob(ctx, job.ID); err != nil || !claimed {
+	claimed, token, err := s.ClaimJob(ctx, job.ID)
+	if err != nil || !claimed {
 		t.Fatalf("ClaimJob = (%v, %v), want claimed", claimed, err)
 	}
 	first := readClaimedAt(job.ID)
@@ -299,7 +304,7 @@ func TestRenewJobLease(t *testing.T) {
 		t.Fatal("ClaimedAt nil after claim")
 	}
 	time.Sleep(5 * time.Millisecond)
-	ok, err = s.RenewJobLease(ctx, job.ID)
+	ok, err = s.RenewJobLease(ctx, job.ID, token)
 	if err != nil {
 		t.Fatalf("RenewJobLease(running) error = %v", err)
 	}

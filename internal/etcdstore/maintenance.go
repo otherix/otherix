@@ -243,6 +243,7 @@ func (s *Store) ReclaimStaleRunningJobs(ctx context.Context, olderThan time.Time
 		}
 		job.State = JobStatePending
 		job.ClaimedAt = nil
+		job.ClaimToken = "" // a reclaimed job carries no live claim; a re-claim mints a new token
 		val, merr := etcd.Marshal(job)
 		if merr != nil {
 			return reclaimed, merr
