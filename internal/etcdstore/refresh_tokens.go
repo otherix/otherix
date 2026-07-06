@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -173,19 +174,63 @@ func (s *Store) revokeIndexed(ctx context.Context, indexPrefix string) error {
 	return nil
 }
 
-// TouchRefreshToken stamps last_used_at. A missing token is a no-op.
+// TouchRefreshToken stamps last_used_at. A missing token is a no-op. The stamp
+// commits under a ModRevision CAS so it can never clobber a concurrent revoke:
+// a blind put would re-persist its stale revoked_at=nil snapshot and silently
+// un-revoke a token the theft-detection cascade just burned.
 func (s *Store) TouchRefreshToken(ctx context.Context, id uuid.UUID) error {
-	var row store.RefreshToken
-	found, err := s.c.GetJSON(ctx, refreshTokenKey(id), &row)
-	if err != nil {
-		return err
-	}
-	if !found {
+	now := time.Now().UTC()
+	_, err := s.casRefreshTokenUpdate(ctx, id, func(row *store.RefreshToken) {
+		row.LastUsedAt = &now
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		// Missing token: no-op, matching the prior contract.
 		return nil
 	}
-	now := time.Now().UTC()
-	row.LastUsedAt = &now
-	return s.c.PutJSON(ctx, refreshTokenKey(id), row)
+	return err
+}
+
+// casRefreshTokenUpdate re-reads a refresh-token row, applies mutate, and commits
+// under a ModRevision compare-and-set, retrying on a lost race so a concurrent
+// writer (notably a family-burn / logout-all revoke) is never clobbered. A blind
+// put that read the row before the revoke committed would re-persist
+// revoked_at=nil and silently un-burn the token; the CAS-retry re-reads on
+// conflict so revoked_at survives. mutate must be a pure field update on the
+// passed row; it runs once per attempt on the freshest read. Returns
+// store.ErrConcurrentUpdate after the retry bound is exhausted, and
+// store.ErrNotFound for a missing token.
+func (s *Store) casRefreshTokenUpdate(ctx context.Context, id uuid.UUID, mutate func(*store.RefreshToken)) (store.RefreshToken, error) {
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		resp, err := s.c.Raw().Get(ctx, refreshTokenKey(id))
+		if err != nil {
+			return store.RefreshToken{}, err
+		}
+		if len(resp.Kvs) == 0 {
+			return store.RefreshToken{}, store.ErrNotFound
+		}
+		modRev := resp.Kvs[0].ModRevision
+		var row store.RefreshToken
+		if err := json.Unmarshal(resp.Kvs[0].Value, &row); err != nil {
+			return store.RefreshToken{}, fmt.Errorf("unmarshal refresh token %s: %v", id, err)
+		}
+		mutate(&row)
+		val, err := etcd.Marshal(row)
+		if err != nil {
+			return store.RefreshToken{}, err
+		}
+		resp2, err := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(refreshTokenKey(id)), "=", modRev)).
+			Then(clientv3.OpPut(refreshTokenKey(id), string(val))).
+			Commit()
+		if err != nil {
+			return store.RefreshToken{}, fmt.Errorf("cas refresh token txn: %v", err)
+		}
+		if resp2.Succeeded {
+			return row, nil
+		}
+	}
+	return store.RefreshToken{}, store.ErrConcurrentUpdate
 }
 
 // RotateRefreshToken atomically revokes the parent token and inserts the child
