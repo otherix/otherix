@@ -353,8 +353,16 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 		return fmt.Errorf("agent client: %v", err)
 	}
 
-	stopWorkers, err := startWorkers(ctx, cfg, st, agentClient, log)
+	// The background loops (dispatcher, scheduler, promote loop) run under a
+	// cancelable child of ctx so an early server-init/start failure - which does
+	// NOT cancel ctx - can still drive them to Done and drain them before return.
+	// server.Run stays on the parent ctx so SIGTERM alone drives graceful HTTP
+	// shutdown.
+	runCtx, cancelRun := context.WithCancel(ctx)
+
+	stopWorkers, err := startWorkers(runCtx, cfg, st, agentClient, log)
 	if err != nil {
+		cancelRun()
 		return err
 	}
 
@@ -371,7 +379,26 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 	promoteWG.Add(1)
 	go func() {
 		defer promoteWG.Done()
-		clustermembers.RunPromoteLoop(ctx, membership, 15*time.Second, log)
+		clustermembers.RunPromoteLoop(runCtx, membership, 15*time.Second, log)
+	}()
+
+	// Shutdown ordering contract (load-bearing for the graceful-shutdown
+	// requeue): cancelRun() drives the background loops to Done. On the SIGTERM
+	// path the parent ctx is already cancelled, but on an early server-init/start
+	// failure it is NOT - so this cancel is what lets the loops observe Done and
+	// keeps stopWorkers from blocking forever. stopWorkers() then blocks on the
+	// dispatcher's in-flight wg.Wait, so every in-flight handler finishes and its
+	// queue bookkeeping (which runs on a context.WithoutCancel that survives ctx
+	// cancel) lands BEFORE runServe returns. Only after runServe returns do
+	// serve.go's deferred etcd client Close and member Stop run, so the store stays
+	// available for those requeue/complete writes. Draining on EVERY post-launch
+	// return path - including the api.NewServer and server.Run error paths, which
+	// do not cancel ctx - is what stops etcd from being torn down under running
+	// loops. Do NOT tear etcd down before this returns.
+	defer func() {
+		cancelRun()
+		stopWorkers()
+		promoteWG.Wait()
 	}()
 
 	// The etcd store self-enqueues (EnqueueTask writes the job inline) and
@@ -387,16 +414,6 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 	if err := server.Run(ctx); err != nil {
 		return fmt.Errorf("server: %v", err)
 	}
-
-	// Shutdown ordering contract (load-bearing for the graceful-shutdown
-	// requeue): stopWorkers() blocks on the dispatcher's in-flight wg.Wait,
-	// so every in-flight handler finishes and its queue bookkeeping (which runs on
-	// a context.WithoutCancel that survives ctx cancel) lands BEFORE runServe
-	// returns. Only after runServe returns do serve.go's deferred etcd client
-	// Close and member Stop run, so the store stays available for those requeue/
-	// complete writes. Do NOT tear etcd down before this returns.
-	stopWorkers()
-	promoteWG.Wait()
 
 	log.Info("shutting down")
 	return nil
