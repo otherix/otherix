@@ -17,8 +17,8 @@ import (
 )
 
 // Agent certs are addressed by UUID, with a per-node active index (backing the
-// NodeHasActiveCert join-conflict check; entries are removed on revocation) and
-// a by-fingerprint index (backing the mTLS authn middleware's cert lookup). The
+// NodeHasActiveCert query; entries are removed on revocation) and a
+// by-fingerprint index (backing the mTLS authn middleware's cert lookup). The
 // cert PEM is never stored - only metadata, mirroring the SQL schema.
 
 func agentCertKey(id uuid.UUID) string { return etcd.Key("agent_certs", id.String()) }
@@ -35,8 +35,9 @@ func agentCertFingerprintIndexKey(fingerprint []byte) string {
 	return etcd.Key("index", "agent_certs", "fingerprint", hex.EncodeToString(fingerprint))
 }
 
-// NodeHasActiveCert reports whether the node holds a non-revoked agent cert. A
-// revoked cert does not block reuse of the node row.
+// NodeHasActiveCert reports whether the node holds a non-revoked agent cert.
+// Node-join reuse is gated on the heartbeat confirm signal, not on this query
+// (see upsertJoinNode); it remains a store query for callers and tests.
 func (s *Store) NodeHasActiveCert(ctx context.Context, nodeID uuid.UUID) (bool, error) {
 	n, err := s.countPrefix(ctx, agentCertNodeIndexPrefix(nodeID))
 	if err != nil {
@@ -84,12 +85,14 @@ func (s *Store) CreateAgentCert(ctx context.Context, arg store.CreateAgentCertPa
 }
 
 // revokeNodeAgentCertsOps builds the ops that revoke every agent cert issued to
-// nodeID: it stamps revoked_at (+ reason) on each primary agent_certs row for
-// the audit trail, and deletes both the fingerprint index (so the mTLS lookup
-// misses and the deleted node can no longer authenticate) and the node index
-// (so NodeHasActiveCert drops to false and no index leaks). Returned ops are
-// folded into the DeleteNode cascade so revocation commits atomically with the
-// node soft-delete. count is the number of primary certs revoked.
+// nodeID: it stamps revoked_at (+ the caller-supplied reason) on each primary
+// agent_certs row for the audit trail, and deletes both the fingerprint index (so
+// the mTLS lookup misses and the old leaf can no longer authenticate) and the node
+// index (so NodeHasActiveCert drops to false and no index leaks). Used by the
+// DeleteNode cascade (reason "node deleted") and by node-join re-enrollment to
+// supersede a stale undelivered leaf (reason "superseded (re-enrollment)"); in
+// both cases the ops are folded into the caller's txn so revocation commits
+// atomically. count is the number of primary certs revoked.
 //
 // Per-cert op ORDER IS LOAD-BEARING and must not be reordered: for each cert the
 // node-index delete is emitted LAST. The whole cascade routes through
@@ -110,12 +113,11 @@ func (s *Store) CreateAgentCert(ctx context.Context, arg store.CreateAgentCertPa
 // recoverable and low-utility (the cert resolves to a soft-deleted node, so
 // heartbeat name->UUID resolution fails), and closing it would add guard logic
 // to the destructive delete cascade, so it is documented rather than fixed.
-func (s *Store) revokeNodeAgentCertsOps(ctx context.Context, nodeID uuid.UUID, revokedAt time.Time) ([]clientv3.Op, int64, error) {
+func (s *Store) revokeNodeAgentCertsOps(ctx context.Context, nodeID uuid.UUID, revokedAt time.Time, reason string) ([]clientv3.Op, int64, error) {
 	items, err := s.c.Range(ctx, agentCertNodeIndexPrefix(nodeID))
 	if err != nil {
 		return nil, 0, err
 	}
-	reason := "node deleted"
 	var (
 		ops   []clientv3.Op
 		count int64

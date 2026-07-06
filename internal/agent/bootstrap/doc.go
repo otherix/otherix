@@ -29,8 +29,11 @@
 // short-circuit with descriptive errors — see the FingerprintMismatchError
 // and ErrCSRRejected sentinels.
 //
-// Bootstrap is NOT idempotent across successful token redemption. If
+// Bootstrap is re-runnable across a lost join response. If
 // /v1/nodes/join returns 201 but the response never reaches the agent
-// (network drop, process kill), the token is consumed at the CP side
-// and the operator must mint a fresh one to retry.
+// (network drop, process kill), re-running with the SAME token recovers:
+// CP-side redemption is re-runnable for a node that has not yet
+// heartbeated - it supersedes the undelivered cert and re-issues without
+// spending additional max_uses. A fresh token is required only once the
+// node has confirmed ownership by heartbeating.
 package bootstrap

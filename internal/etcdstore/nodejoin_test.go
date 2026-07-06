@@ -38,6 +38,30 @@ func redeemParams(hash []byte, nodeName string) store.RedeemJoinTokenParams {
 	}
 }
 
+// confirmNodeHeartbeat marks a node as confirmed-owned by driving one heartbeat
+// projection, which stamps LastHeartbeatAt. Node-join reuse is gated on this
+// confirm signal: an unconfirmed node is re-runnable (lost-bootstrap recovery),
+// a confirmed one is not.
+func confirmNodeHeartbeat(t *testing.T, s *etcdstore.Store, ctx context.Context, nodeID uuid.UUID) {
+	t.Helper()
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{ID: nodeID})
+	}); err != nil {
+		t.Fatalf("confirmNodeHeartbeat(%s): %v", nodeID, err)
+	}
+}
+
+// activeCertCount returns the number of non-revoked agent certs indexed for a
+// node (the node-active index, which revocation removes).
+func activeCertCount(t *testing.T, cli *etcd.Client, ctx context.Context, nodeID uuid.UUID) int {
+	t.Helper()
+	certs, err := cli.Range(ctx, etcd.Key("index", "agent_certs", "node", nodeID.String())+"/")
+	if err != nil {
+		t.Fatalf("range agent cert node index: %v", err)
+	}
+	return len(certs)
+}
+
 func issuedCert() store.IssuedCert {
 	now := time.Now().UTC()
 	return store.IssuedCert{
@@ -181,7 +205,9 @@ func TestRedeemJoinTokenRejections(t *testing.T) {
 		t.Errorf("binding mismatch = %v, want store.ErrJoinNodeNameMismatch", err)
 	}
 
-	// Node name already holds an active cert.
+	// Node name is confirmed-owned (has heartbeated). Reuse of a CONFIRMED node
+	// via a fresh token is rejected - only an unconfirmed (lost-bootstrap) node is
+	// re-runnable (see TestRedeemJoinTokenReissuesUnconfirmedNode).
 	takenHash1 := []byte("taken-1")
 	takenHash2 := []byte("taken-2")
 	for _, h := range [][]byte{takenHash1, takenHash2} {
@@ -189,9 +215,11 @@ func TestRedeemJoinTokenRejections(t *testing.T) {
 			t.Fatalf("CreateJoinToken(taken): %v", err)
 		}
 	}
-	if _, err := s.RedeemJoinToken(ctx, redeemParams(takenHash1, "dup-node"), func(store.Node) (store.IssuedCert, error) { return issuedCert(), nil }); err != nil {
+	takenRes, err := s.RedeemJoinToken(ctx, redeemParams(takenHash1, "dup-node"), func(store.Node) (store.IssuedCert, error) { return issuedCert(), nil })
+	if err != nil {
 		t.Fatalf("first redeem of dup-node: %v", err)
 	}
+	confirmNodeHeartbeat(t, s, ctx, takenRes.NodeID)
 	if _, err := s.RedeemJoinToken(ctx, redeemParams(takenHash2, "dup-node"), func(store.Node) (store.IssuedCert, error) { return issuedCert(), nil }); !errors.Is(err, store.ErrJoinNodeNameTaken) {
 		t.Errorf("node name taken = %v, want store.ErrJoinNodeNameTaken", err)
 	}
@@ -250,17 +278,20 @@ func TestRedeemJoinTokenConcurrentMaxUses(t *testing.T) {
 }
 
 // TestRedeemJoinTokenConcurrentIntendedNodeSingleUse pins the single-use
-// intended-node invariant: two concurrent redemptions for the bound name must
-// yield exactly one success and exactly one active cert for that node. The
-// loser surfaces ErrJoinTokenExhausted (lost the consumed-count CAS) or
-// ErrJoinNodeNameTaken (saw the winner's cert before its own count read).
+// intended-node invariant under concurrency. Both POSTs are bound to the same
+// name (a mismatch is rejected earlier), so they are the same node identity, not
+// competitors: they converge on one row and the last committer supersedes the
+// others' certs. The durable invariant - the security-relevant one - is that a
+// single-use token yields exactly one node with exactly one ACTIVE cert and
+// exactly one consumption row, regardless of how many concurrent POSTs succeed.
 func TestRedeemJoinTokenConcurrentIntendedNodeSingleUse(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()
 	one := int32(1)
 	bound := "bound-concurrent-node"
 	hash := []byte("concurrent-bound-hash")
-	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, IntendedNodeName: &bound, MaxUses: &one, ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+	tok, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, IntendedNodeName: &bound, MaxUses: &one, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	if err != nil {
 		t.Fatalf("CreateJoinToken: %v", err)
 	}
 
@@ -291,15 +322,162 @@ func TestRedeemJoinTokenConcurrentIntendedNodeSingleUse(t *testing.T) {
 			t.Errorf("RedeemJoinToken(goroutine %d) = %v, want nil, store.ErrJoinTokenExhausted, or store.ErrJoinNodeNameTaken", i, err)
 		}
 	}
-	if succeeded != 1 {
-		t.Fatalf("concurrent bound redemptions succeeded = %d, want exactly 1 (max_uses=1)", succeeded)
+	if succeeded < 1 {
+		t.Fatalf("concurrent bound redemptions succeeded = %d, want at least 1", succeeded)
 	}
-	certs, err := cli.Range(ctx, etcd.Key("index", "agent_certs", "node", nodeID.String())+"/")
+	// All successes resolve to the same identity: a single-use bound token can
+	// never yield a second distinct node.
+	for i, err := range errs {
+		if err == nil && results[i].NodeID != nodeID {
+			t.Errorf("goroutine %d NodeID = %s, want all successes on one identity %s", i, results[i].NodeID, nodeID)
+		}
+	}
+	if got := activeCertCount(t, cli, ctx, nodeID); got != 1 {
+		t.Errorf("active certs for node %s = %d, want exactly 1", bound, got)
+	}
+	cons, err := s.ListJoinTokenConsumptions(ctx, store.ListJoinTokenConsumptionsParams{JoinTokenID: tok.ID, LimitCount: 200})
 	if err != nil {
-		t.Fatalf("range agent cert node index: %v", err)
+		t.Fatalf("ListJoinTokenConsumptions: %v", err)
 	}
-	if len(certs) != 1 {
-		t.Errorf("active certs for node %s = %d, want exactly 1", bound, len(certs))
+	if len(cons) != 1 {
+		t.Errorf("consumptions for single-use bound token = %d, want exactly 1", len(cons))
+	}
+}
+
+// TestRedeemJoinTokenReissuesUnconfirmedNode pins the lost-bootstrap recovery
+// path: a node whose leaf was issued but never delivered (no heartbeat yet) can
+// be re-redeemed with the SAME token. The re-redemption reuses the row, issues a
+// fresh cert, supersedes the stale undelivered cert (so exactly one cert stays
+// active), and does NOT consume additional max_uses budget.
+func TestRedeemJoinTokenReissuesUnconfirmedNode(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	one := int32(1)
+	hash := []byte("reissue-unconfirmed-hash")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, MaxUses: &one, ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+
+	// First redemption: leaf issued, but imagine the HTTP response was lost.
+	first, err := s.RedeemJoinToken(ctx, redeemParams(hash, "reissue-node"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	})
+	if err != nil {
+		t.Fatalf("first redeem: %v", err)
+	}
+	if n := activeCertCount(t, cli, ctx, first.NodeID); n != 1 {
+		t.Fatalf("active certs after first redeem = %d, want 1", n)
+	}
+
+	// Re-redeem the SAME token for the SAME (still unconfirmed) node: succeeds.
+	second, err := s.RedeemJoinToken(ctx, redeemParams(hash, "reissue-node"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	})
+	if err != nil {
+		t.Fatalf("re-redeem of unconfirmed node = %v, want nil (lost-bootstrap recovery)", err)
+	}
+	if second.NodeID != first.NodeID {
+		t.Errorf("re-redeem NodeID = %s, want same as first %s", second.NodeID, first.NodeID)
+	}
+	// The stale cert was superseded: exactly one active cert remains.
+	if n := activeCertCount(t, cli, ctx, first.NodeID); n != 1 {
+		t.Errorf("active certs after re-redeem = %d, want exactly 1 (old superseded)", n)
+	}
+	// Budget was not double-spent: exactly one consumption row.
+	cons, err := s.ListJoinTokenConsumptions(ctx, store.ListJoinTokenConsumptionsParams{JoinTokenID: second.TokenID, LimitCount: 200})
+	if err != nil {
+		t.Fatalf("ListJoinTokenConsumptions: %v", err)
+	}
+	if len(cons) != 1 {
+		t.Errorf("consumptions after re-redeem = %d, want 1 (no double count)", len(cons))
+	}
+
+	// The single-use budget is still available for the intended node only: a
+	// DIFFERENT node cannot ride the same token.
+	if _, err := s.RedeemJoinToken(ctx, redeemParams(hash, "other-reissue-node"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	}); !errors.Is(err, store.ErrJoinTokenExhausted) {
+		t.Errorf("different node on spent single-use token = %v, want store.ErrJoinTokenExhausted", err)
+	}
+}
+
+// TestRedeemJoinTokenRejectsConfirmedNodeReissue pins the confirm-signal gate: a
+// node that has heartbeated is confirmed-owned, so re-presenting the same token
+// for its name is rejected ErrJoinNodeNameTaken - the re-runnable path is only
+// for the unconfirmed lost-bootstrap case.
+func TestRedeemJoinTokenRejectsConfirmedNodeReissue(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	two := int32(2)
+	hash := []byte("reissue-confirmed-hash")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, MaxUses: &two, ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+	res, err := s.RedeemJoinToken(ctx, redeemParams(hash, "confirmed-node"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	})
+	if err != nil {
+		t.Fatalf("first redeem: %v", err)
+	}
+	confirmNodeHeartbeat(t, s, ctx, res.NodeID)
+
+	if _, err := s.RedeemJoinToken(ctx, redeemParams(hash, "confirmed-node"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	}); !errors.Is(err, store.ErrJoinNodeNameTaken) {
+		t.Errorf("re-redeem of confirmed node = %v, want store.ErrJoinNodeNameTaken", err)
+	}
+}
+
+// TestRedeemJoinTokenConcurrentReissue pins that concurrent re-redemptions of the
+// same unconfirmed node converge on exactly one active cert and one consumption
+// row - the count-key CAS serializes them, so a torn double-issue is impossible.
+func TestRedeemJoinTokenConcurrentReissue(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	one := int32(1)
+	hash := []byte("concurrent-reissue-hash")
+	if _, err := s.CreateJoinToken(ctx, store.CreateJoinTokenParams{ID: uuid.New(), TokenHash: hash, MaxUses: &one, ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateJoinToken: %v", err)
+	}
+	// Establish the unconfirmed node with one delivered-but-lost redemption.
+	first, err := s.RedeemJoinToken(ctx, redeemParams(hash, "concurrent-reissue-node"), func(store.Node) (store.IssuedCert, error) {
+		return issuedCert(), nil
+	})
+	if err != nil {
+		t.Fatalf("first redeem: %v", err)
+	}
+
+	const n = 5
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = s.RedeemJoinToken(ctx, redeemParams(hash, "concurrent-reissue-node"), func(store.Node) (store.IssuedCert, error) {
+				return issuedCert(), nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		// Every concurrent re-redeem targets the same already-counted node, so all
+		// should succeed (or lose the CAS and be retried internally). None should
+		// see exhausted - the node is already counted.
+		if err != nil {
+			t.Errorf("concurrent re-redeem(goroutine %d) = %v, want nil", i, err)
+		}
+	}
+	if got := activeCertCount(t, cli, ctx, first.NodeID); got != 1 {
+		t.Errorf("active certs after concurrent re-redeem = %d, want exactly 1", got)
+	}
+	cons, err := s.ListJoinTokenConsumptions(ctx, store.ListJoinTokenConsumptionsParams{JoinTokenID: first.TokenID, LimitCount: 200})
+	if err != nil {
+		t.Fatalf("ListJoinTokenConsumptions: %v", err)
+	}
+	if len(cons) != 1 {
+		t.Errorf("consumptions after concurrent re-redeem = %d, want 1", len(cons))
 	}
 }
 

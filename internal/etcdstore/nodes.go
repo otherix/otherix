@@ -824,7 +824,7 @@ func (s *Store) DeleteNode(ctx context.Context, id uuid.UUID, force bool, caller
 	}
 
 	now := time.Now().UTC()
-	certOps, certsRevoked, err := s.revokeNodeAgentCertsOps(ctx, id, now)
+	certOps, certsRevoked, err := s.revokeNodeAgentCertsOps(ctx, id, now, "node deleted")
 	if err != nil {
 		return store.NodeDeleteOutcome{}, fmt.Errorf("revoke agent certs for node delete: %v", err)
 	}
