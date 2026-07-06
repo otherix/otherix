@@ -19,7 +19,8 @@ import (
 )
 
 // JobSource is the queue surface the dispatcher consumes. *etcdstore.Store
-// satisfies it.
+// satisfies it (asserted below so a signature drift surfaces here, not at a
+// distant call site).
 type JobSource interface {
 	// PendingJobs returns jobs awaiting a worker, oldest first.
 	PendingJobs(ctx context.Context) ([]etcdstore.Job, error)
@@ -43,6 +44,9 @@ type JobSource interface {
 	// compare race). token fences the renew to the caller's claim.
 	RenewJobLease(ctx context.Context, id int64, token string) (bool, error)
 }
+
+// The etcd store is the production JobSource; assert conformance at compile time.
+var _ JobSource = (*etcdstore.Store)(nil)
 
 // bookkeepingTimeout bounds the post-handler queue bookkeeping run on a context
 // that survives the shutdown cancel (context.WithoutCancel), so an in-flight job

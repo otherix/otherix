@@ -141,18 +141,36 @@ func TestRenewJobLeaseFencesStaleClaim(t *testing.T) {
 	}
 }
 
-// TestRetryJobRejectsEmptyToken pins the L1 defense-in-depth: an empty token
-// never matches, even a legacy running row with an empty ClaimToken.
-func TestRetryJobRejectsEmptyToken(t *testing.T) {
-	s, _ := startStore(t)
+// TestFencedMethodsRejectEmptyTokenOnLegacyRow pins the L1 defense-in-depth in
+// the scenario that motivates it: a legacy pre-upgrade running row carries an
+// empty ClaimToken, and an empty caller token must NOT match it (else a new
+// worker passing "" - which it never does - would fence-match every legacy row).
+// The row must be left untouched (reaped later by the lease reaper), never
+// retried or renewed.
+func TestFencedMethodsRejectEmptyTokenOnLegacyRow(t *testing.T) {
+	s, cli := startStore(t)
 	ctx := context.Background()
 	id, _ := enqueueAndClaim(t, s)
 
-	requeued, err := s.RetryJob(ctx, id, "", 5)
-	if err != nil {
-		t.Fatalf("RetryJob(empty token) = %v, want nil", err)
+	// Simulate a legacy running row with no claim token.
+	j := jobByID(t, cli, id)
+	j.ClaimToken = ""
+	if err := cli.PutJSON(ctx, etcd.Key("jobs", fmt.Sprintf("%020d", id)), j); err != nil {
+		t.Fatalf("seed legacy empty-token row: %v", err)
 	}
-	if requeued {
-		t.Errorf("RetryJob(empty token) requeued; an empty token must never match")
+
+	if requeued, err := s.RetryJob(ctx, id, "", 5); err != nil || requeued {
+		t.Errorf("RetryJob(\"\", legacy empty-token row) = (%v, %v), want (false, nil) no-op", requeued, err)
+	}
+	if err := s.RequeueJob(ctx, id, ""); err != nil {
+		t.Errorf("RequeueJob(\"\", legacy row) = %v, want nil no-op", err)
+	}
+	if ok, err := s.RenewJobLease(ctx, id, ""); err != nil || ok {
+		t.Errorf("RenewJobLease(\"\", legacy row) = (%v, %v), want (false, nil)", ok, err)
+	}
+	// The legacy row is untouched: still running, no attempt bump.
+	got := jobByID(t, cli, id)
+	if got.State != etcdstore.JobStateRunning || got.Attempts != 0 {
+		t.Errorf("legacy row mutated by an empty-token call = %+v, want running attempts=0", got)
 	}
 }
