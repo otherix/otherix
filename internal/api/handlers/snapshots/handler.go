@@ -170,22 +170,46 @@ func toView(s store.Snapshot) vmSnapshotView {
 	}
 }
 
-// viewWithDurability projects a snapshot onto its public view and folds in the
-// CP-computed durability status. Durability is best-effort: on a store error it
-// renders "unknown" and logs, never failing the request.
+// viewWithDurability projects a single snapshot onto its public view and folds in
+// the CP-computed durability status. Durability is best-effort: on a store error
+// it renders "unknown" and logs, never failing the request. Single-read paths
+// (get.go) use this; list paths build one resolver per page and call
+// viewWithDurabilityPaged per row to avoid a full node scan per row.
 func (h *Handler) viewWithDurability(ctx context.Context, s store.Snapshot) vmSnapshotView {
-	v := toView(s)
-	status, desired, observed, holderNodes, err := replication.SnapshotDurability(ctx, h.store, s)
+	resolver, err := replication.NewDurabilityResolver(ctx, h.store)
+	if err != nil {
+		h.log.WarnContext(ctx, "compute snapshot durability",
+			slog.String("snapshot_id", s.ID.String()), slog.Any("error", err))
+		return h.renderDurability(toView(s), replication.DurabilityUnknown, 0, 0, nil)
+	}
+	return h.viewWithDurabilityPaged(ctx, resolver, s)
+}
+
+// viewWithDurabilityPaged is viewWithDurability against a caller-supplied,
+// page-scoped resolver, so a list page performs one node-inventory scan for the
+// whole page (and one lookup per unique blob digest) instead of one per row. A nil
+// resolver (its construction failed) or a per-row resolve error renders "unknown"
+// and logs, never failing the request.
+func (h *Handler) viewWithDurabilityPaged(ctx context.Context, resolver *replication.DurabilityResolver, s store.Snapshot) vmSnapshotView {
+	if resolver == nil {
+		return h.renderDurability(toView(s), replication.DurabilityUnknown, 0, 0, nil)
+	}
+	status, desired, observed, holderNodes, err := resolver.Resolve(ctx, s)
 	if err != nil {
 		h.log.WarnContext(ctx, "compute snapshot durability",
 			slog.String("snapshot_id", s.ID.String()), slog.Any("error", err))
 		status, desired, observed, holderNodes = replication.DurabilityUnknown, 0, 0, nil
 	}
+	return h.renderDurability(toView(s), status, desired, observed, holderNodes)
+}
+
+// renderDurability folds a computed durability projection onto a base view,
+// normalising nil holderNodes to an empty array so the field is never null on the
+// wire (matches the schema's required holder_nodes).
+func (h *Handler) renderDurability(v vmSnapshotView, status string, desired, observed int, holderNodes []string) vmSnapshotView {
 	v.Durability = status
 	v.DesiredReplicas = desired
 	v.ObservedReplicas = observed
-	// Always surface a (possibly empty) array so the field is never null on the
-	// wire; matches the schema's required holder_nodes.
 	if holderNodes == nil {
 		holderNodes = []string{}
 	}

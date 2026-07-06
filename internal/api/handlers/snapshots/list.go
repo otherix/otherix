@@ -4,11 +4,13 @@
 package snapshots
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
+	"github.com/otherix/otherix/internal/api/handlers/replication"
 	"github.com/otherix/otherix/internal/api/pagination"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
@@ -84,9 +86,18 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		rows = rows[:limitN]
 	}
 
+	// One page-scoped durability resolver for the whole page: the node inventory
+	// is scanned once, not once per row. On a construction error every row renders
+	// "unknown" durability (viewWithDurabilityPaged tolerates a nil resolver),
+	// best-effort.
+	resolver, err := replication.NewDurabilityResolver(r.Context(), h.store)
+	if err != nil {
+		h.log.WarnContext(r.Context(), "build snapshot durability resolver", slog.Any("error", err))
+	}
+
 	views := make([]vmSnapshotView, 0, len(rows))
 	for _, s := range rows {
-		views = append(views, h.viewWithDurability(r.Context(), s))
+		views = append(views, h.viewWithDurabilityPaged(r.Context(), resolver, s))
 	}
 
 	response.WriteJSON(w, r, http.StatusOK, listResponse{
