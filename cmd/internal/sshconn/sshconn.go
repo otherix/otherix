@@ -452,7 +452,7 @@ func dialGateway(ctx context.Context, cfg Config, resp ingressResponse) (net.Con
 	if serverName == "" {
 		serverName = u.Hostname()
 	}
-	tlsCfg, err := gatewayTLSConfig(cfg, serverName)
+	tlsCfg, err := gatewayTLSConfig(ctx, cfg, serverName)
 	if err != nil {
 		return nil, err
 	}
@@ -532,20 +532,94 @@ func (c *bufferedConn) CloseWrite() error {
 	return nil
 }
 
-// gatewayTLSConfig builds the TLS trust for the gateway leg: it reuses the
-// connector's configured trust (the cluster CA bundle per ADR 0026) and pins the
+// gatewayTLSConfig builds the TLS trust for the gateway leg and pins the
 // ServerName to serverName, which the caller sets to the gateway node's identity
 // SAN (node-<name>.agents.otherix.local). Every node leaf carries that identity
 // SAN, so the pin verifies for a standalone and a co-located gateway alike,
-// whether or not the dialed ingress host is in the leaf SAN. It never disables
+// whether or not the dialed ingress host is in the leaf SAN.
+//
+// The insecure-opt-out and cluster-CA-bundle trust modes verify the gateway leaf
+// directly, so they reuse the resolved base config and only override ServerName.
+// A CP-leaf pin (CAFingerprint set, CACertPEM empty) is different: it
+// authenticates only the control plane's own TLS leaf, and the converged gateway
+// presents its own cluster-CA-signed node leaf, a distinct certificate the CP-leaf
+// pin can never match. For that mode the gateway leg fetches the cluster CA once
+// from GET /v1/ca over the pin-verified client (so the fetched CA is anchored in
+// the operator's pin) and verifies the gateway leaf's full chain and SAN against
+// it. It fails closed: on any fetch or parse failure it returns an error rather
+// than downgrade to an insecure or CP-leaf-pinned gateway dial. It never disables
 // verification on its own (only an explicit operator InsecureSkipTLSVerify does).
-func gatewayTLSConfig(cfg Config, serverName string) (*tls.Config, error) {
+func gatewayTLSConfig(ctx context.Context, cfg Config, serverName string) (*tls.Config, error) {
+	if isPinModeGateway(cfg) {
+		pool, err := fetchClusterCAPool(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    pool,
+			ServerName: serverName,
+		}, nil
+	}
 	base, err := resolveTLSConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 	base.ServerName = serverName
 	return base, nil
+}
+
+// isPinModeGateway reports whether the gateway leg is reached under a CP-leaf pin
+// with no cluster CA bundle to fall back on: an explicit fingerprint, no
+// CACertPEM, and no insecure opt-out. This is the exact configuration where the
+// pinned CP leaf cannot verify the gateway's distinct node leaf.
+func isPinModeGateway(cfg Config) bool {
+	return !cfg.InsecureSkipTLSVerify &&
+		len(cfg.CACertPEM) == 0 &&
+		normalizeFingerprint(cfg.CAFingerprint) != ""
+}
+
+// caResponse mirrors the GET /v1/ca response; only cert_pem is consumed.
+type caResponse struct {
+	CertPEM string `json:"cert_pem"`
+}
+
+// fetchClusterCAPool retrieves the cluster CA from GET {ServerURL}/v1/ca over the
+// pin-verified client and returns it as a RootCAs pool. The client pins the CP's
+// TLS leaf (per cfg), so the fetched CA is authenticated by the operator's pin. It
+// returns an error, never a nil pool with nil error, so callers fail closed.
+func fetchClusterCAPool(ctx context.Context, cfg Config) (*x509.CertPool, error) {
+	client, err := wsHTTPClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	client.Timeout = fetchTimeout
+
+	endpoint := strings.TrimRight(cfg.ServerURL, "/") + "/v1/ca"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sshconn: build ca request: %v", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sshconn: fetch cluster ca: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sshconn: fetch cluster ca: HTTP %d", resp.StatusCode)
+	}
+	var out caResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("sshconn: decode ca response: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(out.CertPEM)) {
+		return nil, errors.New("sshconn: ca response carried no usable certificate")
+	}
+	return pool, nil
 }
 
 // dialRelay dials the control-plane relay WebSocket for vmName, threading the
