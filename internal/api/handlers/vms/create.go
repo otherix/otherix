@@ -242,18 +242,29 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		SchedulingSpec:    specJSON,
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrVMNameInUse) {
-			response.WriteError(w, r, http.StatusConflict,
-				response.CodeVMNameInUse, "a vm with this name already exists", nil)
-			return
-		}
-		h.log.ErrorContext(r.Context(), "create unscheduled vm", "error", err)
-		response.WriteError(w, r, http.StatusInternalServerError,
-			response.CodeInternal, "create vm", nil)
+		h.writeCreateVMStoreError(w, r, err)
 		return
 	}
 
 	h.renderVM(w, r, vmID, http.StatusCreated)
+}
+
+// writeCreateVMStoreError maps a CreateUnscheduledVM store error to the standard
+// envelope: name clash -> 409 vm_name_in_use, a referenced infra resource being
+// deleted -> 409 resource_deleting, anything else -> 500.
+func (h *Handler) writeCreateVMStoreError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, store.ErrVMNameInUse):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeVMNameInUse, "a vm with this name already exists", nil)
+	case errors.Is(err, store.ErrResourceDeleting):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeResourceDeleting, "a referenced resource is being deleted", nil)
+	default:
+		h.log.ErrorContext(r.Context(), "create unscheduled vm", "error", err)
+		response.WriteError(w, r, http.StatusInternalServerError,
+			response.CodeInternal, "create vm", nil)
+	}
 }
 
 // decodeCreateBody parses the JSON body and writes the standard 400

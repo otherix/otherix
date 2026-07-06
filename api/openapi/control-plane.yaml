@@ -4518,6 +4518,7 @@ components:
         - method_not_allowed
         - conflict
         - resource_in_use
+        - resource_deleting
         - idempotency_key_mismatch
         - validation_failed
         - rate_limited

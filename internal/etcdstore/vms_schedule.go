@@ -53,14 +53,26 @@ func (s *Store) CreateUnscheduledVM(ctx context.Context, p store.CreateVMParams)
 	}
 	ops = append(ops, vmIndexOps(vm)...)
 
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)).
-		Then(ops...).
-		Commit()
+	conds := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)}
+	// Do not create a VM->firmware reference on a firmware that is being deleted
+	// (closes the create-during-delete TOCTOU; see deleting_intent.go).
+	if vm.FirmwareID != nil {
+		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(firmwareDeletingKey(*vm.FirmwareID)), "=", 0))
+	}
+
+	resp, err := s.c.Raw().Txn(ctx).If(conds...).Then(ops...).Commit()
 	if err != nil {
 		return uuid.Nil, err
 	}
 	if !resp.Succeeded {
+		// Disambiguate the lost CAS: a firmware being deleted vs a name clash.
+		if vm.FirmwareID != nil {
+			if deleting, derr := s.deleteIntentPresent(ctx, firmwareDeletingKey(*vm.FirmwareID)); derr != nil {
+				return uuid.Nil, derr
+			} else if deleting {
+				return uuid.Nil, store.ErrResourceDeleting
+			}
+		}
 		return uuid.Nil, store.ErrVMNameInUse
 	}
 	return vm.ID, nil
@@ -288,6 +300,14 @@ func (s *Store) buildBindTxn(ctx context.Context, vm store.VM, writes store.VMBi
 	ops = append(ops, taskIndexOps(task)...)
 
 	conds = []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(vmKey(vm.ID)), "=", rev)}
+	// Do not bind onto a storage pool (or, with a NIC, a network) that is being
+	// deleted - closes the create-during-delete TOCTOU (see deleting_intent.go). A
+	// lost guard fails the bind commit, which the scheduler retries; once the
+	// resource soft-deletes, placement surfaces the proper unschedulable reason.
+	conds = append(conds, clientv3.Compare(clientv3.CreateRevision(storagePoolDeletingKey(disk.StoragePoolID)), "=", 0))
+	if writes.Nic != nil {
+		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(networkDeletingKey(writes.Nic.NetworkID)), "=", 0))
+	}
 	if writes.Nic != nil {
 		// CP-IPAM: when the NIC's network is DHCP-enabled with a subnet, allocate
 		// the lowest free host before projecting the NIC row, so the IP lands on

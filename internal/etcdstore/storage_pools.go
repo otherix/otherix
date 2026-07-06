@@ -266,11 +266,21 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	// Set the delete-intent FIRST so no new disk can bind to this pool past this
+	// point (VM create/bind guards on storagePoolDeletingKey), then count - the
+	// count is authoritative. The finalize CASes on our intent rev. See
+	// deleting_intent.go.
+	intentKey := storagePoolDeletingKey(id)
+	myRev, err := s.setDeleteIntent(ctx, intentKey, time.Now())
+	if err != nil {
+		return err
+	}
 	diskCount, err := s.countPrefix(ctx, vmDisksPoolIndexPrefix(id))
 	if err != nil {
 		return err
 	}
 	if diskCount > 0 {
+		s.clearDeleteIntent(ctx, intentKey, myRev)
 		return &store.ResourceInUseError{Resources: map[string]int64{"vm_disks": diskCount}}
 	}
 	now := time.Now().UTC()
@@ -280,7 +290,8 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.c.Raw().Txn(ctx).
+	resp, err := s.c.Raw().Txn(ctx).
+		If(deleteIntentGuard(intentKey, myRev)).
 		Then(
 			clientv3.OpPut(storagePoolKey(id), string(val)),
 			clientv3.OpDelete(storagePoolNodeNameGuard(p.NodeID, p.Name)),
@@ -288,9 +299,17 @@ func (s *Store) DeleteStoragePool(ctx context.Context, id uuid.UUID) error {
 			// Drop the agent-reported image inventory (observed state); a
 			// deleted pool reports none, and nothing reads it post-delete.
 			clientv3.OpDelete(poolImageInventoryKey(id)),
+			clientv3.OpDelete(intentKey),
 		).
-		Commit(); err != nil {
+		Commit()
+	if err != nil {
 		return fmt.Errorf("delete storage pool txn: %v", err)
+	}
+	if !resp.Succeeded {
+		if _, gerr := s.StoragePoolByID(ctx, id); errors.Is(gerr, store.ErrNotFound) {
+			return store.ErrNotFound
+		}
+		return store.ErrConcurrentUpdate
 	}
 	return nil
 }

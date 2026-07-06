@@ -22,14 +22,18 @@ type ErrorCode string
 // Cross-cutting error codes. Any addition here must also land in the
 // ErrorCode enum in api/openapi/control-plane.yaml.
 const (
-	CodeUnauthenticated     ErrorCode = "unauthenticated"
-	CodeInvalidCredentials  ErrorCode = "invalid_credentials" //nolint:gosec // not a credential, an error code
-	CodeTokenRevoked        ErrorCode = "token_revoked"
-	CodePermissionDenied    ErrorCode = "permission_denied"
-	CodeNotFound            ErrorCode = "not_found"
-	CodeMethodNotAllowed    ErrorCode = "method_not_allowed"
-	CodeConflict            ErrorCode = "conflict"
-	CodeResourceInUse       ErrorCode = "resource_in_use"
+	CodeUnauthenticated    ErrorCode = "unauthenticated"
+	CodeInvalidCredentials ErrorCode = "invalid_credentials" //nolint:gosec // not a credential, an error code
+	CodeTokenRevoked       ErrorCode = "token_revoked"
+	CodePermissionDenied   ErrorCode = "permission_denied"
+	CodeNotFound           ErrorCode = "not_found"
+	CodeMethodNotAllowed   ErrorCode = "method_not_allowed"
+	CodeConflict           ErrorCode = "conflict"
+	CodeResourceInUse      ErrorCode = "resource_in_use"
+	// CodeResourceDeleting surfaces a VM create/bind rejected because a
+	// referenced infra resource (network, storage pool, firmware, node) is being
+	// deleted - the reference must not be created on a resource on its way out.
+	CodeResourceDeleting    ErrorCode = "resource_deleting"
 	CodeIdempotencyMismatch ErrorCode = "idempotency_key_mismatch"
 	CodeValidationFailed    ErrorCode = "validation_failed"
 	CodeRateLimited         ErrorCode = "rate_limited"

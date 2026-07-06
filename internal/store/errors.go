@@ -45,6 +45,12 @@ var (
 	ErrTaskNotCancellable    = errors.New("store: task not cancellable")
 	ErrVMNameInUse           = errors.New("store: vm name already in use")
 	ErrVMNicMACConflict      = errors.New("store: vm nic mac already in use on network")
+	// ErrResourceDeleting is returned by a VM create/bind when a referenced infra
+	// resource (network, storage pool, firmware, node) is being deleted - a
+	// delete-intent key is present, so the create's guard lost the CAS. It closes
+	// the create-during-delete TOCTOU: the reference must not be created on a
+	// resource on its way out. Handlers map it to 409 conflict (resource_deleting).
+	ErrResourceDeleting = errors.New("store: referenced resource is being deleted")
 	// ErrVMNotUnscheduled is returned by BindScheduledVM / UpdateVMSchedulingReason
 	// when the VM is no longer in the "unscheduled" state (already bound, or
 	// deleted) - the CAS lost. Callers (the scheduler loop) skip the VM.

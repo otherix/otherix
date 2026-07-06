@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -303,11 +304,21 @@ func (s *Store) DeleteNetwork(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	// Set the delete-intent FIRST so no new NIC can attach to this network past
+	// this point (VM create/bind guards on networkDeletingKey), then count - the
+	// count is authoritative. The finalize CASes on our intent rev. See
+	// deleting_intent.go.
+	intentKey := networkDeletingKey(id)
+	myRev, err := s.setDeleteIntent(ctx, intentKey, time.Now())
+	if err != nil {
+		return err
+	}
 	nicCount, err := s.countVMNicsOnNetwork(ctx, id)
 	if err != nil {
 		return err
 	}
 	if nicCount > 0 {
+		s.clearDeleteIntent(ctx, intentKey, myRev)
 		return &store.ResourceInUseError{Resources: map[string]int64{"vm_nics": nicCount}}
 	}
 	now := time.Now().UTC()
@@ -316,23 +327,31 @@ func (s *Store) DeleteNetwork(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	guard := networkNameGuard(existing.Name)
-	baseOps := []clientv3.Op{clientv3.OpPut(networkKey(id), string(val))}
-	if existing.Type == store.NetworkTypeOverlay && existing.VNI != nil {
-		baseOps = append(baseOps, clientv3.OpDelete(networkVNIGuard(*existing.VNI)))
+	// The name guard is deleted unconditionally here (dropping the former
+	// Value(guard)==id gate): the intent-CAS below already guarantees no
+	// concurrent delete of THIS network finalized (it would have deleted the
+	// intent and failed our CAS), so the name cannot have been freed-and-retaken
+	// while our intent is intact - the guard still points at this network.
+	ops := []clientv3.Op{
+		clientv3.OpPut(networkKey(id), string(val)),
+		clientv3.OpDelete(networkNameGuard(existing.Name)),
+		clientv3.OpDelete(intentKey),
 	}
-	// Delete the name guard ONLY if it still points at this network. A concurrent
-	// delete of the same network may have already freed the name and a new
-	// network re-taken it; deleting that guard would orphan the new network's
-	// name. Gate on the guard value; the row soft-delete + VNI-guard drop run in
-	// both branches (id/VNI-keyed, no cross-network race).
-	thenOps := append(append([]clientv3.Op{}, baseOps...), clientv3.OpDelete(guard))
-	if _, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.Value(guard), "=", id.String())).
-		Then(thenOps...).
-		Else(baseOps...).
-		Commit(); err != nil {
+	if existing.Type == store.NetworkTypeOverlay && existing.VNI != nil {
+		ops = append(ops, clientv3.OpDelete(networkVNIGuard(*existing.VNI)))
+	}
+	resp, err := s.c.Raw().Txn(ctx).
+		If(deleteIntentGuard(intentKey, myRev)).
+		Then(ops...).
+		Commit()
+	if err != nil {
 		return fmt.Errorf("delete network txn: %v", err)
+	}
+	if !resp.Succeeded {
+		if _, gerr := s.NetworkByID(ctx, id); errors.Is(gerr, store.ErrNotFound) {
+			return store.ErrNotFound
+		}
+		return store.ErrConcurrentUpdate
 	}
 	// Best-effort purge of the per-(node, network) status records: they are
 	// garbage once the network is gone. A purge failure must not fail the
