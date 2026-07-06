@@ -6,10 +6,12 @@ package snapshots
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/handlers/replication"
 	"github.com/otherix/otherix/internal/api/pagination"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
@@ -152,6 +154,14 @@ func (h *Handler) resolveListItems(ctx context.Context, rows []store.Snapshot) [
 	liveVMNames := map[uuid.UUID]*string{}
 	ownerNames := map[uuid.UUID]*string{}
 
+	// One page-scoped durability resolver for the whole page: the node inventory
+	// is scanned once here, not once per row (see viewWithDurabilityPaged). On a
+	// construction error every row renders "unknown" durability, best-effort.
+	resolver, err := replication.NewDurabilityResolver(ctx, h.store)
+	if err != nil {
+		h.log.WarnContext(ctx, "build snapshot durability resolver", slog.Any("error", err))
+	}
+
 	views := make([]snapshotListItemView, 0, len(rows))
 	for _, s := range rows {
 		live, ok := liveVMNames[s.VmID]
@@ -173,7 +183,7 @@ func (h *Handler) resolveListItems(ctx context.Context, rows []store.Snapshot) [
 			ownerNames[s.OwnerID] = ownerName
 		}
 		views = append(views, snapshotListItemView{
-			vmSnapshotView:   h.viewWithDurability(ctx, s),
+			vmSnapshotView:   h.viewWithDurabilityPaged(ctx, resolver, s),
 			VMName:           vmName,
 			OwnerDisplayName: ownerName,
 		})
