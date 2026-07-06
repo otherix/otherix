@@ -436,17 +436,27 @@ func (m *Manager) failIncomingResume(taskID, migrationID, vmID uuid.UUID, msg st
 		// teardownDepartedSource fix on the source side.
 		m.detachMux(v.Name)
 	}
-	if ram > 0 || nbd > 0 {
-		m.migPorts.ReleasePair(ram, nbd)
-	}
-
 	m.transitionVM(vmID, StatusFailed, msg)
 	_ = m.persistVM(vmID)
+	// Stamp terminal and release the pair ONLY if this call WINS the transition.
+	// The top Terminal() fast-path narrows but does NOT close the race with
+	// teardownIncomingTarget (this goroutine can pass it before the teardown
+	// reaches terminal), so gate the release on the won flag captured under the
+	// store mutex - exactly as teardownIncomingTarget does. A loser leaks the pair
+	// (recoverable) rather than freeing a second migration's re-reserved port.
+	won := false
 	m.migrations.Update(migrationID, func(r *migration.Record) {
+		if r.Terminal() {
+			return
+		}
+		won = true
 		r.Phase = migration.PhaseFailed
 		r.ErrorMessage = msg
 		r.CompletedAt = time.Now().UTC()
 	})
+	if won && (ram > 0 || nbd > 0) {
+		m.migPorts.ReleasePair(ram, nbd)
+	}
 	m.tasks.Update(taskID, func(t *AgentTask) {
 		t.Status = TaskStatusFailed
 		t.Error = &TaskError{Code: "resume_failed", Message: msg}
@@ -744,15 +754,30 @@ func (m *Manager) teardownIncomingTarget(migrationID, vmID uuid.UUID, ram, nbd i
 		m.teardownNICs(v.NICs)
 		m.removeAdoptedVM(vmID)
 	}
-	m.migPorts.ReleasePair(ram, nbd)
+	// Release the port pair ONLY if this call WINS the non-terminal->terminal
+	// transition of the record. The store applies the closure under its mutex, so
+	// exactly one finalizer (this teardown or a racing failIncomingResume) both
+	// stamps terminal AND releases the ports. This closes the ABA double-release:
+	// a stale finalizer (cancelLive passes a stale snapshot) would otherwise
+	// unconditionally free a pair a later migration has already re-reserved, giving
+	// two live incoming qemus the same RAM/NBD port. Fails toward inaction: the
+	// loser leaks the pair (recoverable - the pair is re-derivable and the range
+	// self-heals on reap) rather than wrongly freeing a second migration's live
+	// port. killQEMU above already dropped the OS-level port binding with the
+	// process, so a leaked allocator entry is the only cost of losing.
+	won := false
 	m.migrations.Update(migrationID, func(r *migration.Record) {
 		if r.Terminal() {
 			return
 		}
+		won = true
 		r.Phase = phase
 		r.ErrorMessage = reason
 		r.CompletedAt = time.Now().UTC()
 	})
+	if won {
+		m.migPorts.ReleasePair(ram, nbd)
+	}
 }
 
 // cancelLive aborts a pre-cutover live migration best-effort: cancel the RAM

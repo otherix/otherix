@@ -53,6 +53,50 @@ func TestTeardownIncomingTarget_ReapsAndIdempotent(t *testing.T) {
 	m.teardownIncomingTarget(migID, vmID, ram, nbd, migration.PhaseCancelled, "cancelled")
 }
 
+// TestTeardownIncomingTarget_NoReleaseWhenAlreadyTerminal is the ABA
+// double-release guard: a stale teardownIncomingTarget (cancelLive passes a
+// stale non-terminal snapshot) must NOT free a port pair that a later migration
+// has already re-reserved. The release is now gated on winning the
+// non-terminal->terminal transition, so a call finding the record already
+// terminal leaks its (stale) pair rather than freeing the new owner's live port.
+func TestTeardownIncomingTarget_NoReleaseWhenAlreadyTerminal(t *testing.T) {
+	m := newTestManager(t)
+	m.migPorts = migration.NewPortAllocator(49152, 49153) // exactly one pair
+	migID, vmID := uuid.New(), uuid.New()
+
+	// M1 reserved the only pair.
+	ram, nbd, err := m.migPorts.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair(M1): %v", err)
+	}
+
+	// The racing finalizer already WON: it released the pair and stamped the
+	// record terminal.
+	m.migPorts.ReleasePair(ram, nbd)
+	m.migrations.Put(&migration.Record{
+		MigrationID: migID, VMID: vmID, Role: migration.RoleTarget,
+		Mode: migration.ModeLive, Phase: migration.PhaseFailed, Port: ram, NBDPort: nbd,
+	})
+
+	// A second migration M2 grabbed the now-free pair.
+	ram2, nbd2, err := m.migPorts.ReservePair()
+	if err != nil {
+		t.Fatalf("ReservePair(M2): %v", err)
+	}
+	if ram2 != ram || nbd2 != nbd {
+		t.Fatalf("M2 reserved (%d,%d), want the freed pair (%d,%d)", ram2, nbd2, ram, nbd)
+	}
+
+	// The STALE teardown runs with M1's old ports. It must NOT release them - the
+	// record is already terminal, so it did not win the transition.
+	m.teardownIncomingTarget(migID, vmID, ram, nbd, migration.PhaseCancelled, "cancelled")
+
+	// M2 must still own the only pair: a wrongful release would let this succeed.
+	if _, _, err := m.migPorts.ReservePair(); err != migration.ErrNoFreePort {
+		t.Errorf("ReservePair after stale teardown = %v, want ErrNoFreePort (M2's pair must not be freed)", err)
+	}
+}
+
 func TestCancelLive_TargetReapsQemuAndPorts(t *testing.T) {
 	m := newTestManager(t)
 	m.migPorts = migration.NewPortAllocator(49152, 49153)
