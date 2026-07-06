@@ -547,14 +547,14 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 	// (serve/pull data path).
 	blobBroker := blobbroker.New(st, blobbroker.NewClientExecutor(agentClient), log)
 	d.Register("vm.create", workerMaxAttempts,
-		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), blobBroker, log, cfg.Workers.Heartbeat.GoneGrace))
+		vmshandlers.CreateHandler(st, vmshandlers.NewAgentVMCreateExecutor(agentClient), blobBroker, log, cfg.Workers.Heartbeat.RebalanceGrace))
 	d.Register("vm.delete", workerMaxAttempts,
-		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log, cfg.Workers.Heartbeat.GoneGrace))
+		vmshandlers.DeleteHandler(st, vmshandlers.NewAgentVMDeleteExecutor(agentClient), log, cfg.Workers.Heartbeat.RebalanceGrace))
 
 	lifecycleExec := vmshandlers.NewAgentVMLifecycleExecutor(agentClient)
 	for _, lk := range vmshandlers.LifecycleKinds() {
 		d.Register(lk.Kind, workerMaxAttempts,
-			vmshandlers.LifecycleHandler(st, lifecycleExec, log, lk.Op, lk.DesiredPhase, lk.RuntimePhase, lk.FailureCode, cfg.Workers.Heartbeat.GoneGrace))
+			vmshandlers.LifecycleHandler(st, lifecycleExec, log, lk.Op, lk.DesiredPhase, lk.RuntimePhase, lk.FailureCode, cfg.Workers.Heartbeat.RebalanceGrace))
 	}
 
 	d.Register("storage_pool.scan", workerMaxAttempts,
@@ -593,7 +593,7 @@ func buildDispatcher(st *etcdstore.Store, agentClient *agentclient.Client, cfg *
 	})
 	d.Register("node.drain", nodeDrainMaxAttempts,
 		nodeshandlers.DrainHandler(st, drainPlacer, nodeshandlers.DrainConfig{
-			DeadNodeGrace: cfg.Workers.Heartbeat.GoneGrace,
+			DeadNodeGrace: cfg.Workers.Heartbeat.RebalanceGrace,
 		}, log))
 
 	return d
@@ -641,7 +641,7 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 	s.Register("heartbeat.reconcile", positiveOr(cfg.Workers.Heartbeat.Interval, 30*time.Second), true,
 		heartbeathandlers.ReconcileFunc(st, heartbeathandlers.ReconcileConfig{
 			StaleThreshold: cfg.Workers.Heartbeat.StaleThreshold,
-			GoneGrace:      cfg.Workers.Heartbeat.GoneGrace,
+			GoneGrace:      cfg.Workers.Heartbeat.RebalanceGrace,
 			Interval:       cfg.Workers.Heartbeat.Interval,
 		}, log,
 			storagepoolshandlers.EnsureDefaultPoolsFunc(st, cfg.StoragePools.AllowedPathPrefixes[0], log),

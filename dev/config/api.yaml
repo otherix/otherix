@@ -134,12 +134,12 @@ workers:
   # Compressed cadence for dev: a 15s interval with a 20s stale window keeps
   # the smoke loop responsive (operator does not wait 90s before the node
   # flips to `ready`) while remaining wide enough to ride out a Lima VM hiccup.
-  # gone_grace is tightened to 30s (must exceed stale_threshold) so a node that
-  # is killed during a durability smoke advances to `gone` in tens of seconds
-  # rather than minutes, letting the re-replication path fire promptly.
+  # rebalance_grace is tightened to 30s (must be >= stale_threshold) so a node
+  # that is killed during a durability smoke becomes rebalance-eligible in tens
+  # of seconds rather than minutes, letting the re-replication path fire promptly.
   heartbeat:
     stale_threshold: 20s
-    gone_grace:      30s
+    rebalance_grace: 30s
     interval:        15s
   # Placement reconciler cadence. Dev uses a snappy 10s tick so a blob whose
   # holder went `gone` is re-replicated to a surviving node within seconds of

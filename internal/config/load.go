@@ -19,9 +19,12 @@ const envPrefix = "OTHERIX_"
 // environment variables, and finally unmarshals the result into cfg. cfg must
 // be a non-nil pointer to a config struct with koanf tags. Nesting separator
 // inside env var names is __ (double underscore) because single underscores
-// appear in snake_case key names. Errors are formatted with %v — callers do
-// not inspect them with errors.Is/As.
-func load(path string, cfg any) error {
+// appear in snake_case key names. deprecated maps a renamed dotted key to its
+// replacement; if any listed key is present in the merged config, load fails
+// closed rather than silently dropping it (koanf ignores unknown keys, which
+// would revert an operator's tuned override to the default). Errors are
+// formatted with %v — callers do not inspect them with errors.Is/As.
+func load(path string, cfg any, deprecated map[string]string) error {
 	k := koanf.New(".")
 
 	if path != "" {
@@ -35,6 +38,12 @@ func load(path string, cfg any) error {
 	})
 	if err := k.Load(envProvider, nil); err != nil {
 		return fmt.Errorf("read env: %v", err)
+	}
+
+	for old, replacement := range deprecated {
+		if k.Exists(old) {
+			return fmt.Errorf("config key %q has been renamed to %q; update your config", old, replacement)
+		}
 	}
 
 	if err := k.UnmarshalWithConf("", cfg, koanf.UnmarshalConf{Tag: "koanf"}); err != nil {
@@ -55,7 +64,9 @@ var _ = []validator{APIConfig{}, AgentConfig{}}
 // variables, then validated.
 func LoadAPI(path string) (*APIConfig, error) {
 	cfg := defaultAPIConfig()
-	if err := load(path, &cfg); err != nil {
+	if err := load(path, &cfg, map[string]string{
+		"workers.heartbeat.gone_grace": "workers.heartbeat.rebalance_grace",
+	}); err != nil {
 		return nil, err
 	}
 	if err := cfg.Validate(); err != nil {
@@ -68,7 +79,7 @@ func LoadAPI(path string) (*APIConfig, error) {
 // layering rules.
 func LoadAgent(path string) (*AgentConfig, error) {
 	cfg := defaultAgentConfig()
-	if err := load(path, &cfg); err != nil {
+	if err := load(path, &cfg, nil); err != nil {
 		return nil, err
 	}
 	if err := cfg.Validate(); err != nil {

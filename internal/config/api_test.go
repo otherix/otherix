@@ -600,3 +600,21 @@ func TestAuthConfig_Validate_JWTSecret(t *testing.T) {
 		})
 	}
 }
+
+func TestHeartbeatWorkersConfigValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     HeartbeatWorkersConfig
+		wantErr bool
+	}{
+		{"grace exceeds threshold", HeartbeatWorkersConfig{StaleThreshold: 90 * time.Second, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second}, false},
+		{"grace equals threshold", HeartbeatWorkersConfig{StaleThreshold: 5 * time.Minute, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second}, false},
+		{"grace below threshold", HeartbeatWorkersConfig{StaleThreshold: 5 * time.Minute, RebalanceGrace: 90 * time.Second, Interval: 30 * time.Second}, true},
+	}
+	for _, tt := range tests {
+		err := tt.cfg.Validate()
+		if (err != nil) != tt.wantErr {
+			t.Errorf("%s: Validate() error = %v, wantErr %v", tt.name, err, tt.wantErr)
+		}
+	}
+}

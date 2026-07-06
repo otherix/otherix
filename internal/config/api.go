@@ -651,18 +651,29 @@ func (s StoragePoolScanConfig) Validate() error {
 	return nil
 }
 
-// HeartbeatWorkersConfig groups the CP-side node-health reconciler
-// knobs. The reconciler fires on a fixed cadence (Interval) and flips
-// nodes between 'ready' and 'unreachable' based on whether their
-// last_heartbeat_at falls inside or outside the StaleThreshold window.
-// A node in 'unreachable' whose last heartbeat is older than the
-// GoneGrace window (which must exceed StaleThreshold) is then advanced
-// to the terminal 'gone' status. All fields fall back to package
+// HeartbeatWorkersConfig groups the CP-side node-health reconciler knobs. The
+// reconciler fires on a fixed cadence (Interval) and flips nodes between 'ready'
+// and 'unreachable' based on whether their last_heartbeat_at falls inside or
+// outside the StaleThreshold window. A node in 'unreachable' whose last heartbeat
+// is older than RebalanceGrace (which must be >= StaleThreshold) becomes
+// rebalance-eligible: durability re-replication and placement pruning treat it as
+// a dead holder. RebalanceGrace is a rebalance signal, not a fence - 'unreachable'
+// self-heals to 'ready' on any fresh heartbeat. All fields fall back to package
 // defaults when zero.
 type HeartbeatWorkersConfig struct {
 	StaleThreshold time.Duration `koanf:"stale_threshold"`
-	GoneGrace      time.Duration `koanf:"gone_grace"`
+	RebalanceGrace time.Duration `koanf:"rebalance_grace"`
 	Interval       time.Duration `koanf:"interval"`
+}
+
+// Validate enforces RebalanceGrace >= StaleThreshold. A shorter grace would make
+// a node rebalance-eligible the instant it goes unreachable, collapsing every
+// prune to the StaleThreshold window; fail closed at load rather than run degraded.
+func (h HeartbeatWorkersConfig) Validate() error {
+	if h.RebalanceGrace > 0 && h.StaleThreshold > 0 && h.RebalanceGrace < h.StaleThreshold {
+		return fmt.Errorf("workers.heartbeat.rebalance_grace (%v) must be >= stale_threshold (%v)", h.RebalanceGrace, h.StaleThreshold)
+	}
+	return nil
 }
 
 // TasksWorkersConfig groups configuration for the in-process workers
@@ -742,7 +753,7 @@ func defaultAPIConfig() APIConfig {
 			},
 			Heartbeat: HeartbeatWorkersConfig{
 				StaleThreshold: 90 * time.Second,
-				GoneGrace:      5 * time.Minute,
+				RebalanceGrace: 5 * time.Minute,
 				Interval:       30 * time.Second,
 			},
 			StoragePoolScan: StoragePoolScanConfig{
@@ -856,6 +867,9 @@ func (c APIConfig) Validate() error {
 		return errors.New(`console.access_mode must be "proxy" or "direct"`)
 	}
 	if err := c.Placement.Validate(); err != nil {
+		return err
+	}
+	if err := c.Workers.Heartbeat.Validate(); err != nil {
 		return err
 	}
 	if err := c.Workers.StoragePoolScan.Validate(); err != nil {
