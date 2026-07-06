@@ -79,6 +79,18 @@ func (s *Store) CreateScheduledVM(ctx context.Context, plan func(store.Placement
 	}
 
 	conds := []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(guard), "=", 0)}
+	// Do not create a reference on any infra resource that is being deleted
+	// (closes the create-during-delete TOCTOU; see deleting_intent.go).
+	delKeys := []string{storagePoolDeletingKey(disk.StoragePoolID)}
+	if vm.FirmwareID != nil {
+		delKeys = append(delKeys, firmwareDeletingKey(*vm.FirmwareID))
+	}
+	if writes.Nic != nil {
+		delKeys = append(delKeys, networkDeletingKey(writes.Nic.NetworkID))
+	}
+	for _, k := range delKeys {
+		conds = append(conds, clientv3.Compare(clientv3.CreateRevision(k), "=", 0))
+	}
 	var macGuard string
 	if writes.Nic != nil {
 		macGuard = vmNicMACGuard(writes.Nic.NetworkID, writes.Nic.MacAddress)
@@ -90,23 +102,32 @@ func (s *Store) CreateScheduledVM(ctx context.Context, plan func(store.Placement
 		return uuid.Nil, err
 	}
 	if !resp.Succeeded {
-		// Two compares can fail: the VM-name guard and (with a NIC) the
-		// per-network MAC guard. Disambiguate by re-issuing the MAC-guard
-		// compare alone - if it also fails the MAC key already exists, so the
-		// collision was the MAC (which the handler re-mints); otherwise the
-		// name guard fired.
-		if macGuard != "" {
-			// Best-effort: a concurrent delete of the MAC key could skew this to ErrVMNameInUse; both are 409 conflicts and the guard's atomicity already prevents any uniqueness violation.
-			chk, cerr := s.c.Raw().Txn(ctx).
-				If(clientv3.Compare(clientv3.CreateRevision(macGuard), "=", 0)).
-				Commit()
-			if cerr == nil && chk != nil && !chk.Succeeded {
-				return uuid.Nil, store.ErrVMNicMACConflict
-			}
-		}
-		return uuid.Nil, store.ErrVMNameInUse
+		return uuid.Nil, s.classifyScheduledCreateFailure(ctx, delKeys, macGuard)
 	}
 	return task.ID, nil
+}
+
+// classifyScheduledCreateFailure attributes a lost CreateScheduledVM CAS. A
+// referenced infra resource being deleted takes precedence (ErrResourceDeleting
+// -> 409 resource_deleting); then the per-network MAC guard (re-issue the compare
+// alone - if it still fails the MAC key exists); otherwise the VM-name guard fired.
+func (s *Store) classifyScheduledCreateFailure(ctx context.Context, delKeys []string, macGuard string) error {
+	deleting, err := s.anyDeleteIntentPresent(ctx, delKeys...)
+	if err != nil {
+		return err
+	}
+	if deleting {
+		return store.ErrResourceDeleting
+	}
+	if macGuard != "" {
+		chk, cerr := s.c.Raw().Txn(ctx).
+			If(clientv3.Compare(clientv3.CreateRevision(macGuard), "=", 0)).
+			Commit()
+		if cerr == nil && chk != nil && !chk.Succeeded {
+			return store.ErrVMNicMACConflict
+		}
+	}
+	return store.ErrVMNameInUse
 }
 
 // vmFromCreateParams projects CreateVMParams onto a store.VM, defaulting

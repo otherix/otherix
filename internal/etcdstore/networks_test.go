@@ -815,7 +815,8 @@ func TestDeleteNetworkLeavesReusedNameGuardIntact(t *testing.T) {
 
 	// A stale delete targeting X.ID returns ErrNotFound at the front door (X is
 	// already soft-deleted) - which itself proves the front-door guard. The
-	// Else-branch protection is the belt for the genuinely-concurrent path.
+	// finalize's intent-CAS is the belt for the genuinely-concurrent path (the
+	// delete that wins removes the intent, so the loser's finalize CAS fails).
 	_ = s.DeleteNetwork(ctx, x.ID) // ErrNotFound expected; ignore
 
 	// Y's name must still resolve to Y - the guard must not have been clobbered.

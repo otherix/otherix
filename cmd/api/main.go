@@ -659,6 +659,9 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 	s.Register("networks.cleanup", time.Hour, false,
 		networkshandlers.CleanupFunc(st, log))
 
+	s.Register("delete_intent.reap", etcdstore.DefaultDeleteIntentStaleAfter, false,
+		etcdstore.DeleteIntentReaperFunc(st, etcdstore.DefaultDeleteIntentStaleAfter, log))
+
 	s.Register("jobs.cleanup", time.Hour, false, etcdstore.JobsCleanupFunc(st, log))
 
 	s.Register("jobs.reclaim", etcdstore.JobLeaseRenewInterval, false,

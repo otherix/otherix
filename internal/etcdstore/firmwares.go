@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -235,22 +236,50 @@ func (s *Store) DeleteFirmware(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	// Set the delete-intent FIRST so no new VM can reference this firmware past
+	// this point (CreateVM guards on firmwareDeletingKey), then count - the count
+	// is authoritative. The finalize CASes on our intent rev so a reaper sweep or
+	// a racing delete cannot re-open the window. See deleting_intent.go.
+	intentKey := firmwareDeletingKey(id)
+	myRev, err := s.setDeleteIntent(ctx, intentKey, time.Now())
+	if err != nil {
+		return err
+	}
 	vmCount, err := s.countPrefix(ctx, firmwareVMIndexPrefix(id))
 	if err != nil {
 		return err
 	}
 	if vmCount > 0 {
+		s.clearDeleteIntent(ctx, intentKey, myRev)
 		return &store.ResourceInUseError{Resources: map[string]int64{"vms": vmCount}}
 	}
+	// Delete the name-arch guard (and, if default, the default guard) only while
+	// each still points at this firmware: a concurrent rename / default-toggle
+	// (UpdateFirmware) + a same-name re-create can leave a guard owned by a
+	// FOREIGN live firmware. See deleteGuardIfOwned.
 	ops := []clientv3.Op{
 		clientv3.OpDelete(firmwareKey(id)),
-		clientv3.OpDelete(firmwareNameArchGuard(f.Architecture, f.Name)),
+		deleteGuardIfOwned(firmwareNameArchGuard(f.Architecture, f.Name), id.String()),
+		clientv3.OpDelete(intentKey),
 	}
 	if f.IsDefault {
-		ops = append(ops, clientv3.OpDelete(firmwareDefaultGuard(f.Architecture, f.Type)))
+		ops = append(ops, deleteGuardIfOwned(firmwareDefaultGuard(f.Architecture, f.Type), id.String()))
 	}
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
+	resp, err := s.c.Raw().Txn(ctx).
+		If(deleteIntentGuard(intentKey, myRev)).
+		Then(ops...).
+		Commit()
+	if err != nil {
 		return fmt.Errorf("delete firmware txn: %v", err)
+	}
+	if !resp.Succeeded {
+		// Our intent was severed (reaper on a hung delete, or a racing delete that
+		// finalized first). If the row is already gone, treat as done (idempotent);
+		// otherwise ask the caller to retry rather than delete past a lapsed guard.
+		if _, gerr := s.FirmwareByID(ctx, id); errors.Is(gerr, store.ErrNotFound) {
+			return store.ErrNotFound
+		}
+		return store.ErrConcurrentUpdate
 	}
 	return nil
 }
