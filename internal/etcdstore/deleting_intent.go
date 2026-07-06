@@ -44,6 +44,7 @@ func deletingKey(resource string, id uuid.UUID) string {
 func networkDeletingKey(id uuid.UUID) string     { return deletingKey("networks", id) }
 func firmwareDeletingKey(id uuid.UUID) string    { return deletingKey("firmwares", id) }
 func storagePoolDeletingKey(id uuid.UUID) string { return deletingKey("storage_pools", id) }
+func nodeDeletingKey(id uuid.UUID) string        { return deletingKey("nodes", id) }
 
 // setDeleteIntent creates the intent key for a delete attempt and returns its
 // CreateRevision (the liveness token the finalize CASes on). If an intent already
