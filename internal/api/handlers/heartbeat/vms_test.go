@@ -38,6 +38,19 @@ type vmRuntimeSpy struct {
 	// ActiveMigrationForVM reports (zero, false, nil) and applyVMs claims the
 	// reporting node as usual.
 	activeMigrations map[uuid.UUID]store.Migration
+	// vmRows is what VMWithRev returns per id (all at rev vmRev). An id absent
+	// from the map returns store.ErrNotFound, modelling a soft-deleted or missing
+	// vms row - applyVMReport reads the pin and the CAS rev from this call.
+	vmRows map[uuid.UUID]store.VM
+	vmRev  int64
+}
+
+func (s *vmRuntimeSpy) VMWithRev(_ context.Context, id uuid.UUID) (store.VM, int64, error) {
+	vm, ok := s.vmRows[id]
+	if !ok {
+		return store.VM{}, 0, store.ErrNotFound
+	}
+	return vm, s.vmRev, nil
 }
 
 func (s *vmRuntimeSpy) FilterExistingVMIDs(_ context.Context, _ []uuid.UUID) ([]uuid.UUID, error) {
@@ -75,6 +88,9 @@ func TestApplyVMsPlacementGate(t *testing.T) {
 
 	pid := int32(4242)
 	gen := int64(7)
+	// The rev VMWithRev reports for the pinned rows; applyVMReport threads it into
+	// the runtime write so UpsertVMRuntime can compare on it.
+	wantRev := int64(55)
 
 	tests := []struct {
 		name     string
@@ -99,6 +115,7 @@ func TestApplyVMsPlacementGate(t *testing.T) {
 				Phase:              store.VMPhase("running"),
 				ObservedGeneration: gen,
 				QEMUPID:            &pid,
+				VMRowModRevision:   55,
 			}},
 		},
 		{
@@ -131,16 +148,24 @@ func TestApplyVMsPlacementGate(t *testing.T) {
 				{VMUUID: pinnedHere, Phase: "running"},
 			},
 			want: []store.UpsertVMRuntimeParams{{
-				VmID:          pinnedHere,
-				CurrentNodeID: &reportingNode,
-				Phase:         store.VMPhase("running"),
+				VmID:             pinnedHere,
+				CurrentNodeID:    &reportingNode,
+				Phase:            store.VMPhase("running"),
+				VMRowModRevision: 55,
 			}},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			spy := &vmRuntimeSpy{existing: tt.existing, pinned: tt.pinned}
+			// Every pinned id re-reads (via VMWithRev) as a row pinned to the
+			// reporting node at wantRev, so the per-VM re-check admits it.
+			vmRows := make(map[uuid.UUID]store.VM, len(tt.pinned))
+			for _, id := range tt.pinned {
+				pin := reportingNode
+				vmRows[id] = store.VM{ID: id, PinnedNodeID: &pin}
+			}
+			spy := &vmRuntimeSpy{existing: tt.existing, pinned: tt.pinned, vmRows: vmRows, vmRev: wantRev}
 			h := newQuietHandler()
 			if err := h.applyVMs(context.Background(), spy, reportingNode, tt.reports); err != nil {
 				t.Fatalf("applyVMs(...) = %v, want nil", err)
@@ -186,8 +211,12 @@ func TestApplyVMsFreezesCurrentNodeIDDuringMigration(t *testing.T) {
 		existing: []uuid.UUID{vmID},
 		// The placement gate admits the migration target during a move.
 		pinned: []uuid.UUID{vmID},
+		// The pin is still the source until cutover; the target is admitted via
+		// the active migration, whose target must be this reporting node.
+		vmRows: map[uuid.UUID]store.VM{vmID: {ID: vmID, PinnedNodeID: &source}},
+		vmRev:  71,
 		activeMigrations: map[uuid.UUID]store.Migration{
-			vmID: {SourceNodeID: &source},
+			vmID: {SourceNodeID: &source, TargetNodeID: &target},
 		},
 	}
 	h := newQuietHandler()
@@ -210,8 +239,57 @@ func TestApplyVMsFreezesCurrentNodeIDDuringMigration(t *testing.T) {
 		Phase:              store.VMPhase("migrating"),
 		ObservedGeneration: gen,
 		QEMUPID:            &pid,
+		VMRowModRevision:   71,
 	}}
 	if diff := cmp.Diff(want, spy.upserts); diff != "" {
 		t.Errorf("applyVMs(...) UpsertVMRuntime calls mismatch (-want +got):\n%s", diff)
 	}
+}
+
+// TestApplyVMReportSkipsWhenPinMovedOrDeleted covers the fresh-read seam that
+// closes the two hot-path TOCTOUs: the batch placement gate admits a report, but
+// by the time applyVMReport runs its per-VM VMWithRev read the vms row has moved
+// under it. In both sub-cases applyVMReport must SKIP (write nothing) rather than
+// upsert a stale claim - a stale claim would either resurrect a runtime row on a
+// deleted VM or regress current_node_id back to the source after a cutover.
+func TestApplyVMReportSkipsWhenPinMovedOrDeleted(t *testing.T) {
+	reportingNode := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	otherNode := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	vmID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	t.Run("pin moved to another node (cutover raced ahead of the fresh read)", func(t *testing.T) {
+		spy := &vmRuntimeSpy{
+			existing: []uuid.UUID{vmID},
+			// Stale batch gate still admits the reporting node...
+			pinned: []uuid.UUID{vmID},
+			vmRev:  42,
+			// ...but the fresh row shows the pin already moved to otherNode and no
+			// active migration (the guard was deleted at cutover).
+			vmRows: map[uuid.UUID]store.VM{vmID: {ID: vmID, PinnedNodeID: &otherNode}},
+		}
+		h := newQuietHandler()
+		if err := h.applyVMs(context.Background(), spy, reportingNode, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
+			t.Fatalf("applyVMs(...) = %v, want nil", err)
+		}
+		if len(spy.upserts) != 0 {
+			t.Errorf("applyVMs upserted %d rows for a pin-moved VM; want 0 (skip)", len(spy.upserts))
+		}
+	})
+
+	t.Run("vms row deleted (VMWithRev returns ErrNotFound)", func(t *testing.T) {
+		spy := &vmRuntimeSpy{
+			existing: []uuid.UUID{vmID},
+			pinned:   []uuid.UUID{vmID},
+			vmRev:    42,
+			// vmRows has no entry for vmID -> VMWithRev returns store.ErrNotFound.
+			vmRows: map[uuid.UUID]store.VM{},
+		}
+		h := newQuietHandler()
+		if err := h.applyVMs(context.Background(), spy, reportingNode, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
+			t.Fatalf("applyVMs(...) = %v, want nil", err)
+		}
+		if len(spy.upserts) != 0 {
+			t.Errorf("applyVMs upserted %d rows for a deleted VM; want 0 (skip)", len(spy.upserts))
+		}
+	})
 }

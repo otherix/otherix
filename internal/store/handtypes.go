@@ -34,6 +34,13 @@ type HeartbeatProjection interface {
 	UpdateNodeMemoryPressure(ctx context.Context, arg UpdateNodeMemoryPressureParams) error
 	UpdateNodeSystemDiskPressure(ctx context.Context, arg UpdateNodeSystemDiskPressureParams) error
 	FilterExistingVMIDs(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error)
+	// VMWithRev returns a non-deleted vms row and its etcd ModRevision, or
+	// ErrNotFound for a missing or soft-deleted row. The heartbeat VM projection
+	// reads the pin and the rev from the same call: it decides the runtime claim
+	// against this fresh pin and passes the rev to UpsertVMRuntime, which commits
+	// under a compare on it so a delete or a migration cutover racing the write is
+	// skipped rather than resurrecting or regressing the runtime row.
+	VMWithRev(ctx context.Context, id uuid.UUID) (VM, int64, error)
 	// FilterVMIDsPinnedToNode returns the subset of ids whose vms row is pinned
 	// to nodeID (PinnedNodeID set and equal). It is the placement-authority gate
 	// for the heartbeat: a node may only report runtime for VMs the scheduler

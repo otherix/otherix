@@ -1385,19 +1385,46 @@ func (h *Handler) applyVMReport(ctx context.Context, hp store.HeartbeatProjectio
 	if r.ObservedGeneration != nil {
 		obsGen = *r.ObservedGeneration
 	}
-	// Epoch fence: while a VM has an active migration,
-	// current_node_id MUST NOT be moved by the heartbeat path - it stays at
-	// the migration source until CommitMigrationCutover flips it. Both the
-	// source and the target are admitted by the placement gate during a
-	// move, so without this freeze their two heartbeats race last-writer-wins
-	// and flap the FDB key. The cutover Txn is the sole writer that advances
-	// current_node_id to the target.
-	claimNode := nodeID
-	if mig, active, err := hp.ActiveMigrationForVM(ctx, r.VMUUID); err != nil {
-		return fmt.Errorf("active migration lookup: %v", err)
-	} else if active && mig.SourceNodeID != nil {
+	// Re-read the vms row fresh and decide the runtime claim against THIS pin and
+	// THIS ModRevision, then commit the write under a compare on the rev (inside
+	// UpsertVMRuntime). The batch placement gate (FilterVMIDsPinnedToNode)
+	// admitted this report, but rev-less and earlier; a delete or a migration
+	// cutover can land in the window between that gate and this write. Deciding
+	// and CAS-ing off the same fresh read closes both TOCTOUs: a row that moves
+	// after this read fails the compare, and a pin that already moved before it is
+	// caught here.
+	vm, vmRev, err := hp.VMWithRev(ctx, r.VMUUID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Deleted between the gate and here; do not resurrect a runtime row on
+			// a tombstoned VM.
+			return nil
+		}
+		return fmt.Errorf("reread vm for runtime claim: %v", err)
+	}
+
+	// Claim authority, fail-closed. The heartbeat may write the runtime row only
+	// as the VM's current owner: the pinned node, or - during an active migration
+	// - the target writing on behalf of the source. The epoch fence keeps
+	// current_node_id at the source until CommitMigrationCutover flips the pin, so
+	// a source and a target report during a move do not race last-writer-wins and
+	// flap the overlay FDB key. Any other case (the pin moved out from under this
+	// report - a cutover raced - or an unpinned VM) is skipped, never claimed.
+	var claimNode uuid.UUID
+	switch {
+	case vm.PinnedNodeID != nil && *vm.PinnedNodeID == nodeID:
+		claimNode = nodeID
+	default:
+		mig, active, err := hp.ActiveMigrationForVM(ctx, r.VMUUID)
+		if err != nil {
+			return fmt.Errorf("active migration lookup: %v", err)
+		}
+		if !active || mig.TargetNodeID == nil || *mig.TargetNodeID != nodeID || mig.SourceNodeID == nil {
+			return nil
+		}
 		claimNode = *mig.SourceNodeID
 	}
+
 	nodeIDCopy := claimNode
 	params := store.UpsertVMRuntimeParams{
 		VmID:               r.VMUUID,
@@ -1407,6 +1434,7 @@ func (h *Handler) applyVMReport(ctx context.Context, hp store.HeartbeatProjectio
 		QEMUPID:            r.QEMUPID,
 		LastStartedAt:      lastStarted,
 		LastErrorMessage:   r.LastErrorMessage,
+		VMRowModRevision:   vmRev,
 	}
 	if err := hp.UpsertVMRuntime(ctx, params); err != nil {
 		return fmt.Errorf("upsert vm_runtime: %v", err)
