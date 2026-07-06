@@ -26,6 +26,7 @@ package etcdstore
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/otherix/otherix/internal/etcd"
 )
@@ -34,10 +35,18 @@ import (
 // holds a KV client over the embedded member; one Store instance carries
 // every resource's methods.
 type Store struct {
-	c           *etcd.Client
-	log         *slog.Logger
-	placementLk *placementLocker
+	c               *etcd.Client
+	log             *slog.Logger
+	placementLk     *placementLocker
+	refreshTokenTTL time.Duration
 }
+
+// defaultRefreshTokenTTL is the fallback lifetime the store assumes for refresh
+// tokens when a constructor does not plumb the real auth config. It sizes the
+// family-burn barrier's expiry (see refreshFamilyBarrierKey); a safe bound for
+// the <=30d common case. Production (cmd/api/serve.go) overrides it with the
+// operator-configured JWTRefreshTTL via WithRefreshTokenTTL.
+const defaultRefreshTokenTTL = 31 * 24 * time.Hour
 
 // Option configures a Store.
 type Option func(*Store)
@@ -46,9 +55,20 @@ type Option func(*Store)
 // persisted key fails to decode. Defaults to slog.Default().
 func WithLogger(log *slog.Logger) Option { return func(s *Store) { s.log = log } }
 
+// WithRefreshTokenTTL tells the store how long refresh tokens live, so the
+// family-burn barrier can be sized to outlive every token in a burned family.
+// A non-positive value is ignored (the default stands).
+func WithRefreshTokenTTL(d time.Duration) Option {
+	return func(s *Store) {
+		if d > 0 {
+			s.refreshTokenTTL = d
+		}
+	}
+}
+
 // New constructs a Store over the given KV client.
 func New(c *etcd.Client, opts ...Option) *Store {
-	s := &Store{c: c, log: slog.Default(), placementLk: newPlacementLocker()}
+	s := &Store{c: c, log: slog.Default(), placementLk: newPlacementLocker(), refreshTokenTTL: defaultRefreshTokenTTL}
 	for _, o := range opts {
 		o(s)
 	}
