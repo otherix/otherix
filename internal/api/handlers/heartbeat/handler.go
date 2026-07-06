@@ -13,8 +13,11 @@
 //   - `vm_runtime` — one upsert per reported VM whose vm_uuid exists
 //     in `vms`. Unknown ids are skipped with a WARN log.
 //
-// The full projection runs in a single transaction so a partially
-// applied heartbeat cannot reach the database.
+// The projection steps are a sequence of independent writes, not a single
+// transaction. The node capability + `last_heartbeat_at` write is stamped LAST,
+// after every observed/declared step has committed, so a heartbeat whose later
+// steps persistently fail cannot keep refreshing liveness while its observed
+// state never lands.
 package heartbeat
 
 import (
