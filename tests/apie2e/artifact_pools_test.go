@@ -71,6 +71,17 @@ func TestArtifactPoolCRUD(t *testing.T) {
 	}
 	resp.Body.Close()
 
+	// Explicit 2-node membership with replication_factor=3 exceeds members -> 400
+	// (parity with PATCH: the create path must reject the same as update).
+	resp = h.post(t, "/v1/artifact-pools", map[string]any{
+		"name": "toomany", "replication_factor": 3,
+		"membership": map[string]any{"all_nodes": false, "nodes": []string{"n1", "n2"}},
+	}, admin)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("rf>members create status = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
 	resp = h.get(t, "/v1/artifact-pools/gold", admin)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get by name status = %d, want 200", resp.StatusCode)
