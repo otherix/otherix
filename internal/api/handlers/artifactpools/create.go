@@ -44,6 +44,15 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		membership = store.ArtifactPoolMembership{AllNodes: req.Membership.AllNodes, Nodes: req.Membership.Nodes}
 	}
 
+	// A concrete replication_factor cannot exceed an explicit member list (parity
+	// with PATCH's buildPatchParams). When membership is "all nodes" the eligible
+	// set is dynamic, so there is no static cap to enforce.
+	if !membership.AllNodes && !rf.All && int(rf.Count) > len(membership.Nodes) {
+		response.WriteError(w, r, http.StatusBadRequest,
+			response.CodeValidationFailed, "replication_factor exceeds the number of pool members", nil)
+		return
+	}
+
 	ap, err := h.store.CreateArtifactPool(r.Context(), store.CreateArtifactPoolParams{
 		ID:                uuid.New(),
 		Name:              req.Name,
