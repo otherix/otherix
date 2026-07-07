@@ -142,7 +142,7 @@ workers:
     rebalance_grace: 30s
     interval:        15s
   # Placement reconciler cadence. Dev uses a snappy 10s tick so a blob whose
-  # holder went `gone` is re-replicated to a surviving node within seconds of
+  # holder is lost is re-replicated to a surviving node within seconds of
   # the node-loss being observed (production defaults are longer).
   placement_reconcile:
     interval: 10s

@@ -5,9 +5,10 @@
 # Node-lifecycle smoke - drives the operator node decommission + recovery verbs
 # through the `otherix` CLI across the three-node dev stack, closing the
 # real-agent coverage gap for `node delete`, `node delete --force`, agent-cert
-# revocation, and `node readmit`. The CP-side paths are unit / e2e tested, but a
-# full delete -> re-join -> readmit cycle against a REAL agent (its cert revoked,
-# then a fresh cert issued on re-join) is only proven here.
+# revocation, and automatic node self-heal. The CP-side paths are unit / e2e
+# tested, but a full delete -> re-join cycle against a REAL agent (its cert
+# revoked, then a fresh cert issued on re-join) and an unreachable -> ready
+# self-heal are only proven here.
 #
 # All four scenarios operate on a single victim node (node-3 by default) so the
 # default VM host (node-1) is never disturbed. Every destructive step restores
@@ -34,11 +35,12 @@
 #        The delete revoked the agent cert either way, so the accepted re-join is
 #        the operator-observable revocation proof.
 #
-#   4. gone-node readmit
-#        stop the victim's agent, poll until the CP marks it `gone`, `otherix
-#        node readmit <victim>` (gone -> pending; a non-gone node is refused
-#        409, so an accepted readmit is itself the pending proof), restart the
-#        agent, and assert the node heartbeats its way back to ready.
+#   4. automatic self-heal of an unreachable node
+#        stop the victim's agent so it stops heartbeating, poll until the CP
+#        marks it `unreachable` (there is no `gone` terminal any more and no
+#        operator readmit verb - recovery is automatic), restart the agent, and
+#        assert the node heartbeats its way back to ready with NO operator step
+#        in between.
 #
 # The re-join reproduces the dev-stack bootstrap (mint a join token, run
 # `otherix-agent bootstrap --force`, restart the agent) exactly as seed-dev does,
@@ -58,7 +60,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 # --- configuration -----------------------------------------------------
 OTX="${OTX:-./bin/otherix}"
-VICTIM_INDEX="${VICTIM_INDEX:-3}"            # the node delete/readmit acts on (keeps node-1 untouched)
+VICTIM_INDEX="${VICTIM_INDEX:-3}"            # the node delete/self-heal acts on (keeps node-1 untouched)
 VICTIM="${VICTIM:-node-${VICTIM_INDEX}}"     # the victim node name
 VHANDLE="$(smoke_handle "$VICTIM_INDEX")"    # the victim's exec handle (Lima VM / netns)
 VSTATE="$(smoke_state "$VICTIM_INDEX")"      # the victim's agent state_path root
@@ -68,10 +70,9 @@ ARCH="${ARCH:-${SMOKE_ARCH}}"
 CREATE_WAIT="${CREATE_WAIT:-600}"            # seconds for vm create -> running (incl. cold image fetch)
 OP_WAIT="${OP_WAIT:-180}"                    # seconds for an async lifecycle task to reach terminal
 NODE_WAIT="${NODE_WAIT:-120}"                # seconds for a node status to settle
-GONE_WAIT="${GONE_WAIT:-240}"                # seconds for a stopped node to advance to gone
-READMIT_WAIT="${READMIT_WAIT:-180}"          # seconds for a re-joined / readmitted node to reach ready
+UNREACHABLE_WAIT="${UNREACHABLE_WAIT:-240}"  # seconds for a stopped node to be marked unreachable (> stale_threshold)
+RECOVER_WAIT="${RECOVER_WAIT:-180}"          # seconds for a re-joined / self-healed node to reach ready
 ABSENT_WAIT="${ABSENT_WAIT:-60}"             # seconds for a deleted node to disappear
-PENDING_WINDOW="${PENDING_WINDOW:-12}"       # seconds to observe the post-readmit pending status
 
 # --- helpers -----------------------------------------------------------
 RED=$'\033[31m'; GREEN=$'\033[32m'; YEL=$'\033[33m'; NC=$'\033[0m'
@@ -240,7 +241,6 @@ echo "=== node-lifecycle smoke: preconditions ==="
 command -v jq >/dev/null || fail "jq is required"
 [ -x "$OTX" ] || fail "otherix CLI not found at '$OTX' (run make build, or set OTX=...)"
 otx node delete --help >/dev/null 2>&1 || fail "this otherix build has no 'node delete' command (rebuild from the current tree)"
-otx node readmit --help >/dev/null 2>&1 || fail "this otherix build has no 'node readmit' command (rebuild from the current tree)"
 cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
 CP_VERSION="$(cp_version)"
 info "CP version: ${CP_VERSION}"
@@ -286,7 +286,7 @@ pass "plain delete removed the empty node $VICTIM from the cluster"
 
 echo "=== scenario 2: re-join $VICTIM to restore the stack ==="
 rejoin_victim
-assert_node_status "$VICTIM" ready "$READMIT_WAIT"
+assert_node_status "$VICTIM" ready "$RECOVER_WAIT"
 pass "$VICTIM re-joined and returned to ready after a plain delete"
 
 # =======================================================================
@@ -337,46 +337,33 @@ otx vm delete "$VM" --wait --force --wait-timeout "${OP_WAIT}s" >/dev/null 2>&1 
 # surviving cert would collide. An accepted re-join back to ready is the proof.
 echo "=== scenario 3: re-join $VICTIM (fresh cert) - proves the old cert was revoked ==="
 rejoin_victim
-assert_node_status "$VICTIM" ready "$READMIT_WAIT"
+assert_node_status "$VICTIM" ready "$RECOVER_WAIT"
 pass "$VICTIM re-joined with a fresh cert and returned to ready (old agent cert revoked)"
 
 # =======================================================================
-# scenario 4: drive the node to gone, then readmit
+# scenario 4: automatic self-heal of an unreachable node
 # =======================================================================
 echo
-echo "=== scenario 4: drive $VICTIM to gone, then readmit ==="
+echo "=== scenario 4: drive $VICTIM to unreachable, then let it self-heal ==="
 info "stopping the agent on $VICTIM so it stops heartbeating"
 stop_victim_agent
-info "waiting for the CP to mark $VICTIM gone (<= ${GONE_WAIT}s)"
-assert_node_status "$VICTIM" gone "$GONE_WAIT"
-pass "$VICTIM advanced to the terminal gone status"
+info "waiting for the CP to mark $VICTIM unreachable (<= ${UNREACHABLE_WAIT}s)"
+assert_node_status "$VICTIM" unreachable "$UNREACHABLE_WAIT"
+pass "$VICTIM went unreachable after its heartbeats stopped"
 
-# readmit: gone -> pending. A non-gone node is refused 409, so an accepted
-# readmit is itself the gone->pending proof.
-RM_OUT="$(otx node readmit "$VICTIM" 2>&1)" \
-  || { echo "$RM_OUT" >&2; fail "node readmit $VICTIM failed"; }
-echo "$RM_OUT"
+# A node stale past rebalance_grace becomes rebalance-eligible (its blobs
+# re-replicate and placement prunes) yet still recovers on reconnect. Observing a
+# rebalance action needs a durability fixture this smoke does not stage, so it is
+# not asserted here - the load-bearing proof is the automatic recovery below.
 
-# observe the pending status in the brief window before the agent restarts. The
-# node-health sweep can re-demote a heartbeat-stale pending node, so this is a
-# short poll that passes on the first pending sighting; the load-bearing proof
-# that gone->pending happened is the readmit command's success above.
-deadline=$(( SECONDS + PENDING_WINDOW )); saw_pending=0
-while (( SECONDS < deadline )); do
-  [[ "$(node_status "$VICTIM")" == "pending" ]] && { saw_pending=1; break; }
-  sleep 1
-done
-if (( saw_pending == 1 )); then
-  pass "$VICTIM readmitted to pending"
-else
-  info "did not catch the pending window (the sweep may have re-demoted a heartbeat-stale node); readmit succeeded, proceeding"
-fi
-
-# restart the agent; a fresh heartbeat promotes the node back to ready.
-info "restarting the agent on $VICTIM so it heartbeats"
+# restart the agent; a fresh heartbeat self-heals the node straight back to ready
+# with NO operator step in between. That automatic recovery is the whole point of
+# retiring the timer-driven terminal status: an unreachable node is never `gone`,
+# and there is no `node readmit` verb to run.
+info "restarting the agent on $VICTIM so it heartbeats again"
 start_victim_agent
-assert_node_status "$VICTIM" ready "$READMIT_WAIT"
-pass "$VICTIM heartbeated its way back to ready after readmit"
+assert_node_status "$VICTIM" ready "$RECOVER_WAIT"
+pass "$VICTIM self-healed from unreachable back to ready on a fresh heartbeat (no operator readmit)"
 
 # =======================================================================
 # done
@@ -391,7 +378,7 @@ cleanup >/dev/null 2>&1 || true
 echo
 echo "${GREEN}=== node-lifecycle smoke PASSED ===${NC}"
 echo "  scenario 1: baseline node list (node-1/node-2/node-3)"
-echo "  scenario 2: plain delete of empty $VICTIM -> gone from cluster -> re-joined ready"
+echo "  scenario 2: plain delete of empty $VICTIM -> removed from cluster -> re-joined ready"
 echo "  scenario 3: force-delete $VICTIM (hosting $VM) -> VM orphaned -> re-joined with a fresh cert (old cert revoked)"
-echo "  scenario 4: $VICTIM driven to gone -> readmit -> ready after agent restart"
+echo "  scenario 4: $VICTIM driven to unreachable -> self-healed to ready on agent restart (no readmit)"
 echo "OTHERIX_SMOKE_PASS"

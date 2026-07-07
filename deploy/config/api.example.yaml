@@ -222,7 +222,8 @@ workers:
     interval:        30s
   # Periodic blob-placement reconcile. Each tick holds every content-addressed
   # blob at its artifact pool's replication factor: it places fresh replicas on
-  # surviving nodes when a holder is lost and prunes terminally-gone holders.
+  # surviving nodes when a holder is lost and prunes holders on nodes that have
+  # left the cluster.
   # Defaults to 30s when unset.
   placement_reconcile:
     interval: 30s

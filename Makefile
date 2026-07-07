@@ -216,7 +216,7 @@ smoke-node-drain: ## Node-drain smoke: `otherix node drain` evacuates a node's V
 	bash dev/smoke/node-drain/run.sh
 
 .PHONY: smoke-node-lifecycle
-smoke-node-lifecycle: ## Node-lifecycle smoke: `otherix node delete` an empty node, `node delete --force` a VM-hosting node (VM orphaned, agent cert revoked, re-join accepts a fresh cert), and `node readmit` a gone node back to ready (run after local-dev-start)
+smoke-node-lifecycle: ## Node-lifecycle smoke: `otherix node delete` an empty node, `node delete --force` a VM-hosting node (VM orphaned, agent cert revoked, re-join accepts a fresh cert), and automatic self-heal of a stopped node (unreachable -> ready on reconnect, no readmit) (run after local-dev-start)
 	bash dev/smoke/node-lifecycle/run.sh
 
 .PHONY: smoke-node-placement-pressure

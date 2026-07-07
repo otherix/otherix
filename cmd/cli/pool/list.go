@@ -128,7 +128,7 @@ func printPoolTable(cmd *cobra.Command, pools cpclient.PoolList, showIDs bool) {
 // `pending` because pressure has placement consequences and pending
 // is transitional. `ready` is the all-clear path.
 //
-// Other node statuses (`draining`, `gone`) and a nil node_status
+// Other node statuses (`draining`) and a nil node_status
 // (orphaned pool — owning node soft-deleted) fall through to the
 // pool-level checks; operators can dig via `otherix node get` if
 // they need the raw lifecycle value.
