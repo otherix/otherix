@@ -31,7 +31,7 @@ func TestHeartbeatGoneNodeSelfHeals(t *testing.T) {
 
 	caCert, caKey := wgGenerateCA(t)
 	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
-	ag := wgSeedAgentWithStatus(t, h, caCert, caKey, "node-gone-heal", store.NodeStatusGone)
+	ag := wgSeedAgentWithStatus(t, h, caCert, caKey, "node-gone-heal", store.NodeStatus("gone"))
 
 	// A gone node has not heartbeat yet in this test, so liveness starts nil.
 	before, err := h.store.NodeByID(ctx, ag.nodeID)

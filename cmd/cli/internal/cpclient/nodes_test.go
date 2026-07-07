@@ -265,25 +265,6 @@ func TestDeleteNodeRequest(t *testing.T) {
 	}
 }
 
-func TestReadmitNodeRequest(t *testing.T) {
-	t.Parallel()
-	var gotMethod, gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotPath = r.Method, r.URL.Path
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"pending"}`))
-	}))
-	defer srv.Close()
-	c := fixtureClient(t, srv)
-
-	if err := c.ReadmitNode(context.Background(), "n1"); err != nil {
-		t.Fatalf("ReadmitNode: %v", err)
-	}
-	if gotMethod != http.MethodPost || gotPath != "/v1/nodes/n1/readmit" {
-		t.Errorf("ReadmitNode => %s %s, want POST /v1/nodes/n1/readmit", gotMethod, gotPath)
-	}
-}
-
 func TestGetNode_MalformedJSON(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

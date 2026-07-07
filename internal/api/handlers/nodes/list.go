@@ -102,8 +102,7 @@ func validNodeStatus(s string) bool {
 		store.NodeStatusReady,
 		store.NodeStatusCordoned,
 		store.NodeStatusDraining,
-		store.NodeStatusUnreachable,
-		store.NodeStatusGone:
+		store.NodeStatusUnreachable:
 		return true
 	}
 	return false

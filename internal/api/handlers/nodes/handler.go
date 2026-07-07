@@ -41,7 +41,6 @@ type Store interface {
 	CordonNode(ctx context.Context, id uuid.UUID) (store.Node, error)
 	UncordonNode(ctx context.Context, id uuid.UUID) (store.Node, error)
 	SetNodeGatewayRole(ctx context.Context, id uuid.UUID, enabled bool) (store.Node, error)
-	ReadmitNode(ctx context.Context, id uuid.UUID) (store.Node, error)
 	ListNodesEffective(ctx context.Context, arg store.ListNodesEffectiveParams) ([]store.NodeEffectiveAvailability, error)
 	DeleteNode(ctx context.Context, id uuid.UUID, force bool, callerID uuid.UUID) (store.NodeDeleteOutcome, error)
 	ListNetworkNodeStatusByNode(ctx context.Context, nodeID uuid.UUID) ([]store.NetworkNodeStatus, error)

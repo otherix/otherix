@@ -343,7 +343,7 @@ func TestRewriteGoneNodesToUnreachable(t *testing.T) {
 	ctx := context.Background()
 
 	old := time.Now().Add(-10 * time.Minute)
-	id := seedNodeRow(t, cli, "rewrite-gone", store.NodeStatusGone, &old, nil)
+	id := seedNodeRow(t, cli, "rewrite-gone", store.NodeStatus("gone"), &old, nil)
 
 	rows, err := s.RewriteGoneNodesToUnreachable(ctx)
 	if err != nil {
@@ -401,7 +401,7 @@ func TestRewriteGoneNodesToUnreachableSkipsPromotedNode(t *testing.T) {
 	old := time.Now().Add(-10 * time.Minute)
 
 	seed := func(name string) uuid.UUID {
-		return seedNodeRow(t, cli, name, store.NodeStatusGone, &old, nil)
+		return seedNodeRow(t, cli, name, store.NodeStatus("gone"), &old, nil)
 	}
 
 	// promote refreshes the heartbeat and flips gone -> ready under a ModRevision
@@ -416,7 +416,7 @@ func TestRewriteGoneNodesToUnreachableSkipsPromotedNode(t *testing.T) {
 		if err := json.Unmarshal(resp.Kvs[0].Value, &n); err != nil {
 			return
 		}
-		if n.Status != store.NodeStatusGone {
+		if n.Status != store.NodeStatus("gone") {
 			return
 		}
 		now := time.Now().UTC()

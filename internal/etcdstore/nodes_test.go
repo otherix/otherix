@@ -126,44 +126,6 @@ func TestNodeCordonUncordon(t *testing.T) {
 	}
 }
 
-func TestReadmitNode(t *testing.T) {
-	s, cli := startStore(t)
-	ctx := context.Background()
-
-	// gone -> pending
-	goneID := seedNodeRow(t, cli, "gone", store.NodeStatusGone, nil, nil)
-	got, err := s.ReadmitNode(ctx, goneID)
-	if err != nil {
-		t.Fatalf("ReadmitNode(gone) error = %v, want nil", err)
-	}
-	if got.Status != store.NodeStatusPending {
-		t.Errorf("ReadmitNode(gone).Status = %v, want %v", got.Status, store.NodeStatusPending)
-	}
-	reread, err := s.NodeByID(ctx, goneID)
-	if err != nil {
-		t.Fatalf("NodeByID after readmit: %v", err)
-	}
-	if reread.Status != store.NodeStatusPending {
-		t.Errorf("persisted status = %v, want pending", reread.Status)
-	}
-
-	// non-gone source states are refused with ErrConcurrentUpdate
-	for _, status := range []store.NodeStatus{
-		store.NodeStatusReady, store.NodeStatusPending,
-		store.NodeStatusCordoned, store.NodeStatusUnreachable,
-	} {
-		id := seedNodeRow(t, cli, "n-"+string(status), status, nil, nil)
-		if _, err := s.ReadmitNode(ctx, id); !errors.Is(err, store.ErrConcurrentUpdate) {
-			t.Errorf("ReadmitNode(%s) error = %v, want ErrConcurrentUpdate", status, err)
-		}
-	}
-
-	// missing node -> ErrNotFound
-	if _, err := s.ReadmitNode(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("ReadmitNode(absent) = %v, want store.ErrNotFound", err)
-	}
-}
-
 func TestNodeListEffectiveFilterAndPagination(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
