@@ -19,11 +19,10 @@ import (
 )
 
 // isLive reports whether a node may hold or receive a durable replica: not
-// soft-deleted and not in a terminal-or-stale status (unreachable/gone).
+// soft-deleted and not in a terminal-or-stale status (unreachable).
 func isLive(n store.Node) bool {
 	return n.DeletedAt == nil &&
-		n.Status != store.NodeStatusUnreachable &&
-		n.Status != store.NodeStatusGone
+		n.Status != store.NodeStatusUnreachable
 }
 
 // liveNodeIDs returns the set of node ids that are live.

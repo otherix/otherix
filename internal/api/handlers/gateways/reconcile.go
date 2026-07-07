@@ -316,9 +316,8 @@ func liveGatewayIDs(nodes []store.Node) []uuid.UUID {
 }
 
 // nodeLive reports whether a node may carry traffic: not soft-deleted and not in
-// a terminal-or-stale status.
+// a terminal-or-stale status (unreachable).
 func nodeLive(n store.Node) bool {
 	return n.DeletedAt == nil &&
-		n.Status != store.NodeStatusUnreachable &&
-		n.Status != store.NodeStatusGone
+		n.Status != store.NodeStatusUnreachable
 }

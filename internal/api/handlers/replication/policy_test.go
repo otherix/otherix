@@ -37,7 +37,7 @@ func TestSelectTargetsDeterministicAndBounded(t *testing.T) {
 
 func TestMembershipNodeIDsAllNodesSkipsDead(t *testing.T) {
 	live := store.Node{ID: uuid.New(), Name: "node-1", Status: store.NodeStatusReady}
-	dead := store.Node{ID: uuid.New(), Name: "node-2", Status: store.NodeStatusGone}
+	dead := store.Node{ID: uuid.New(), Name: "node-2", Status: store.NodeStatusUnreachable}
 	nodes := []store.Node{live, dead}
 
 	got := membershipNodeIDs(store.ArtifactPoolMembership{AllNodes: true}, nodes)
@@ -55,9 +55,8 @@ func TestLiveNodeIDsExcludesDeadAndDeleted(t *testing.T) {
 	now := time.Now()
 	ready := store.Node{ID: uuid.New(), Status: store.NodeStatusReady}
 	unreachable := store.Node{ID: uuid.New(), Status: store.NodeStatusUnreachable}
-	gone := store.Node{ID: uuid.New(), Status: store.NodeStatusGone}
 	deleted := store.Node{ID: uuid.New(), Status: store.NodeStatusReady, DeletedAt: &now}
-	nodes := []store.Node{ready, unreachable, gone, deleted}
+	nodes := []store.Node{ready, unreachable, deleted}
 
 	live := liveNodeIDs(nodes)
 	if len(live) != 1 || !live[ready.ID] {

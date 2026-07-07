@@ -284,7 +284,7 @@ func TestBrokerPullAllHoldersUnreachableFailsClosed(t *testing.T) {
 		nodeName: map[uuid.UUID]string{d1: "node-1", d2: "node-2", consumer: "node-c"},
 		nodeStatus: map[uuid.UUID]store.NodeStatus{
 			d1:       store.NodeStatusUnreachable,
-			d2:       store.NodeStatusGone,
+			d2:       store.NodeStatusUnreachable,
 			consumer: store.NodeStatusReady,
 		},
 		token: "otx_pull_x",

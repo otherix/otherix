@@ -391,16 +391,14 @@ func nodeWireguard(ctx context.Context, s Store, nodeID uuid.UUID, selfLastHeart
 		}
 		n, nerr := s.NodeByID(ctx, rec.NodeID)
 		if nerr != nil {
-			// Defense-in-depth: a peer whose node row is gone (soft-deleted) is a
-			// stale WG record that must not surface in the fabric view. DeleteNode
-			// purges the record at the source; this skip is the belt to that braces.
+			// Skip a peer whose node row is deleted (soft-deleted -> ErrNotFound): a
+			// stale WG record must not surface in the fabric view. DeleteNode purges
+			// the record at the source; this is the sole prune. An unreachable-but-
+			// alive node keeps its entry so it rejoins the mesh cleanly on return.
 			if errors.Is(nerr, store.ErrNotFound) {
 				continue
 			}
 			return nil, nerr
-		}
-		if n.Status == store.NodeStatusGone {
-			continue
 		}
 		pv := wireguardPeerView{NodeID: rec.NodeID.String(), OverlayIP: rec.OverlayIP.String()}
 		_, raw := established[rec.NodeID.String()]

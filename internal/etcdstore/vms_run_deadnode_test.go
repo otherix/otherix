@@ -25,7 +25,7 @@ import (
 
 // panicDeleteExecutor is a DeleteExecutor that fails the test if invoked. It
 // proves runDelete never reaches the agent POST for a terminally-dead owning
-// node (force-deleted or gone).
+// node (force-deleted or unseen past staleGrace).
 type panicDeleteExecutor struct{ t *testing.T }
 
 func (p *panicDeleteExecutor) Execute(_ context.Context, _ vmshandlers.DeleteArgs) (vmshandlers.DeleteResult, error) {
@@ -46,12 +46,13 @@ func (e *failDeleteExecutor) Execute(_ context.Context, _ vmshandlers.DeleteArgs
 }
 
 // TestVMDeleteRunHandlerDeadNodeReclaims proves that for a force-deleted
-// (ErrNotFound), gone, or unreachable owning node the delete handler still
-// reclaims the VM and its NIC index entry so the referenced network unblocks
-// (N3 R2). A terminally-dead node (force-deleted / gone) skips the agent
-// outright; an unreachable node is given a best-effort agent teardown first
-// (so qemu is reaped if the partition has healed) and only falls back to a
-// direct projection when that teardown fails.
+// (ErrNotFound), long-unseen, or unreachable owning node the delete handler
+// still reclaims the VM and its NIC index entry so the referenced network
+// unblocks (N3 R2). A terminally-dead node (force-deleted / stale past
+// staleGrace) skips the agent outright; an unreachable node with a fresh
+// heartbeat is given a best-effort agent teardown first (so qemu is reaped if
+// the partition has healed) and only falls back to a direct projection when
+// that teardown fails.
 func TestVMDeleteRunHandlerDeadNodeReclaims(t *testing.T) {
 	cases := []struct {
 		name string
@@ -72,10 +73,10 @@ func TestVMDeleteRunHandlerDeadNodeReclaims(t *testing.T) {
 			},
 		},
 		{
-			name: "gone node",
+			name: "stale-heartbeat node (unseen past staleGrace)",
 			kill: func(t *testing.T, s *etcdstore.Store, cli *etcd.Client, nodeID uuid.UUID) {
 				t.Helper()
-				setNodeStatus(t, s, cli, nodeID, store.NodeStatusGone)
+				setStaleHeartbeat(t, s, cli, nodeID, 10*time.Minute)
 			},
 		},
 		{
@@ -172,8 +173,9 @@ func seedRunningVMWithNic(t *testing.T, s *etcdstore.Store) (vmID, nodeID, netID
 	}
 	// A node hosting a running VM has heartbeated recently. Bump it fresh BEFORE
 	// the test's kill runs: the unreachable kill preserves last_heartbeat_at, so
-	// the node stays non-stale and the agent-attempt branch survives; the gone /
-	// force-deleted kills stay terminal via their own arms regardless.
+	// the node stays non-stale and the agent-attempt branch survives; the
+	// stale-heartbeat kill overwrites it into the past and the force-deleted kill
+	// removes the row, so both stay terminal via their own arms.
 	bumpHeartbeat(t, s, nodeID)
 
 	delTask := taskParams(store.TaskStatusPending, nil)
@@ -195,5 +197,23 @@ func setNodeStatus(t *testing.T, s *etcdstore.Store, cli *etcd.Client, nodeID uu
 	n.Status = status
 	if err := cli.PutJSON(ctx, etcd.Key("nodes", nodeID.String()), n); err != nil {
 		t.Fatalf("put node %s=%s: %v", nodeID, status, err)
+	}
+}
+
+// setStaleHeartbeat rewrites the node row's last_heartbeat_at to age in the past
+// so nodeTerminallyDead's staleness arm treats the node as beyond agent teardown.
+// That arm is the mechanism that replaced the retired 'gone' status: a node that
+// dies and never returns stays 'unreachable' and is reaped by staleness alone.
+func setStaleHeartbeat(t *testing.T, s *etcdstore.Store, cli *etcd.Client, nodeID uuid.UUID, age time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	n, err := s.NodeByID(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	stale := time.Now().Add(-age)
+	n.LastHeartbeatAt = &stale
+	if err := cli.PutJSON(ctx, etcd.Key("nodes", nodeID.String()), n); err != nil {
+		t.Fatalf("put node %s stale heartbeat: %v", nodeID, err)
 	}
 }

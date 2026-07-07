@@ -159,22 +159,22 @@ func TestSelectSkipsGatewayWithoutIngressEndpoint(t *testing.T) {
 	}
 }
 
-func TestSelectSkipsGoneGateway(t *testing.T) {
+func TestSelectSkipsDeadGateway(t *testing.T) {
 	netID := uuid.New()
 	vmID := uuid.New()
-	gone := uuid.New()
+	dead := uuid.New()
 	f := &selectStoreFake{
 		nicsByVM:    map[uuid.UUID][]store.VMNic{vmID: {{ID: uuid.New(), NetworkID: netID}}},
 		networks:    map[uuid.UUID]store.Network{netID: {ID: netID, Type: store.NetworkTypeOverlay, VNI: vni(100)}},
-		memberships: map[uuid.UUID][]store.GatewayMembership{netID: {{GatewayID: gone, NetworkID: netID}}},
+		memberships: map[uuid.UUID][]store.GatewayMembership{netID: {{GatewayID: dead, NetworkID: netID}}},
 		statusByNetwork: map[uuid.UUID][]store.NetworkNodeStatus{netID: {
-			{NetworkID: netID, NodeID: gone, ReconciliationStatus: "ready"},
+			{NetworkID: netID, NodeID: dead, ReconciliationStatus: "ready"},
 		}},
-		nodes: []store.Node{{ID: gone, GatewayRole: true, Status: store.NodeStatusGone}},
+		nodes: []store.Node{{ID: dead, GatewayRole: true, Status: store.NodeStatusUnreachable}},
 	}
 
 	_, err := SelectGatewayForVM(context.Background(), f, vmID)
 	if !errors.Is(err, ErrIngressUnavailable) {
-		t.Fatalf("err = %v, want ErrIngressUnavailable when the only ready member is gone", err)
+		t.Fatalf("err = %v, want ErrIngressUnavailable when the only ready member is unreachable", err)
 	}
 }

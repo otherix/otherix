@@ -254,13 +254,12 @@ func (b *Broker) pullFromHolder(ctx context.Context, digest string, holder, cons
 }
 
 // isLive reports whether a node may serve a blob pull: not soft-deleted and not
-// in a terminal-or-stale status (unreachable or gone). It mirrors the durability
+// in a terminal-or-stale status (unreachable). It mirrors the durability
 // reconciler's liveness predicate so holder selection and replica placement agree
 // on what "live" means.
 func isLive(n store.Node) bool {
 	return n.DeletedAt == nil &&
-		n.Status != store.NodeStatusUnreachable &&
-		n.Status != store.NodeStatusGone
+		n.Status != store.NodeStatusUnreachable
 }
 
 // holderIdentity is the holder node's SAN name the consumer pins TLS
