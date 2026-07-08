@@ -57,6 +57,13 @@ type IdempotencyDescriptor struct {
 // per-request IdempotencyDescriptor.
 type idemCtxKey struct{}
 
+// WithIdempotency returns a derived context carrying d as the request's
+// idempotency descriptor. Idempotency calls it on the actionProceed path;
+// tests use it to drive a handler's guarded EnqueueTask leg directly.
+func WithIdempotency(ctx context.Context, d *IdempotencyDescriptor) context.Context {
+	return context.WithValue(ctx, idemCtxKey{}, d)
+}
+
 // IdempotencyFromContext returns the idempotency descriptor for the current
 // request, or nil when the request carried no Idempotency-Key (non-mutating
 // method, absent header, or a replay/mismatch/in_flight path that never runs
@@ -173,7 +180,7 @@ func Idempotency(s IdempotencyStore, log *slog.Logger) func(http.Handler) http.H
 					map[string]any{"retry_after_seconds": 1})
 				return
 			case actionProceed:
-				ctx := context.WithValue(r.Context(), idemCtxKey{}, &IdempotencyDescriptor{Key: key, Hash: hash[:]})
+				ctx := WithIdempotency(r.Context(), &IdempotencyDescriptor{Key: key, Hash: hash[:]})
 				r = r.WithContext(ctx)
 				rec := newRecorder()
 				next.ServeHTTP(rec, r)

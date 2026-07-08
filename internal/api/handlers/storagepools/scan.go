@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
+	"github.com/otherix/otherix/internal/api/middleware"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
@@ -57,6 +58,11 @@ func (h *Handler) Scan(w http.ResponseWriter, r *http.Request) {
 
 	taskID, err := h.enqueueScan(r.Context(), poolID, caller.ID)
 	if err != nil {
+		if errors.Is(err, store.ErrIdempotencyKeyMismatch) {
+			response.WriteError(w, r, http.StatusConflict,
+				response.CodeIdempotencyMismatch, "idempotency key reused with different request", nil)
+			return
+		}
 		h.log.ErrorContext(r.Context(), "storagepools.scan enqueue failed",
 			"pool_id", poolID, "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,
@@ -115,7 +121,7 @@ func (h *Handler) enqueueScan(ctx context.Context, poolID, callerID uuid.UUID) (
 	taskID := uuid.New()
 	pid := poolID
 	cid := callerID
-	return h.store.EnqueueTask(ctx, store.CreateTaskParams{
+	params := store.CreateTaskParams{
 		ID:           taskID,
 		Type:         "storage_pool.scan",
 		Status:       store.TaskStatusPending,
@@ -124,5 +130,26 @@ func (h *Handler) enqueueScan(ctx context.Context, poolID, callerID uuid.UUID) (
 		Args:         []byte(`{}`),
 		MaxAttempts:  25,
 		CreatedBy:    &cid,
-	}, StoragePoolScanArgs{TaskID: taskID, PoolID: poolID})
+	}
+	stampIdempotency(ctx, &params)
+	return h.store.EnqueueTask(ctx, params, StoragePoolScanArgs{TaskID: taskID, PoolID: poolID})
+}
+
+// stampIdempotency threads the request's idempotency descriptor (key + body
+// hash) and the caller id into params so store.EnqueueTask commits the task
+// exactly-once. It is a no-op when the request carried no descriptor (the
+// Idempotency-Key middleware only sets one on the actionProceed path) or no
+// authenticated principal, leaving the blind-commit path unchanged.
+func stampIdempotency(ctx context.Context, params *store.CreateTaskParams) {
+	d := middleware.IdempotencyFromContext(ctx)
+	if d == nil {
+		return
+	}
+	u := auth.UserFromContext(ctx)
+	if u == nil {
+		return
+	}
+	params.IdempotencyUserID = &u.ID
+	params.IdempotencyKey = &d.Key
+	params.IdempotencyHash = d.Hash
 }
