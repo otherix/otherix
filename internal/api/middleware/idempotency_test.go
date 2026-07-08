@@ -6,6 +6,7 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -669,6 +670,57 @@ func TestCompleteExtendsLease(t *testing.T) {
 	lease := time.Until(completed.ExpiresAt)
 	if lease < IdempotencyTTL-time.Minute || lease > IdempotencyTTL+time.Second {
 		t.Errorf("completed lease = %s, want ~%s (the full 24h TTL)", lease, IdempotencyTTL)
+	}
+}
+
+// TestIdempotency_ExposesDescriptorOnProceed proves the middleware places the
+// idempotency descriptor (key + sha256(body)) on the request context for the
+// downstream handler on the actionProceed path, and leaves it absent when the
+// request is non-mutating or carries no key.
+func TestIdempotency_ExposesDescriptorOnProceed(t *testing.T) {
+	uid := uuid.New()
+	body := []byte(`{"name":"alice"}`)
+	wantHash := sha256.Sum256(body)
+
+	tests := []struct {
+		name    string
+		method  string
+		key     string
+		body    []byte
+		wantKey string // empty means descriptor must be nil
+	}{
+		{name: "mutating with key", method: http.MethodPost, key: "k1", body: body, wantKey: "k1"},
+		{name: "non-mutating with key", method: http.MethodGet, key: "k1", body: nil, wantKey: ""},
+		{name: "mutating without key", method: http.MethodPost, key: "", body: body, wantKey: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeStore()
+			var got *IdempotencyDescriptor
+			h := Idempotency(fake, discardLog())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = IdempotencyFromContext(r.Context())
+				w.WriteHeader(http.StatusCreated)
+			}))
+
+			req := authedRequest(tc.method, "/v1/things", tc.body, uid, tc.key)
+			h.ServeHTTP(httptest.NewRecorder(), req)
+
+			if tc.wantKey == "" {
+				if got != nil {
+					t.Fatalf("IdempotencyFromContext = %+v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("IdempotencyFromContext = nil, want descriptor")
+			}
+			if got.Key != tc.wantKey {
+				t.Errorf("descriptor Key = %q, want %q", got.Key, tc.wantKey)
+			}
+			if !bytes.Equal(got.Hash, wantHash[:]) {
+				t.Errorf("descriptor Hash = %x, want %x", got.Hash, wantHash[:])
+			}
+		})
 	}
 }
 
