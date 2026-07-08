@@ -231,13 +231,6 @@ func (c *Client) DeleteNode(ctx context.Context, node string, force bool) error 
 	return nil
 }
 
-// ReadmitNode submits POST /v1/nodes/{node}/readmit - sync (200), idempotent.
-// Returns a node stuck in the terminal gone status to pending. Non-2xx surfaces
-// as *APIError (e.g. 409 conflict for a node that is not gone).
-func (c *Client) ReadmitNode(ctx context.Context, node string) error {
-	return c.nodeAction(ctx, node, "readmit")
-}
-
 // EnableGateway submits POST /v1/nodes/{node}/gateway/enable - sync (200),
 // idempotent. Assigns the ingress-gateway role to the node. Non-2xx surfaces
 // as *APIError.

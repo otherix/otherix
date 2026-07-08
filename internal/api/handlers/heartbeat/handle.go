@@ -235,13 +235,6 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 				},
 			}
 		}
-		if node.Status == store.NodeStatusGone {
-			return &projectionError{
-				status: http.StatusConflict, code: response.CodeConflict,
-				message: "node is in gone status; heartbeats rejected",
-				details: map[string]any{"reason": "node_gone"},
-			}
-		}
 
 		now := time.Now().UTC()
 		memKind, err := h.applyMemoryPressure(ctx, hp, agent.NodeID, node, body, now)
@@ -922,19 +915,15 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 		if r.NodeID == selfNodeID {
 			continue
 		}
-		// Defense-in-depth: skip a peer whose node row is gone (soft-deleted) or
-		// in the terminal "gone" status, so a stale WG record never bleeds into a
-		// live agent's mesh. DeleteNode purges the record at the source; this is
-		// the belt to that braces.
-		node, err := hp.NodeByID(ctx, r.NodeID)
-		if err != nil {
+		// Skip a peer whose node row is deleted (soft-deleted -> ErrNotFound), so a
+		// stale WG record never bleeds into a live agent's mesh. DeleteNode purges
+		// the record at the source; this is the sole prune. An unreachable-but-alive
+		// node keeps its peer entry so it rejoins the mesh cleanly on return.
+		if _, err := hp.NodeByID(ctx, r.NodeID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("load node %s for wireguard peer: %v", r.NodeID, err)
-		}
-		if node.Status == store.NodeStatusGone {
-			continue
 		}
 		peerNet := netip.PrefixFrom(r.OverlayIP, 32) // single VTEP host route
 		out = append(out, declaredWireGuardPeer{
@@ -962,7 +951,7 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 func (h *Handler) loadDeclaredFDB(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredFDBEntry, []overlayReachability, error) {
 	// The placement scan is the FIRST read of the join; it establishes the MVCC
 	// revision every other read in this projection pins to (the WG list and the
-	// per-node gone-resolver). Pinning the whole join to one snapshot stops a
+	// per-node deleted-resolver). Pinning the whole join to one snapshot stops a
 	// concurrent VM create/delete/migrate from yielding a torn declared_fdb that
 	// the agent's authoritative reconciler would prune live entries against.
 	placements, rev, err := hp.ListOverlayNICPlacementsPinned(ctx)
@@ -1103,13 +1092,13 @@ func totalUnestablished(reach []overlayReachability) int {
 // BUM/flood entry per distinct remote VTEP. It returns the (unsorted) entries
 // and a per-VNI count of placements skipped because the owning node has no
 // overlay IP yet (surfaced as the non-blocking overlay_reachability signal plus
-// one aggregated WARN by the caller). Gone/soft-deleted owning nodes are pruned
-// via the memoised liveness guard, symmetric with loadDeclaredWireGuardPeers: the
-// reaper advances a long-unreachable node to 'gone' WITHOUT orphaning its
-// vm_runtime, so its placements still surface here and must not keep an entry
-// pointing at a dead VTEP.
+// one aggregated WARN by the caller). Only soft-deleted owning nodes are pruned
+// via the memoised deleted-resolver, symmetric with loadDeclaredWireGuardPeers:
+// DeleteNode purges the record at the source, so a deleted node's placements must
+// not keep an entry pointing at a dead VTEP. An unreachable-but-alive node keeps
+// its entry so it rejoins the mesh cleanly on return.
 func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatProjection, rev int64, placements []store.OverlayNICPlacement, localVNI map[int32]struct{}, vtepIP map[uuid.UUID]string, selfNodeID uuid.UUID) ([]declaredFDBEntry, map[int32]int, map[int32]map[uuid.UUID]struct{}, error) {
-	isGone := newGoneResolver(hp, rev)
+	isDeleted := newDeletedResolver(hp, rev)
 	var out []declaredFDBEntry
 	flood := make(map[string]struct{}) // dedup key "vni|vtep"
 	skippedPerVNI := make(map[int32]int)
@@ -1124,11 +1113,11 @@ func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatP
 		if _, ok := localVNI[p.VNI]; !ok {
 			continue
 		}
-		gone, err := isGone(ctx, p.NodeID)
+		deleted, err := isDeleted(ctx, p.NodeID)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		if gone {
+		if deleted {
 			continue
 		}
 		ip, ok := vtepIP[p.NodeID]
@@ -1152,28 +1141,28 @@ func (h *Handler) buildRemoteFDBEntries(ctx context.Context, hp store.HeartbeatP
 	return out, skippedPerVNI, floodPerVNI, nil
 }
 
-// newGoneResolver returns a memoised predicate reporting whether a remote node
-// is no longer a valid overlay peer: either its row is gone (soft-deleted ->
-// ErrNotFound) or it has reached the terminal "gone" status. Results are cached
-// per node id so a placement list with many NICs on one node hits the store
-// once. Mirrors the gone-skip in loadDeclaredWireGuardPeers.
-func newGoneResolver(hp store.HeartbeatProjection, rev int64) func(context.Context, uuid.UUID) (bool, error) {
+// newDeletedResolver returns a memoised predicate reporting whether a remote
+// node's row is deleted (soft-deleted -> ErrNotFound), in which case it is no
+// longer a valid overlay peer. Results are cached per node id so a placement list
+// with many NICs on one node hits the store once. A node that loads successfully
+// caches false: an unreachable-but-alive node keeps its FDB entry so it rejoins
+// the mesh cleanly on return. Mirrors the ErrNotFound skip in
+// loadDeclaredWireGuardPeers; DeleteNode purges the record at the source.
+func newDeletedResolver(hp store.HeartbeatProjection, rev int64) func(context.Context, uuid.UUID) (bool, error) {
 	cache := make(map[uuid.UUID]bool)
 	return func(ctx context.Context, id uuid.UUID) (bool, error) {
 		if v, ok := cache[id]; ok {
 			return v, nil
 		}
-		node, err := hp.NodeByIDAtRev(ctx, id, rev)
-		if err != nil {
+		if _, err := hp.NodeByIDAtRev(ctx, id, rev); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				cache[id] = true
 				return true, nil
 			}
 			return false, fmt.Errorf("load node %s for fdb: %v", id, err)
 		}
-		g := node.Status == store.NodeStatusGone
-		cache[id] = g
-		return g, nil
+		cache[id] = false
+		return false, nil
 	}
 }
 

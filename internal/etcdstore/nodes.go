@@ -185,77 +185,21 @@ func (s *Store) UncordonNode(ctx context.Context, id uuid.UUID) (store.Node, err
 	return s.setNodeCordon(ctx, id, store.NodeStatusReady, false)
 }
 
-// ReadmitNode returns a gone node to pending so the cluster re-accepts its
-// heartbeats; the existing promotion path advances it to ready on the next
-// fresh heartbeat. pending (not ready) is the target so a readmitted node is
-// not a scheduler placement target until it re-proves health. The handler gates
-// the source status before calling; this method re-reads under a ModRevision
-// CAS and refuses with store.ErrConcurrentUpdate if the node is no longer gone
-// or a concurrent write lands first. Unlike cordon/uncordon it never touches
-// cordoned_at.
-//
-// The n.Status != gone recheck on the fresh read is load-bearing and is why
-// this does NOT reuse casNodeStatus: casNodeStatus does not re-validate the
-// source status (it trusts the caller's snapshot + the ModRevision CAS). The
-// handler reads the node far earlier than this write, so without the recheck a
-// node promoted gone -> ready between the handler read and this fresh read would
-// be silently demoted ready -> pending (the CAS passes, since no write races
-// this method's own window). Keep the recheck; do not collapse into casNodeStatus.
-func (s *Store) ReadmitNode(ctx context.Context, id uuid.UUID) (store.Node, error) {
-	n, modRev, err := s.nodeWithRev(ctx, id)
-	if err != nil {
-		return store.Node{}, err
-	}
-	if n.Status != store.NodeStatusGone {
-		return store.Node{}, store.ErrConcurrentUpdate
-	}
-	n.Status = store.NodeStatusPending
-	n.UpdatedAt = time.Now().UTC()
-	val, err := etcd.Marshal(n)
-	if err != nil {
-		return store.Node{}, err
-	}
-	resp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(nodeKey(id)), "=", modRev)).
-		Then(clientv3.OpPut(nodeKey(id), string(val))).
-		Commit()
-	if err != nil {
-		return store.Node{}, fmt.Errorf("readmit node txn: %v", err)
-	}
-	if !resp.Succeeded {
-		return store.Node{}, store.ErrConcurrentUpdate
-	}
-	return n, nil
-}
-
 // setNodeCordon applies a cordon/uncordon status change, setting/clearing
 // cordoned_at and bumping updated_at.
 //
-// The handler validates the source status (rejecting draining and gone) before
-// calling, but that check is a TOCTOU: a drain or the gone-reaper can flip the
-// node between the handler's read and this write. Three guards close that window,
-// all on the fresh re-read. First, the node is refused if it is now terminally
-// gone - a cordon/uncordon must never resurrect a gone node past the readmit
-// health fence. Second, it is refused if it now carries an active drain
-// (DrainTaskID set) - overwriting a live drain would drop its drain_task_id and
-// strand the saga. Third, the write commits under a ModRevision CAS on the row,
-// so any concurrent mutation between this read and the put loses. Any guard
-// tripping returns store.ErrConcurrentUpdate; the operator retries (or, for a
-// gone node, goes through ReadmitNode).
+// The handler validates the source status (rejecting draining) before calling,
+// but that check is a TOCTOU: a drain can flip the node between the handler's
+// read and this write. Two guards close that window, both on the fresh re-read.
+// First, the node is refused if it now carries an active drain (DrainTaskID set)
+// - overwriting a live drain would drop its drain_task_id and strand the saga.
+// Second, the write commits under a ModRevision CAS on the row, so any concurrent
+// mutation between this read and the put loses. Either guard tripping returns
+// store.ErrConcurrentUpdate; the operator retries.
 func (s *Store) setNodeCordon(ctx context.Context, id uuid.UUID, status store.NodeStatus, cordon bool) (store.Node, error) {
 	n, modRev, err := s.nodeWithRev(ctx, id)
 	if err != nil {
 		return store.Node{}, err
-	}
-	if n.Status == store.NodeStatusGone {
-		// The reaper marked the node terminally gone after the handler's status
-		// check. A cordon/uncordon must NOT resurrect it (that bypasses the readmit
-		// health fence, returning a gone node to service without re-proving health);
-		// refuse so the operator goes through ReadmitNode. This mirrors ReadmitNode's
-		// own fresh-status recheck: the ModRevision CAS alone cannot catch a status
-		// change (gone) that landed before this method's fresh read, since no write
-		// then races this method's own window.
-		return store.Node{}, store.ErrConcurrentUpdate
 	}
 	if n.DrainTaskID != nil {
 		// A drain won the race and owns the node; refuse rather than clobber its
@@ -908,7 +852,7 @@ func (s *Store) softDeleteNodeRow(ctx context.Context, n store.Node, intentKey s
 // backstop reaper for agent_wireguard, so the leaked pubkey guard would later
 // fail a node re-bootstrap with ErrAgentWireguardPubkeyInUse.
 func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, certOps, reapOps []clientv3.Op, wgRec *store.AgentWireguard) []clientv3.Op {
-	cascade := make([]clientv3.Op, 0, len(certOps)+len(reapOps)+4)
+	cascade := make([]clientv3.Op, 0, len(certOps)+len(reapOps)+5)
 	// Purge the node's WireGuard fabric record + pubkey guard so the dead node
 	// stops appearing in the mesh and its pubkey becomes reusable - before the
 	// node soft-delete so a retry can re-run it.
@@ -927,6 +871,11 @@ func nodeDeleteCascade(nodeID uuid.UUID, nodeName, nodeVal string, certOps, reap
 	// after the node-put plus a crash would leak those rows and reserved addresses
 	// the gone node can never re-derive.
 	cascade = append(cascade, reapOps...)
+	// Prune the node's observed blob inventory so a deleted node stops counting as
+	// an observed holder and leaks no phantom digests into the durability scan. A
+	// single fixed delete op, ordered ahead of the node soft-delete for the same
+	// crash+retry reason.
+	cascade = append(cascade, clientv3.OpDelete(nodeBlobInventoryKey(nodeID)))
 	// The name-guard delete precedes the nodePut so the nodePut (which flips the
 	// row's DeletedAt and thus makes NodeByID short-circuit) is the genuine LAST
 	// op: a crash before it leaves the node row present and a retry re-runs the

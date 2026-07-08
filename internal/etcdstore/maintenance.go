@@ -414,45 +414,40 @@ func (s *Store) MarkNodesUnreachable(ctx context.Context, staleBefore time.Time)
 	return rows, nil
 }
 
-// MarkNodesGone advances nodes already in 'unreachable' whose heartbeat is
-// missing or older than goneBefore to the terminal 'gone' status, returning the
-// affected rows. It deliberately does NOT orphan the node's vm_runtime: the
-// datapath (per-VM FDB + the WireGuard mesh) converges via the gone-liveness
-// guards, while leaving current_node_id intact avoids a split-brain if a long
-// network partition heals (the node's qemu may still be running). 'gone' is
-// terminal - recovery is an explicit operator action. 'ready'/'pending'/
-// 'cordoned'/'draining' are untouched.
-func (s *Store) MarkNodesGone(ctx context.Context, goneBefore time.Time) ([]store.MarkNodesGoneRow, error) {
+// legacyGoneStatus is the retired terminal node status. After the liveness
+// redesign no code path creates it; RewriteGoneNodesToUnreachable is the
+// transition-release sweep that rewrites any pre-existing 'gone' row to the
+// recoverable 'unreachable'. Retire this and the sweep one release later, once
+// no cluster can carry a 'gone' row.
+const legacyGoneStatus store.NodeStatus = "gone"
+
+// RewriteGoneNodesToUnreachable rewrites every node still stored with the retired
+// 'gone' status to 'unreachable' so it can self-heal (PromoteHealthyNodes never
+// promotes a 'gone' row). Each rewrite re-reads the row and RE-VALIDATES that its
+// FRESH status is still 'gone' under a ModRevision CAS: two api-server replicas
+// run this concurrently with no leader gate, and a fresh heartbeat may have
+// already promoted the node to 'ready' between the snapshot and this write. The
+// source-status recheck (mirroring the retired casNodeGoneIfStale) makes the
+// rewrite skip a node that is no longer 'gone', so it never demotes a healthy
+// node. A lost CAS or a vanished node is skipped and retried next pass.
+func (s *Store) RewriteGoneNodesToUnreachable(ctx context.Context) ([]store.MarkNodesUnreachableRow, error) {
 	nodes, err := s.liveNodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var rows []store.MarkNodesGoneRow
+	var rows []store.MarkNodesUnreachableRow
 	for _, n := range nodes {
-		if n.Status != store.NodeStatusUnreachable {
+		if n.Status != legacyGoneStatus {
 			continue
 		}
-		// A node that has never sent a heartbeat is measured from when it joined
-		// (created_at), not treated as infinitely stale. Otherwise a freshly
-		// joined node still finishing its bootstrap would be advanced straight to
-		// the terminal 'gone' before it ever reports in - a slow first heartbeat
-		// must get the full grace window, and this transition fails toward
-		// inaction (the node lingers in the reversible 'unreachable' instead).
-		staleSince := n.LastHeartbeatAt
-		if staleSince == nil {
-			staleSince = &n.CreatedAt
-		}
-		if !staleSince.Before(goneBefore) {
-			continue
-		}
-		_, written, err := s.casNodeGoneIfStale(ctx, n.ID, goneBefore)
+		committed, written, err := s.casGoneToUnreachable(ctx, n.ID)
 		if err != nil {
 			return nil, err
 		}
 		if !written {
 			continue
 		}
-		rows = append(rows, store.MarkNodesGoneRow{ID: n.ID, Name: n.Name})
+		rows = append(rows, store.MarkNodesUnreachableRow{ID: committed.ID, Name: committed.Name, LastHeartbeatAt: committed.LastHeartbeatAt})
 	}
 	return rows, nil
 }
@@ -500,20 +495,14 @@ func (s *Store) casNodeStatus(ctx context.Context, id uuid.UUID, status store.No
 	return n, true, nil
 }
 
-// casNodeGoneIfStale flips a node to the terminal 'gone' status ONLY if, on a
-// FRESH re-read, it is still unreachable, still stale past goneBefore, and not
-// draining - all committed under a ModRevision CAS on that fresh read.
-//
-// Unlike casNodeStatus it RE-VALIDATES the staleness/status precondition on the
-// fresh row rather than trusting MarkNodesGone's liveNodes snapshot. A heartbeat
-// landing between that snapshot and this write refreshes last_heartbeat_at (and
-// PromoteHealthyNodes may flip the node back to ready); casNodeStatus re-read the
-// fresh row but never re-checked, so it reaped a node that had just proven
-// liveness. 'gone' is terminal (recovered only by an operator readmit), so this
-// transition must fail toward inaction: a fresh heartbeat, a status that is no
-// longer unreachable, an active drain, or a lost CAS all skip the node (returns
-// false, no write) and the next sweep re-evaluates it.
-func (s *Store) casNodeGoneIfStale(ctx context.Context, id uuid.UUID, goneBefore time.Time) (store.Node, bool, error) {
+// casGoneToUnreachable flips a single node from the retired 'gone' status to
+// 'unreachable' ONLY if, on a fresh re-read, it is still 'gone', all under a
+// ModRevision CAS on that fresh read. It does not reuse casNodeStatus, which
+// trusts the caller snapshot and does not re-validate the source status: a
+// straggler replica whose snapshot said 'gone' would otherwise demote a
+// just-promoted 'ready' node, since the CAS alone cannot catch a status change
+// that landed before this method's own fresh read.
+func (s *Store) casGoneToUnreachable(ctx context.Context, id uuid.UUID) (store.Node, bool, error) {
 	n, modRev, err := s.nodeWithRev(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -521,19 +510,10 @@ func (s *Store) casNodeGoneIfStale(ctx context.Context, id uuid.UUID, goneBefore
 		}
 		return store.Node{}, false, err
 	}
-	if n.Status != store.NodeStatusUnreachable || n.DrainTaskID != nil {
+	if n.Status != legacyGoneStatus {
 		return store.Node{}, false, nil
 	}
-	// Re-derive staleness from the FRESH row (mirrors MarkNodesGone: never-reported
-	// nodes are measured from created_at, not treated as infinitely stale).
-	staleSince := n.LastHeartbeatAt
-	if staleSince == nil {
-		staleSince = &n.CreatedAt
-	}
-	if !staleSince.Before(goneBefore) {
-		return store.Node{}, false, nil
-	}
-	n.Status = store.NodeStatusGone
+	n.Status = store.NodeStatusUnreachable
 	n.UpdatedAt = time.Now().UTC()
 	val, err := etcd.Marshal(n)
 	if err != nil {
@@ -544,7 +524,7 @@ func (s *Store) casNodeGoneIfStale(ctx context.Context, id uuid.UUID, goneBefore
 		Then(clientv3.OpPut(nodeKey(id), string(val))).
 		Commit()
 	if err != nil {
-		return store.Node{}, false, fmt.Errorf("mark node gone txn: %v", err)
+		return store.Node{}, false, fmt.Errorf("rewrite gone node txn: %v", err)
 	}
 	if !resp.Succeeded {
 		return store.Node{}, false, nil

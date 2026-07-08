@@ -4,6 +4,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +130,17 @@ func TestLoadAgentDefaultsOnly(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "control_plane.url is required") {
 		t.Errorf("LoadAgent(\"\") error = %q, want substring %q", err.Error(), "control_plane.url is required")
+	}
+}
+
+func TestLoadAPIRejectsDeprecatedGoneGrace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.yaml")
+	if err := os.WriteFile(path, []byte("workers:\n  heartbeat:\n    gone_grace: 30m\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := LoadAPI(path)
+	if err == nil || !strings.Contains(err.Error(), "rebalance_grace") {
+		t.Errorf("LoadAPI with gone_grace = %v, want error naming rebalance_grace", err)
 	}
 }

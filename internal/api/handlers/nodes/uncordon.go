@@ -40,8 +40,7 @@ func (h *Handler) Uncordon(w http.ResponseWriter, r *http.Request) {
 		return
 	case store.NodeStatusPending,
 		store.NodeStatusDraining,
-		store.NodeStatusUnreachable,
-		store.NodeStatusGone:
+		store.NodeStatusUnreachable:
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeConflict,
 			"node cannot be uncordoned in its current state",

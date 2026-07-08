@@ -154,7 +154,6 @@ const (
 	NodeStatusCordoned    NodeStatus = "cordoned"
 	NodeStatusDraining    NodeStatus = "draining"
 	NodeStatusUnreachable NodeStatus = "unreachable"
-	NodeStatusGone        NodeStatus = "gone"
 )
 
 type OsFamily string

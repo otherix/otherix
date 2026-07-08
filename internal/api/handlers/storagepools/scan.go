@@ -83,8 +83,8 @@ func (h *Handler) preflightScan(w http.ResponseWriter, r *http.Request, pool sto
 			// node-load (extremely rare race). Surface as 409 so the
 			// client doesn't conflate it with the missing-pool 404.
 			response.WriteError(w, r, http.StatusConflict,
-				response.CodeConflict, "owning node is gone",
-				map[string]any{"current_status": string(store.NodeStatusGone)})
+				response.CodeConflict, "owning node was deleted",
+				map[string]any{"current_status": "deleted"})
 			return false
 		}
 		h.log.ErrorContext(r.Context(), "storagepools.scan: load node failed",

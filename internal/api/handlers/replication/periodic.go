@@ -24,6 +24,7 @@ type ReconcileStore interface {
 	BlobPlacements(ctx context.Context, digest string) ([]uuid.UUID, error)
 	AddBlobPlacement(ctx context.Context, digest string, nodeID uuid.UUID) error
 	RemoveBlobPlacement(ctx context.Context, digest string, nodeID uuid.UUID) (bool, error)
+	UpsertNodeBlobInventory(ctx context.Context, nodeID uuid.UUID, blobs []store.NodeBlob) error
 	EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error)
 	TryBeginReplicate(ctx context.Context, digest string, nodeID uuid.UUID, ttl time.Duration) (bool, error)
 	EndReplicate(ctx context.Context, digest string, nodeID uuid.UUID) error
@@ -43,7 +44,7 @@ const replicateInflightTTL = 5 * time.Minute
 
 // ReconcileFunc returns the periodic durability reconcile pass. For every produced
 // blob it holds the placement map to the desired replica count K: it prunes
-// holders that reached terminal 'gone' (never the last live pointer), adds fresh
+// holders that are rebalance-eligible (never the last live pointer), adds fresh
 // targets by rendezvous hash to reach K, and enqueues an artifact.replicate task
 // for every chosen-but-not-yet-holding live member (only when a live holder exists
 // to pull from). It also drives the reclaim side: a blob no longer referenced by
@@ -56,7 +57,7 @@ const replicateInflightTTL = 5 * time.Minute
 // node still holds but whose placement key was already pruned is revisited and, if
 // unreferenced, collected through the reclaim path. Purely CP-side; the byte
 // movement is the existing pull/reclaim sagas.
-func ReconcileFunc(st ReconcileStore, log *slog.Logger) func(context.Context) error {
+func ReconcileFunc(st ReconcileStore, grace time.Duration, log *slog.Logger) func(context.Context) error {
 	return func(ctx context.Context) error {
 		placed, err := st.AllPlacementDigests(ctx)
 		if err != nil {
@@ -71,10 +72,17 @@ func ReconcileFunc(st ReconcileStore, log *slog.Logger) func(context.Context) er
 		if err != nil {
 			return fmt.Errorf("list nodes: %v", err)
 		}
+		now := time.Now().UTC()
 		live := liveNodeIDs(nodes)
-		gone := goneNodeIDs(nodes)
+		eligible := rebalanceEligibleNodeIDs(nodes, grace, now)
+		for id := range eligible {
+			if err := st.UpsertNodeBlobInventory(ctx, id, nil); err != nil {
+				log.WarnContext(ctx, "durability reconcile: prune rebalance-eligible node inventory failed",
+					slog.String("node_id", id.String()), slog.Any("error", err))
+			}
+		}
 		for _, digest := range digests {
-			if err := reconcileDigest(ctx, st, log, digest, nodes, live, gone); err != nil {
+			if err := reconcileDigest(ctx, st, log, digest, nodes, live, eligible); err != nil {
 				log.WarnContext(ctx, "durability reconcile: digest pass failed",
 					slog.String("digest", digest), slog.Any("error", err))
 			}
@@ -103,7 +111,7 @@ func unionDigests(a, b []string) []string {
 	return out
 }
 
-func reconcileDigest(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, nodes []store.Node, live, gone map[uuid.UUID]bool) error {
+func reconcileDigest(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, nodes []store.Node, live, rebalanceEligible map[uuid.UUID]bool) error {
 	refs, err := st.SnapshotsReferencingBlob(ctx, digest)
 	if err != nil {
 		return err
@@ -125,7 +133,7 @@ func reconcileDigest(ctx context.Context, st ReconcileStore, log *slog.Logger, d
 		holderSet[h] = true
 	}
 
-	members = pruneGoneMembers(ctx, st, log, digest, members, gone, holderSet)
+	members = pruneDeadMembers(ctx, st, log, digest, members, rebalanceEligible, holderSet)
 
 	// Orphaned: no snapshot references this blob, so the cluster wants zero copies.
 	// Reclaim every live holder and prune the placement key of any member observed
@@ -325,10 +333,11 @@ func trimNonKeeperMembers(ctx context.Context, st ReconcileStore, log *slog.Logg
 	}
 }
 
-// pruneGoneMembers removes placement members in terminal 'gone' status, but only
-// while another live holder of the digest remains. Returns the surviving member
-// set. A best-effort delete error keeps the member (it is reconsidered next pass).
-func pruneGoneMembers(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, members []uuid.UUID, gone, holderSet map[uuid.UUID]bool) []uuid.UUID {
+// pruneDeadMembers removes placement members that are rebalance-eligible (a dead
+// holder), but only while another live holder of the digest remains. Returns the
+// surviving member set. A best-effort delete error keeps the member (it is
+// reconsidered next pass).
+func pruneDeadMembers(ctx context.Context, st ReconcileStore, log *slog.Logger, digest string, members []uuid.UUID, eligible, holderSet map[uuid.UUID]bool) []uuid.UUID {
 	liveHolderCount := 0
 	for _, m := range members {
 		if holderSet[m] {
@@ -337,14 +346,14 @@ func pruneGoneMembers(ctx context.Context, st ReconcileStore, log *slog.Logger, 
 	}
 	kept := make([]uuid.UUID, 0, len(members))
 	for _, m := range members {
-		if gone[m] && liveHolderCount > 0 {
+		if eligible[m] && liveHolderCount > 0 {
 			if _, err := st.RemoveBlobPlacement(ctx, digest, m); err != nil {
-				log.WarnContext(ctx, "durability reconcile: prune gone member failed",
+				log.WarnContext(ctx, "durability reconcile: prune dead member failed",
 					slog.String("digest", digest), slog.String("node_id", m.String()), slog.Any("error", err))
 				kept = append(kept, m)
 				continue
 			}
-			log.InfoContext(ctx, "durability reconcile: pruned gone placement member",
+			log.InfoContext(ctx, "durability reconcile: pruned dead placement member",
 				slog.String("digest", digest), slog.String("node_id", m.String()))
 			continue
 		}

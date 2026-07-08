@@ -126,44 +126,6 @@ func TestNodeCordonUncordon(t *testing.T) {
 	}
 }
 
-func TestReadmitNode(t *testing.T) {
-	s, cli := startStore(t)
-	ctx := context.Background()
-
-	// gone -> pending
-	goneID := seedNodeRow(t, cli, "gone", store.NodeStatusGone, nil, nil)
-	got, err := s.ReadmitNode(ctx, goneID)
-	if err != nil {
-		t.Fatalf("ReadmitNode(gone) error = %v, want nil", err)
-	}
-	if got.Status != store.NodeStatusPending {
-		t.Errorf("ReadmitNode(gone).Status = %v, want %v", got.Status, store.NodeStatusPending)
-	}
-	reread, err := s.NodeByID(ctx, goneID)
-	if err != nil {
-		t.Fatalf("NodeByID after readmit: %v", err)
-	}
-	if reread.Status != store.NodeStatusPending {
-		t.Errorf("persisted status = %v, want pending", reread.Status)
-	}
-
-	// non-gone source states are refused with ErrConcurrentUpdate
-	for _, status := range []store.NodeStatus{
-		store.NodeStatusReady, store.NodeStatusPending,
-		store.NodeStatusCordoned, store.NodeStatusUnreachable,
-	} {
-		id := seedNodeRow(t, cli, "n-"+string(status), status, nil, nil)
-		if _, err := s.ReadmitNode(ctx, id); !errors.Is(err, store.ErrConcurrentUpdate) {
-			t.Errorf("ReadmitNode(%s) error = %v, want ErrConcurrentUpdate", status, err)
-		}
-	}
-
-	// missing node -> ErrNotFound
-	if _, err := s.ReadmitNode(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("ReadmitNode(absent) = %v, want store.ErrNotFound", err)
-	}
-}
-
 func TestNodeListEffectiveFilterAndPagination(t *testing.T) {
 	s, _ := startStore(t)
 	ctx := context.Background()
@@ -594,6 +556,44 @@ func TestNodeForceDeleteReapsGatewayMemberships(t *testing.T) {
 	}
 	if _, found, err := raw.Get(ctx, nicReservationKey(net.ID, m.TenantIP)); err != nil || found {
 		t.Errorf("reservation key for %v: found=%v err=%v, want absent", m.TenantIP, found, err)
+	}
+}
+
+// TestNodeForceDeletePrunesNodeBlobs proves the node-delete cascade also clears
+// the deleted node's observed blob inventory, so a removed node stops counting as
+// an observed holder and leaks no phantom digests into the durability scan.
+func TestNodeForceDeletePrunesNodeBlobs(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	p := nodeParams(uniqueNodeName("blob-del"))
+	if _, err := s.CreateNode(ctx, p); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	if err := s.UpsertNodeBlobInventory(ctx, p.ID, []store.NodeBlob{
+		{Digest: "sha256:aa", SizeBytes: 10},
+		{Digest: "sha256:bb", SizeBytes: 20},
+	}); err != nil {
+		t.Fatalf("UpsertNodeBlobInventory: %v", err)
+	}
+
+	if _, err := s.DeleteNode(ctx, p.ID, true, uuid.New()); err != nil {
+		t.Fatalf("DeleteNode(force): %v", err)
+	}
+
+	inv, err := s.NodeBlobInventory(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("NodeBlobInventory: %v", err)
+	}
+	if len(inv) != 0 {
+		t.Errorf("inventory after force-delete = %+v, want none", inv)
+	}
+	digests, err := s.AllNodeBlobDigests(ctx)
+	if err != nil {
+		t.Fatalf("AllNodeBlobDigests: %v", err)
+	}
+	if len(digests) != 0 {
+		t.Errorf("AllNodeBlobDigests after force-delete = %v, want none", digests)
 	}
 }
 

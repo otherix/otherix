@@ -811,32 +811,6 @@ func TestReconcileStuckDrainDoesNotClobberTerminalTask(t *testing.T) {
 	}
 }
 
-// TestCordonRefusesGoneNode pins the resurrection guard: the reaper can mark a
-// node terminally gone after the cordon handler's status check. setNodeCordon
-// re-reads fresh and must refuse rather than resurrect the gone node to cordoned
-// (which bypasses the readmit health fence). Mirrors ReadmitNode's fresh-status
-// recheck - the ModRevision CAS alone cannot catch a status change that landed
-// before this method's own fresh read. Both cordon and uncordon must refuse.
-func TestCordonRefusesGoneNode(t *testing.T) {
-	s, _ := startStore(t)
-	ctx := context.Background()
-	node := seedNodeWithStatus(t, s, ctx, "cordon-gone", store.NodeStatusGone)
-
-	if _, err := s.CordonNode(ctx, node.ID); !errors.Is(err, store.ErrConcurrentUpdate) {
-		t.Errorf("CordonNode(gone) = %v, want ErrConcurrentUpdate (must not resurrect a gone node)", err)
-	}
-	if _, err := s.UncordonNode(ctx, node.ID); !errors.Is(err, store.ErrConcurrentUpdate) {
-		t.Errorf("UncordonNode(gone) = %v, want ErrConcurrentUpdate", err)
-	}
-	got, err := s.NodeByID(ctx, node.ID)
-	if err != nil {
-		t.Fatalf("NodeByID: %v", err)
-	}
-	if got.Status != store.NodeStatusGone {
-		t.Errorf("node status = %v, want gone (cordon/uncordon must not resurrect a gone node)", got.Status)
-	}
-}
-
 // TestCordonRefusesToClobberDrainingNode pins the seam between the cordon/
 // uncordon store writers and an active drain. The handler validates the source
 // status before calling CordonNode/UncordonNode, but that is a TOCTOU: a drain

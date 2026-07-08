@@ -38,7 +38,7 @@ func (h *Handler) Cordon(w http.ResponseWriter, r *http.Request) {
 	case store.NodeStatusCordoned:
 		writeNodeResponse(w, r, http.StatusOK, current, ownsPool, response.WriteJSON)
 		return
-	case store.NodeStatusGone, store.NodeStatusDraining:
+	case store.NodeStatusDraining:
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeConflict,
 			"node cannot be cordoned in its current state",

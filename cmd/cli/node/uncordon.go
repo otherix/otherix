@@ -18,8 +18,7 @@ func newUncordonCommand() *cobra.Command {
 		Long: `Sends POST /v1/nodes/<node>/uncordon to the Control Plane, returning a
 cordoned node to ready so the scheduler resumes placing VMs onto it. This is
 the reverse of a completed drain. Idempotent: uncordoning a ready node is a
-no-op. Rejected (409) for a node that is pending, draining, unreachable, or
-gone.`,
+no-op. Rejected (409) for a node that is pending, draining, or unreachable.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runUncordon,
 	}

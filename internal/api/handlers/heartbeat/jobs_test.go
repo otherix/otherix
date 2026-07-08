@@ -15,16 +15,13 @@ func TestReconcileConfig_Defaults(t *testing.T) {
 	if cfg.StaleThreshold != defaultStaleThreshold {
 		t.Errorf("StaleThreshold default = %v, want %v", cfg.StaleThreshold, defaultStaleThreshold)
 	}
-	if cfg.GoneGrace != defaultGoneGrace {
-		t.Errorf("GoneGrace default = %v, want %v", cfg.GoneGrace, defaultGoneGrace)
-	}
 	if cfg.Interval != defaultInterval {
 		t.Errorf("Interval default = %v, want %v", cfg.Interval, defaultInterval)
 	}
 
 	// Non-zero overrides survive.
-	override := ReconcileConfig{StaleThreshold: 5 * time.Second, GoneGrace: 9 * time.Second, Interval: 7 * time.Second}.withDefaults()
-	if override.StaleThreshold != 5*time.Second || override.GoneGrace != 9*time.Second || override.Interval != 7*time.Second {
+	override := ReconcileConfig{StaleThreshold: 5 * time.Second, Interval: 7 * time.Second}.withDefaults()
+	if override.StaleThreshold != 5*time.Second || override.Interval != 7*time.Second {
 		t.Errorf("withDefaults clobbered explicit values: %+v", override)
 	}
 }

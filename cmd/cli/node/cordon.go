@@ -17,7 +17,7 @@ func newCordonCommand() *cobra.Command {
 		Long: `Sends POST /v1/nodes/<node>/cordon to the Control Plane. Cordoning a
 node keeps its running VMs but stops the scheduler placing new ones onto it.
 Idempotent: cordoning an already-cordoned node is a no-op. Rejected (409) for
-a node that is gone or already draining.`,
+a node that is already draining.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runCordon,
 	}

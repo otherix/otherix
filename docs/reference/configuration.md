@@ -144,7 +144,7 @@ In-process worker pool and its sub-blocks.
 | `workers.tasks.retention.completed` | `7d` (168h) | Retention for completed tasks. |
 | `workers.tasks.retention.failed` | `30d` (720h) | Retention for failed / cancelled tasks. |
 | `workers.heartbeat.stale_threshold` | `90s` | Window after which a silent node flips to `unreachable`. |
-| `workers.heartbeat.gone_grace` | `5m` | Window after which an unreachable node advances to `gone` (must exceed `stale_threshold`). |
+| `workers.heartbeat.rebalance_grace` | `5m` | Window after which an unreachable node becomes rebalance-eligible (blobs re-replicated, placement pruned); must be `>=` `stale_threshold`. |
 | `workers.heartbeat.interval` | `30s` | Node-health reconciler cadence. |
 | `workers.storage_pool_scan.enabled` | `true` | Register the periodic pool-scan trigger. |
 | `workers.storage_pool_scan.interval` | `15m` | Scan-trigger cadence (>= 0). |

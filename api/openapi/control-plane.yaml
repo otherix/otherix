@@ -590,7 +590,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [pending, ready, cordoned, draining, unreachable, gone]
+            enum: [pending, ready, cordoned, draining, unreachable]
         - name: role
           in: query
           required: false
@@ -743,7 +743,7 @@ paths:
 
         Sets `cordoned_at = now()` and `status = cordoned` (if previously
         `ready`). Idempotent — calling on an already-cordoned node returns
-        the same node unchanged. 409 if node is `gone` or `draining`.
+        the same node unchanged. 409 if node is `draining`.
 
         **Required permission:** `node:maintenance` (admin/operator).
       security:
@@ -762,7 +762,7 @@ paths:
         "403": { $ref: "#/components/responses/PermissionDenied" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
-          description: Node in non-cordonable state (gone, draining).
+          description: Node in non-cordonable state (draining).
           content:
             application/json:
               schema:
@@ -780,7 +780,7 @@ paths:
         Returns the node to `ready` and re-eligible for scheduling.
 
         Clears `cordoned_at` and sets `status = ready` (if previously
-        `cordoned`). Idempotent. 409 if node is `gone`, `draining`,
+        `cordoned`). Idempotent. 409 if node is `draining`,
         `unreachable`, or `pending`.
 
         **Required permission:** `node:maintenance` (admin/operator).
@@ -872,50 +872,6 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/Internal" }
 
-  /v1/nodes/{id}/readmit:
-    parameters:
-      - $ref: "#/components/parameters/NodeName"
-    post:
-      operationId: nodes.readmit
-      tags: [nodes]
-      summary: Readmit a gone node (admin/operator).
-      description: |
-        Recovers a node stuck in the terminal `gone` status by returning it to
-        `pending`, so the cluster re-accepts its heartbeats. The existing
-        promotion path advances the node to `ready` on the next fresh heartbeat;
-        this endpoint does not itself wait for that.
-
-        Idempotent: readmitting a `pending` node is a no-op. 409 if the node is
-        `ready`, `cordoned`, `draining`, or `unreachable` (see
-        `details.current_status`), or if the node was modified concurrently
-        (retry), or if the request replays an `Idempotency-Key` with a different
-        body.
-
-        **Required permission:** `node:maintenance` (admin/operator).
-      security:
-        - bearerAuth: []
-        - apiKeyAuth: []
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "200":
-          description: Readmitted to `pending` (or no-op if already `pending`).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Node"
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthenticated" }
-        "403": { $ref: "#/components/responses/PermissionDenied" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: Node in non-readmittable state, or idempotency mismatch.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500": { $ref: "#/components/responses/Internal" }
-
   /v1/nodes/{id}/drain:
     parameters:
       - $ref: "#/components/parameters/NodeName"
@@ -969,8 +925,8 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
-            Node cannot be drained in its current state (pending, unreachable,
-            or gone - see `details.current_status`); too many drains are already
+            Node cannot be drained in its current state (pending or
+            unreachable - see `details.current_status`); too many drains are already
             in progress (retry shortly); the node was modified concurrently
             (retry); or the request replays an `Idempotency-Key` with a different
             body.
@@ -1058,9 +1014,6 @@ paths:
                 `nodes.architecture`. Architecture is immutable; the
                 agent must re-register through the join-token flow if
                 the underlying hardware changed.
-              - `node_gone` — node is in `gone` status; further
-                heartbeats are rejected until the operator
-                un-deletes it (or it is re-registered).
           content:
             application/json:
               schema:
@@ -1697,7 +1650,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
-            Pool is in a non-scannable state (deleted; owning node `gone` or
+            Pool is in a non-scannable state (deleted; owning node
             `unreachable`). Also returned for idempotency key mismatch.
           content:
             application/json:
@@ -5131,7 +5084,7 @@ components:
           $ref: "#/components/schemas/MigrationCapability"
         status:
           type: string
-          enum: [pending, ready, cordoned, draining, unreachable, gone]
+          enum: [pending, ready, cordoned, draining, unreachable]
         cordoned_at: { type: [string, "null"], format: date-time }
         cpu_cores_total: { type: [integer, "null"] }
         cpu_cores_available:
@@ -5370,7 +5323,7 @@ components:
             role. Exactly one role per node in this API version.
         status:
           type: string
-          enum: [pending, ready, cordoned, draining, unreachable, gone]
+          enum: [pending, ready, cordoned, draining, unreachable]
         cordoned_at: { type: [string, "null"], format: date-time }
         ingress_advertised_endpoint:
           type: [string, "null"]
@@ -6846,7 +6799,7 @@ components:
             row.
         node_status:
           type: [string, "null"]
-          enum: [pending, ready, cordoned, draining, unreachable, gone, null]
+          enum: [pending, ready, cordoned, draining, unreachable, null]
           description: |
             Lifecycle status of the owning node (`nodes.status` enum).
             Mirrored onto the pool view so operators reading

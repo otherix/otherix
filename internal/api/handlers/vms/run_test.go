@@ -183,11 +183,6 @@ func TestRunDelete_AgentTeardownByNodeState(t *testing.T) {
 		wantErr    bool // runDelete returns an error
 	}{
 		{
-			name:       "gone node skips agent and projects directly",
-			nodeStatus: store.NodeStatusGone,
-			wantCalled: false,
-		},
-		{
 			name:       "missing node (force-deleted) skips agent and projects directly",
 			nodeErr:    store.ErrNotFound,
 			wantCalled: false,
@@ -437,13 +432,6 @@ func TestRunCreateTerminallyDeadNode(t *testing.T) {
 		wantCalled    bool // agent create attempted
 		wantErr       bool // runCreate returns an error (retry)
 	}{
-		{
-			name:          "gone node fails terminally, no agent, no projection",
-			nodeStatus:    store.NodeStatusGone,
-			lastHeartbeat: &fresh,
-			wantCalled:    false,
-			wantErr:       false,
-		},
 		{
 			name:       "force-deleted node fails terminally, no agent, no projection",
 			nodeErr:    store.ErrNotFound,
@@ -1100,13 +1088,6 @@ func TestRunLifecycleTerminallyDeadNode(t *testing.T) {
 		wantErr       bool
 	}{
 		{
-			name:          "gone node fails terminally, no agent, no projection",
-			nodeStatus:    store.NodeStatusGone,
-			lastHeartbeat: &fresh,
-			wantCalled:    false,
-			wantErr:       false,
-		},
-		{
 			name:       "force-deleted node fails terminally, no agent, no projection",
 			nodeErr:    store.ErrNotFound,
 			wantCalled: false,
@@ -1281,5 +1262,28 @@ func TestProjectCreateSuccessSnapshotSourcedSkipsRegistry(t *testing.T) {
 	}
 	if st.upsertedURL != "" {
 		t.Errorf("upsertedURL = %q, want empty (snapshot-sourced create must not write the registry)", st.upsertedURL)
+	}
+}
+
+func TestNodeTerminallyDead(t *testing.T) {
+	grace := 5 * time.Minute
+	now := time.Now()
+	fresh := now.Add(-1 * time.Minute)
+	stale := now.Add(-10 * time.Minute)
+	cases := []struct {
+		name    string
+		node    store.Node
+		nodeErr error
+		want    bool
+	}{
+		{"not found", store.Node{}, store.ErrNotFound, true},
+		{"unreachable fresh", store.Node{Status: store.NodeStatusUnreachable, LastHeartbeatAt: &fresh}, nil, false},
+		{"unreachable stale", store.Node{Status: store.NodeStatusUnreachable, LastHeartbeatAt: &stale}, nil, true},
+		{"ready fresh", store.Node{Status: store.NodeStatusReady, LastHeartbeatAt: &fresh}, nil, false},
+	}
+	for _, tc := range cases {
+		if got := nodeTerminallyDead(tc.node, tc.nodeErr, grace); got != tc.want {
+			t.Errorf("%s: nodeTerminallyDead = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

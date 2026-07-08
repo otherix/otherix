@@ -7,7 +7,6 @@ import "time"
 
 const (
 	defaultStaleThreshold = 90 * time.Second
-	defaultGoneGrace      = 5 * time.Minute
 	defaultInterval       = 30 * time.Second
 )
 
@@ -17,7 +16,6 @@ const (
 // APIConfig overrides through the same shape.
 type ReconcileConfig struct {
 	StaleThreshold time.Duration
-	GoneGrace      time.Duration
 	Interval       time.Duration
 }
 
@@ -25,9 +23,6 @@ func (c ReconcileConfig) withDefaults() ReconcileConfig {
 	out := c
 	if out.StaleThreshold <= 0 {
 		out.StaleThreshold = defaultStaleThreshold
-	}
-	if out.GoneGrace <= 0 {
-		out.GoneGrace = defaultGoneGrace
 	}
 	if out.Interval <= 0 {
 		out.Interval = defaultInterval

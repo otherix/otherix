@@ -12,11 +12,11 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// goneGatewayNode is a gateway node the liveness check treats as dead: a node in
-// the terminal-or-stale 'gone' status can no longer carry traffic, so it cannot
-// hold a live session.
-func goneGatewayNode(id uuid.UUID) store.Node {
-	return store.Node{ID: id, GatewayRole: true, Status: store.NodeStatusGone}
+// deadGatewayNode is a gateway node the liveness check treats as dead: a node in
+// the terminal-or-stale 'unreachable' status can no longer carry traffic, so it
+// cannot hold a live session.
+func deadGatewayNode(id uuid.UUID) store.Node {
+	return store.Node{ID: id, GatewayRole: true, Status: store.NodeStatusUnreachable}
 }
 
 // sessionStatus builds a per-(node, network) status row reporting count live
@@ -93,7 +93,7 @@ func TestReconcileReapsIdleMembershipOnInactiveNetwork(t *testing.T) {
 }
 
 // TestReconcileReapsDeadGatewayRegardlessOfStaleCount covers the dead-gateway
-// path: a gateway in 'gone'/'unreachable' is reaped REGARDLESS of its
+// path: a gateway in 'unreachable' is reaped REGARDLESS of its
 // last-reported session count. A dead gateway cannot hold a live session, and a
 // stale count must never wedge the reaper forever.
 func TestReconcileReapsDeadGatewayRegardlessOfStaleCount(t *testing.T) {
@@ -106,7 +106,7 @@ func TestReconcileReapsDeadGatewayRegardlessOfStaleCount(t *testing.T) {
 		nicsByNetwork: map[uuid.UUID][]store.VMNic{
 			netID: {{ID: uuid.New(), NetworkID: netID}},
 		},
-		nodes: []store.Node{goneGatewayNode(dead)},
+		nodes: []store.Node{deadGatewayNode(dead)},
 		memberships: map[uuid.UUID][]store.GatewayMembership{
 			netID: {{GatewayID: dead, NetworkID: netID}},
 		},

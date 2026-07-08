@@ -20,8 +20,9 @@ func newListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List cluster nodes.",
 		Long: `Cursor-paginated list of nodes. Server-side filters: architecture
-(amd64|arm64), status (pending|ready|cordoned|draining|unreachable|
-gone). admin / operator callers see the full Node projection;
+(amd64|arm64), status (pending|ready|cordoned|draining|unreachable).
+A silent node stays unreachable and self-heals to ready on any fresh
+heartbeat. admin / operator callers see the full Node projection;
 developer / viewer callers see NodeSummary (no migration capability,
 no hardware inventory) — the renderer keeps the table columns
 constant and derives CORDONED from the cordoned_at timestamp.`,
@@ -117,7 +118,7 @@ func printNodeTable(cmd *cobra.Command, nodes cpclient.NodeList, showIDs bool) {
 //
 // Renderable combinations:
 //
-//	ready / cordoned / pending / draining / unreachable / gone
+//	ready / cordoned / pending / draining / unreachable
 //	under_pressure
 //	cordoned, under_pressure
 func renderNodeStatus(n cpclient.Node) string {

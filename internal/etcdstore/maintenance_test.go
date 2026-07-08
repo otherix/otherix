@@ -335,140 +335,77 @@ func TestMarkNodesUnreachable(t *testing.T) {
 	}
 }
 
-func TestMarkNodesGone(t *testing.T) {
+// TestRewriteGoneNodesToUnreachable seeds a node stored with the retired 'gone'
+// status and asserts the rewrite flips it to the recoverable 'unreachable' and
+// names it in the returned rows.
+func TestRewriteGoneNodesToUnreachable(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()
 
-	// seedNode writes a node row directly so the test controls status and
-	// last_heartbeat_at precisely.
-	seedNode := func(name string, status store.NodeStatus, hb *time.Time) uuid.UUID {
-		id := uuid.New()
-		n := store.Node{
-			ID:                 id,
-			Name:               uniqueNodeName(name),
-			Architecture:       store.CpuArchAmd64,
-			AdvertisedEndpoint: "https://node.example:9443",
-			MigrationHost:      "10.0.0.1",
-			Status:             status,
-			LastHeartbeatAt:    hb,
-			CreatedAt:          time.Now().UTC(),
-			UpdatedAt:          time.Now().UTC(),
-		}
-		if err := cli.PutJSON(ctx, etcd.Key("nodes", id.String()), n); err != nil {
-			t.Fatalf("seed node %q: %v", name, err)
-		}
-		return id
-	}
-
 	old := time.Now().Add(-10 * time.Minute)
-	recent := time.Now().Add(-30 * time.Second)
-	// unreachable + stale-past-grace -> gone
-	gone := seedNode("n-gone", store.NodeStatusUnreachable, &old)
-	// unreachable but heartbeat newer than the grace cutoff -> stays
-	staysUnreachable := seedNode("n-stay", store.NodeStatusUnreachable, &recent)
-	// ready -> never touched by MarkNodesGone
-	staysReady := seedNode("n-ready", store.NodeStatusReady, &old)
+	id := seedNodeRow(t, cli, "rewrite-gone", store.NodeStatus("gone"), &old, nil)
 
-	goneBefore := time.Now().Add(-5 * time.Minute)
-	rows, err := s.MarkNodesGone(ctx, goneBefore)
+	rows, err := s.RewriteGoneNodesToUnreachable(ctx)
 	if err != nil {
-		t.Fatalf("MarkNodesGone: %v", err)
+		t.Fatalf("RewriteGoneNodesToUnreachable: %v", err)
 	}
-	if len(rows) != 1 || rows[0].ID != gone {
-		t.Fatalf("rows = %+v, want exactly the gone node %s", rows, gone)
+	if len(rows) != 1 || rows[0].ID != id {
+		t.Fatalf("rows = %+v, want exactly the gone node %s", rows, id)
 	}
-	if n, _ := s.NodeByID(ctx, gone); n.Status != store.NodeStatusGone {
-		t.Errorf("gone node status = %v, want gone", n.Status)
+	got, err := s.NodeByID(ctx, id)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
 	}
-	if n, _ := s.NodeByID(ctx, staysUnreachable); n.Status != store.NodeStatusUnreachable {
-		t.Errorf("stay node status = %v, want unreachable", n.Status)
-	}
-	if n, _ := s.NodeByID(ctx, staysReady); n.Status != store.NodeStatusReady {
-		t.Errorf("ready node status = %v, want ready", n.Status)
+	if got.Status != store.NodeStatusUnreachable {
+		t.Errorf("status = %v, want unreachable", got.Status)
 	}
 }
 
-// TestMarkNodesGoneNeverHeartbeated pins the grace window for a node that has
-// never sent a heartbeat: its gone-eligibility is measured from created_at, not
-// treated as infinitely stale. A freshly-joined node that is slow to send its
-// first heartbeat must stay in the reversible 'unreachable' state until the full
-// grace window elapses from creation - never reaped straight to the terminal
-// 'gone' before it has had a chance to report in.
-func TestMarkNodesGoneNeverHeartbeated(t *testing.T) {
+// TestRewriteGoneNodesToUnreachableSkipsNonGone pins that a node that is not
+// stored with the retired 'gone' status is left untouched by the rewrite.
+func TestRewriteGoneNodesToUnreachableSkipsNonGone(t *testing.T) {
+	// A node that is already 'ready' (a fresh heartbeat promoted it out of gone
+	// between the snapshot and this write) must NOT be demoted by the rewrite.
 	s, cli := startStore(t)
 	ctx := context.Background()
+	id := seedNodeRow(t, cli, "rewrite-ready", store.NodeStatusReady, nil, nil)
 
-	seedAt := func(name string, status store.NodeStatus, createdAt time.Time) uuid.UUID {
-		id := uuid.New()
-		n := store.Node{
-			ID:                 id,
-			Name:               uniqueNodeName(name),
-			Architecture:       store.CpuArchAmd64,
-			AdvertisedEndpoint: "https://node.example:9443",
-			MigrationHost:      "10.0.0.1",
-			Status:             status,
-			LastHeartbeatAt:    nil, // never heartbeated
-			CreatedAt:          createdAt,
-			UpdatedAt:          createdAt,
-		}
-		if err := cli.PutJSON(ctx, etcd.Key("nodes", id.String()), n); err != nil {
-			t.Fatalf("seed node %q: %v", name, err)
-		}
-		return id
-	}
-
-	// unreachable, never heartbeated, created inside the grace window -> stays.
-	fresh := seedAt("n-fresh", store.NodeStatusUnreachable, time.Now().Add(-30*time.Second))
-	// unreachable, never heartbeated, created before the grace window -> gone.
-	old := seedAt("n-old", store.NodeStatusUnreachable, time.Now().Add(-10*time.Minute))
-
-	goneBefore := time.Now().Add(-5 * time.Minute)
-	rows, err := s.MarkNodesGone(ctx, goneBefore)
+	rows, err := s.RewriteGoneNodesToUnreachable(ctx)
 	if err != nil {
-		t.Fatalf("MarkNodesGone: %v", err)
+		t.Fatalf("RewriteGoneNodesToUnreachable: %v", err)
 	}
-	if len(rows) != 1 || rows[0].ID != old {
-		t.Fatalf("rows = %+v, want exactly the old node %s", rows, old)
+	if len(rows) != 0 {
+		t.Errorf("rewrote %d non-gone rows, want 0", len(rows))
 	}
-	if n, _ := s.NodeByID(ctx, fresh); n.Status != store.NodeStatusUnreachable {
-		t.Errorf("fresh never-heartbeated node status = %v, want unreachable (within grace)", n.Status)
+	got, err := s.NodeByID(ctx, id)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
 	}
-	if n, _ := s.NodeByID(ctx, old); n.Status != store.NodeStatusGone {
-		t.Errorf("old never-heartbeated node status = %v, want gone (past grace)", n.Status)
+	if got.Status != store.NodeStatusReady {
+		t.Errorf("status = %v, want ready (must not demote a non-gone node)", got.Status)
 	}
 }
 
-// TestMarkNodesGoneSkipsHeartbeatInWindow proves MarkNodesGone re-validates
-// staleness on the FRESH read: a heartbeat that lands between the liveNodes
-// snapshot and the per-node gone write refreshes last_heartbeat_at, and the node
-// must NOT be reaped to the terminal 'gone'. The racing writer is a
-// status-guarded promote (unreachable -> ready + fresh heartbeat, a no-op if the
-// node is no longer unreachable), so a final "gone with a fresh heartbeat" state
-// can only arise from MarkNodesGone clobbering a promote that had already
-// committed - the pre-fix bug (casNodeStatus re-read fresh but never re-checked
-// staleness).
-func TestMarkNodesGoneSkipsHeartbeatInWindow(t *testing.T) {
+// TestRewriteGoneNodesToUnreachableSkipsPromotedNode proves casGoneToUnreachable
+// re-validates the source status on the FRESH read: a node promoted out of 'gone'
+// (to 'ready' with a fresh heartbeat) between the liveNodes snapshot and the
+// per-node rewrite must NOT be demoted back to 'unreachable'. The racing writer is
+// a status-guarded promote (gone -> ready + fresh heartbeat, a no-op once the node
+// is no longer gone), so a final "unreachable with a fresh heartbeat" state can
+// only arise from the rewrite clobbering a promote that had already committed - the
+// bug that reusing casNodeStatus (which trusts the snapshot and never re-checks the
+// source status on its own fresh read) would reintroduce.
+func TestRewriteGoneNodesToUnreachableSkipsPromotedNode(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()
-	goneBefore := time.Now().Add(-5 * time.Minute)
 	old := time.Now().Add(-10 * time.Minute)
 
-	seed := func(name string, hb time.Time) uuid.UUID {
-		id := uuid.New()
-		n := store.Node{
-			ID: id, Name: uniqueNodeName(name), Architecture: store.CpuArchAmd64,
-			AdvertisedEndpoint: "https://node.example:9443", MigrationHost: "10.0.0.1",
-			Status: store.NodeStatusUnreachable, LastHeartbeatAt: &hb,
-			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-		}
-		if err := cli.PutJSON(ctx, etcd.Key("nodes", id.String()), n); err != nil {
-			t.Fatalf("seed node %q: %v", name, err)
-		}
-		return id
+	seed := func(name string) uuid.UUID {
+		return seedNodeRow(t, cli, name, store.NodeStatus("gone"), &old, nil)
 	}
 
-	// promote refreshes the heartbeat and flips unreachable -> ready under a
-	// ModRevision CAS, refusing if the node is no longer unreachable.
+	// promote refreshes the heartbeat and flips gone -> ready under a ModRevision
+	// CAS, refusing if the node is no longer gone.
 	promote := func(id uuid.UUID) {
 		key := etcd.Key("nodes", id.String())
 		resp, err := cli.Raw().Get(ctx, key)
@@ -479,7 +416,7 @@ func TestMarkNodesGoneSkipsHeartbeatInWindow(t *testing.T) {
 		if err := json.Unmarshal(resp.Kvs[0].Value, &n); err != nil {
 			return
 		}
-		if n.Status != store.NodeStatusUnreachable {
+		if n.Status != store.NodeStatus("gone") {
 			return
 		}
 		now := time.Now().UTC()
@@ -496,18 +433,19 @@ func TestMarkNodesGoneSkipsHeartbeatInWindow(t *testing.T) {
 			Commit()
 	}
 
-	// Decoy stale-unreachable nodes lengthen MarkNodesGone's per-node loop after
-	// the liveNodes snapshot, widening the window in which the racing promote can
-	// land before the target's own gone write.
+	// Decoy gone nodes lengthen the rewrite's per-node loop after the liveNodes
+	// snapshot, widening the window in which the racing promote can land before the
+	// target's own rewrite write.
 	for d := 0; d < 8; d++ {
-		seed(fmt.Sprintf("decoy%d", d), old)
+		seed(fmt.Sprintf("decoy%d", d))
 	}
 
+	freshMarker := time.Now().Add(-time.Minute)
 	for i := 0; i < 60; i++ {
-		id := seed(fmt.Sprintf("race%d", i), old)
+		id := seed(fmt.Sprintf("race%d", i))
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); _, _ = s.MarkNodesGone(ctx, goneBefore) }()
+		go func() { defer wg.Done(); _, _ = s.RewriteGoneNodesToUnreachable(ctx) }()
 		go func() { defer wg.Done(); promote(id) }()
 		wg.Wait()
 
@@ -515,9 +453,9 @@ func TestMarkNodesGoneSkipsHeartbeatInWindow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("iter %d NodeByID: %v", i, err)
 		}
-		if n.Status == store.NodeStatusGone && n.LastHeartbeatAt != nil && !n.LastHeartbeatAt.Before(goneBefore) {
-			t.Fatalf("iter %d: node reaped 'gone' despite a fresh heartbeat (hb=%v, goneBefore=%v)",
-				i, n.LastHeartbeatAt, goneBefore)
+		if n.Status == store.NodeStatusUnreachable && n.LastHeartbeatAt != nil && !n.LastHeartbeatAt.Before(freshMarker) {
+			t.Fatalf("iter %d: node demoted to 'unreachable' despite a committed promote to ready (hb=%v)",
+				i, n.LastHeartbeatAt)
 		}
 	}
 }
@@ -551,10 +489,10 @@ type etcdPutter interface {
 }
 
 // TestMarkUnreachableSkipsDrainingNode pins the heartbeat-reconcile seam against
-// an active drain. MarkNodesUnreachable / MarkNodesGone select from a snapshot
-// (liveNodes) and previously blind-put the new status, so a drain that flipped a
-// node between the snapshot and the write would have its drain_task_id silently
-// dropped - stranding the saga. The race is exercised at the per-node guard: a
+// an active drain. MarkNodesUnreachable selects from a snapshot (liveNodes) and
+// previously blind-put the new status, so a drain that flipped a node between the
+// snapshot and the write would have its drain_task_id silently dropped - stranding
+// the saga. The race is exercised at the per-node guard: a
 // candidate node that the selection predicate accepts (ready/unreachable, stale
 // heartbeat) but that already carries an active drain_task_id must be SKIPPED,
 // left in its current status with the pointer intact, rather than demoted. The
@@ -585,32 +523,6 @@ func TestMarkUnreachableSkipsDrainingNode(t *testing.T) {
 		}
 		if got.Status != store.NodeStatusReady {
 			t.Errorf("node status = %v, want ready (drain must not be clobbered)", got.Status)
-		}
-		if got.DrainTaskID == nil || *got.DrainTaskID != taskID {
-			t.Errorf("node DrainTaskID = %v, want %v (drain pointer must survive)", got.DrainTaskID, taskID)
-		}
-	})
-
-	t.Run("gone", func(t *testing.T) {
-		taskID := uuid.New()
-		// An unreachable node with a stale heartbeat is a MarkNodesGone candidate.
-		id := seedNodeRow(t, cli, "mark-gone-drain", store.NodeStatusUnreachable, &old, &taskID)
-
-		rows, err := s.MarkNodesGone(ctx, time.Now().Add(-5*time.Minute))
-		if err != nil {
-			t.Fatalf("MarkNodesGone: %v", err)
-		}
-		for _, r := range rows {
-			if r.ID == id {
-				t.Errorf("draining node %v was marked gone, want skipped", id)
-			}
-		}
-		got, err := s.NodeByID(ctx, id)
-		if err != nil {
-			t.Fatalf("NodeByID: %v", err)
-		}
-		if got.Status != store.NodeStatusUnreachable {
-			t.Errorf("node status = %v, want unreachable (drain must not be clobbered)", got.Status)
 		}
 		if got.DrainTaskID == nil || *got.DrainTaskID != taskID {
 			t.Errorf("node DrainTaskID = %v, want %v (drain pointer must survive)", got.DrainTaskID, taskID)
