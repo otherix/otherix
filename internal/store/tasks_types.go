@@ -18,6 +18,13 @@ type CreateTaskParams struct {
 	Args         []byte
 	MaxAttempts  int32
 	CreatedBy    *uuid.UUID
+	// Idempotency descriptor, set only for opt-in mutating requests that carry an
+	// Idempotency-Key. When all three are non-nil, EnqueueTask commits a
+	// (user,key)->{task_id,hash} index under a CreateRevision guard so a redelivery
+	// or middleware re-run returns the existing task instead of a second one.
+	IdempotencyUserID *uuid.UUID
+	IdempotencyKey    *string
+	IdempotencyHash   []byte
 }
 
 type DeleteExpiredTasksParams struct {
