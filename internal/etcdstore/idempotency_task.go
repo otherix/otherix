@@ -6,19 +6,27 @@ package etcdstore
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/etcd"
 )
 
+// idempotencyTaskIndexTTL is the retention window of an idempotency-task index
+// entry, matching the ADR 0019 Idempotency-Key contract (24h). A cleanup sweep
+// reaps entries past ExpiresAt.
+const idempotencyTaskIndexTTL = 24 * time.Hour
+
 // idempotencyTaskIndex is the value stored at an idempotency-task index key: the
 // task an in-request enqueue produced for a given (user, key), plus the request
 // body hash that produced it. The hash lets a reclaim-re-run distinguish a true
-// idempotent replay (same body) from a same-key/different-body reuse.
+// idempotent replay (same body) from a same-key/different-body reuse. ExpiresAt
+// stamps the reap deadline for the cleanup sweep.
 type idempotencyTaskIndex struct {
 	TaskID      uuid.UUID `json:"task_id"`
 	RequestHash []byte    `json:"request_hash"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 // idempotencyTaskIndexKey is the durable index recording which task a (user, key)

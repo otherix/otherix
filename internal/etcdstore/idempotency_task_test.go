@@ -6,6 +6,7 @@ package etcdstore
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -20,7 +21,11 @@ func TestIdempotencyTaskIndexKey_UserBeforeKey(t *testing.T) {
 }
 
 func TestIdempotencyTaskIndex_RoundTrip(t *testing.T) {
-	in := idempotencyTaskIndex{TaskID: uuid.New(), RequestHash: []byte{0xde, 0xad, 0xbe, 0xef}}
+	in := idempotencyTaskIndex{
+		TaskID:      uuid.New(),
+		RequestHash: []byte{0xde, 0xad, 0xbe, 0xef},
+		ExpiresAt:   time.Now().UTC().Add(idempotencyTaskIndexTTL).Round(0),
+	}
 	b, err := marshalIdempotencyTaskIndex(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -29,7 +34,7 @@ func TestIdempotencyTaskIndex_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.TaskID != in.TaskID || !bytes.Equal(out.RequestHash, in.RequestHash) {
+	if out.TaskID != in.TaskID || !bytes.Equal(out.RequestHash, in.RequestHash) || !out.ExpiresAt.Equal(in.ExpiresAt) {
 		t.Errorf("round-trip = %+v, want %+v", out, in)
 	}
 }

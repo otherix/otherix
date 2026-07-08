@@ -4,6 +4,7 @@
 package etcdstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -88,6 +89,14 @@ func taskFromParams(p store.CreateTaskParams, jobSeq int64) store.Task {
 // EnqueueTask writes a task row and its backing job in one transaction, stamping
 // the job reference onto the task. Returns params.ID on success. This is the
 // producer-side seam every async resource uses.
+//
+// When params carries a full idempotency descriptor (IdempotencyUserID,
+// IdempotencyKey, and IdempotencyHash all set), the commit is guarded exactly
+// once by a (user,key)->{task_id,hash} index under a CreateRevision==0 compare:
+// a redelivery or middleware re-run with the same descriptor returns the
+// existing task id (no second task or job), and a same-(user,key)/different-hash
+// reuse fails closed with store.ErrIdempotencyKeyMismatch. With no descriptor
+// the original blind commit runs unchanged (opt-out).
 func (s *Store) EnqueueTask(ctx context.Context, params store.CreateTaskParams, args queue.JobArgs) (uuid.UUID, error) {
 	seq, jobOp, err := s.enqueueJobOp(ctx, args)
 	if err != nil {
@@ -99,10 +108,58 @@ func (s *Store) EnqueueTask(ctx context.Context, params store.CreateTaskParams, 
 		return uuid.Nil, err
 	}
 	ops := append(taskIndexOps(task), clientv3.OpPut(taskKey(task.ID), string(val)), jobOp)
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
-		return uuid.Nil, fmt.Errorf("enqueue task txn: %v", err)
+
+	// Opt-out (no idempotency descriptor): the original blind commit.
+	if params.IdempotencyUserID == nil || params.IdempotencyKey == nil {
+		if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
+			return uuid.Nil, fmt.Errorf("enqueue task txn: %v", err)
+		}
+		return params.ID, nil
 	}
-	return params.ID, nil
+
+	// Opt-in: commit the task + job + a (user,key)->{task_id,hash} index under a
+	// CreateRevision==0 guard, with an in-txn Else(OpGet) so a guard-fail reads
+	// the prior index value in the same round-trip (never a racy post-txn Get).
+	idxKey := idempotencyTaskIndexKey(*params.IdempotencyUserID, *params.IdempotencyKey)
+	idxVal, err := marshalIdempotencyTaskIndex(idempotencyTaskIndex{
+		TaskID:      task.ID,
+		RequestHash: params.IdempotencyHash,
+		ExpiresAt:   time.Now().UTC().Add(idempotencyTaskIndexTTL),
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	ops = append(ops, clientv3.OpPut(idxKey, string(idxVal)))
+	resp, err := s.c.Raw().Txn(ctx).
+		If(clientv3.Compare(clientv3.CreateRevision(idxKey), "=", 0)).
+		Then(ops...).
+		Else(clientv3.OpGet(idxKey)).
+		Commit()
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("enqueue task idempotent txn: %v", err)
+	}
+	if resp.Succeeded {
+		return params.ID, nil
+	}
+	// Guard failed: the key already produced a task. Read the prior value and
+	// replay only when the request hash matches; otherwise fail closed. The job
+	// seq allocated above is intentionally leaked (its PUT was in the uncommitted
+	// Then) - job seqs are sparse monotonic ids, harmless to skip.
+	kvs := resp.Responses[0].GetResponseRange().Kvs
+	if len(kvs) == 0 {
+		// The index vanished between the guard-fail and the Else read (a cleanup
+		// sweep raced). Treat as absent and fail closed rather than silently
+		// create a second task; the client retries.
+		return uuid.Nil, store.ErrIdempotencyKeyMismatch
+	}
+	prior, err := unmarshalIdempotencyTaskIndex(kvs[0].Value)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if !bytes.Equal(prior.RequestHash, params.IdempotencyHash) {
+		return uuid.Nil, store.ErrIdempotencyKeyMismatch
+	}
+	return prior.TaskID, nil
 }
 
 // taskIndexOps returns the index writes for a task. Tasks list by a bounded
