@@ -3,7 +3,7 @@
 # Distroless image for otherix-api. The control plane is a single
 # binary now — placement runs in-process under store.LockKeyPlacement,
 # reconcilers run as river periodic workers inside the same process.
-ARG GO_VERSION=1.26.4
+ARG GO_VERSION=1.26.5
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 ARG TARGETOS
