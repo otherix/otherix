@@ -13,10 +13,30 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/api/handlers/internal/resolver"
+	"github.com/otherix/otherix/internal/api/middleware"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
+
+// stampIdempotency threads the request's idempotency descriptor (key + body
+// hash) and the caller id into params so store.EnqueueTask commits the task
+// exactly-once. It is a no-op when the request carried no descriptor (the
+// Idempotency-Key middleware only sets one on the actionProceed path) or no
+// authenticated principal, leaving the blind-commit path unchanged.
+func stampIdempotency(ctx context.Context, params *store.CreateTaskParams) {
+	d := middleware.IdempotencyFromContext(ctx)
+	if d == nil {
+		return
+	}
+	u := auth.UserFromContext(ctx)
+	if u == nil {
+		return
+	}
+	params.IdempotencyUserID = &u.ID
+	params.IdempotencyKey = &d.Key
+	params.IdempotencyHash = d.Hash
+}
 
 // Delete implements DELETE /v1/vms/{id}. Required permission:
 // `vm:delete` (admin / operator: any; developer: own; viewer: none).
@@ -131,7 +151,7 @@ func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User)
 		return uuid.Nil, err
 	}
 
-	return h.store.EnqueueTask(ctx, store.CreateTaskParams{
+	params := store.CreateTaskParams{
 		ID:           taskID,
 		Type:         "vm.delete",
 		Status:       store.TaskStatusPending,
@@ -140,7 +160,9 @@ func (h *Handler) runDelete(ctx context.Context, vm store.VM, caller *auth.User)
 		Args:         argsJSON,
 		MaxAttempts:  25,
 		CreatedBy:    &createdBy,
-	}, VMDeleteArgs{
+	}
+	stampIdempotency(ctx, &params)
+	return h.store.EnqueueTask(ctx, params, VMDeleteArgs{
 		TaskID: taskID,
 		VMID:   vm.ID,
 		NodeID: nodeID,
@@ -216,6 +238,9 @@ func writeDeleteError(w http.ResponseWriter, r *http.Request, log interface {
 	case errors.Is(err, errVMNoNode):
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeNodeNotFound, "no node owns this vm's storage", nil)
+	case errors.Is(err, store.ErrIdempotencyKeyMismatch):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeIdempotencyMismatch, "idempotency key reused with different request", nil)
 	default:
 		log.ErrorContext(r.Context(), "vms.delete enqueue failed", "error", err)
 		response.WriteError(w, r, http.StatusInternalServerError,

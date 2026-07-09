@@ -153,7 +153,7 @@ func (h *Handler) runAsyncLifecycleEnqueue(ctx context.Context, op asyncOp, vm s
 		return uuid.Nil, err
 	}
 
-	return h.store.EnqueueTask(ctx, store.CreateTaskParams{
+	params := store.CreateTaskParams{
 		ID:           taskID,
 		Type:         "vm." + op.label(),
 		Status:       store.TaskStatusPending,
@@ -162,7 +162,9 @@ func (h *Handler) runAsyncLifecycleEnqueue(ctx context.Context, op asyncOp, vm s
 		Args:         argsJSON,
 		MaxAttempts:  25,
 		CreatedBy:    &createdBy,
-	}, jobArgs)
+	}
+	stampIdempotency(ctx, &params)
+	return h.store.EnqueueTask(ctx, params, jobArgs)
 }
 
 // jobArgsForOp returns the matching job args type for op. Cannot be
@@ -199,6 +201,9 @@ func writeAsyncLifecycleError(w http.ResponseWriter, r *http.Request, log interf
 	case errors.Is(err, errVMNoNode):
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeNodeNotFound, "no node owns this vm's storage", nil)
+	case errors.Is(err, store.ErrIdempotencyKeyMismatch):
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeIdempotencyMismatch, "idempotency key reused with different request", nil)
 	default:
 		log.ErrorContext(r.Context(), "vms.lifecycle async enqueue failed",
 			"op", op.label(), "error", err)

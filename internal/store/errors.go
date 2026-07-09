@@ -141,6 +141,11 @@ var (
 	// gateway already covers the network: the (gateway_id, network_id) row is
 	// present, so a second create loses the create CAS.
 	ErrGatewayMembershipExists = errors.New("store: gateway already a member of network")
+
+	// ErrIdempotencyKeyMismatch is returned when an enqueue reuses a (user,
+	// idempotency-key) with a different request body hash than the first enqueue
+	// that key produced. Handlers map it to 409 idempotency_key_mismatch.
+	ErrIdempotencyKeyMismatch = errors.New("idempotency key mismatch")
 )
 
 // ResourceInUseError reports that a resource cannot be deleted because other

@@ -201,6 +201,37 @@ func (s *Store) DeleteExpiredIdempotencyKeys(ctx context.Context) (int64, error)
 	return deleted, nil
 }
 
+// DeleteExpiredIdempotencyTaskIndex removes idempotency-task index entries past
+// their own 24h ExpiresAt, returning the number deleted. It is an independent
+// sweep from DeleteExpiredIdempotencyKeys: the index carries the full contract
+// horizon so it outlives a crashed in_flight row's short reclaim window
+// (co-deleting with that row would collapse the exactly-once guarantee to ~1h).
+func (s *Store) DeleteExpiredIdempotencyTaskIndex(ctx context.Context) (int64, error) {
+	items, err := s.c.Range(ctx, idempotencyTaskIndexPrefix())
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC()
+	var (
+		ops     []clientv3.Op
+		deleted int64
+	)
+	for _, kv := range items {
+		idx, err := unmarshalIdempotencyTaskIndex(kv.Value)
+		if err != nil {
+			return 0, fmt.Errorf("unmarshal idempotency task index %q: %v", kv.Key, err)
+		}
+		if idx.ExpiresAt.Before(now) {
+			ops = append(ops, clientv3.OpDelete(kv.Key))
+			deleted++
+		}
+	}
+	if err := s.commitInChunks(ctx, ops); err != nil {
+		return 0, fmt.Errorf("delete expired idempotency task index: %v", err)
+	}
+	return deleted, nil
+}
+
 // idempotencyWithRev reads a row and its mod-revision (the reclaim CAS target).
 func (s *Store) idempotencyWithRev(ctx context.Context, userID uuid.UUID, key string) (store.IdempotencyKey, int64, bool, error) {
 	resp, err := s.c.Raw().Get(ctx, idempotencyKeyKey(userID, key))

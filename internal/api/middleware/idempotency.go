@@ -45,6 +45,34 @@ const idempotencySettleTimeout = 5 * time.Second
 // reclaimable far sooner than the 24h completed-record TTL (IdempotencyTTL).
 const IdempotencyInFlightLease = 2 * time.Minute
 
+// IdempotencyDescriptor carries the validated idempotency key and the
+// sha256 of the request body for the current request. Task-creating handlers
+// pass it into EnqueueTask so the enqueue dedups exactly-once.
+type IdempotencyDescriptor struct {
+	Key  string
+	Hash []byte
+}
+
+// idemCtxKey is the private context key under which Idempotency stores the
+// per-request IdempotencyDescriptor.
+type idemCtxKey struct{}
+
+// WithIdempotency returns a derived context carrying d as the request's
+// idempotency descriptor. Idempotency calls it on the actionProceed path;
+// tests use it to drive a handler's guarded EnqueueTask leg directly.
+func WithIdempotency(ctx context.Context, d *IdempotencyDescriptor) context.Context {
+	return context.WithValue(ctx, idemCtxKey{}, d)
+}
+
+// IdempotencyFromContext returns the idempotency descriptor for the current
+// request, or nil when the request carried no Idempotency-Key (non-mutating
+// method, absent header, or a replay/mismatch/in_flight path that never runs
+// the downstream handler).
+func IdempotencyFromContext(ctx context.Context) *IdempotencyDescriptor {
+	d, _ := ctx.Value(idemCtxKey{}).(*IdempotencyDescriptor)
+	return d
+}
+
 // IdempotencyStore is the narrow contract Idempotency requires from the
 // data layer. *store.Queries implements it; tests substitute an
 // in-memory stub.
@@ -152,6 +180,8 @@ func Idempotency(s IdempotencyStore, log *slog.Logger) func(http.Handler) http.H
 					map[string]any{"retry_after_seconds": 1})
 				return
 			case actionProceed:
+				ctx := WithIdempotency(r.Context(), &IdempotencyDescriptor{Key: key, Hash: hash[:]})
+				r = r.WithContext(ctx)
 				rec := newRecorder()
 				next.ServeHTTP(rec, r)
 				// Settle the durable idempotency row (Complete on 2xx,
