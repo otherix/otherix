@@ -2,9 +2,13 @@
 
 An ephemeral, on-demand Otherix cluster on AWS for real-world multi-node,
 multi-AZ, and fault-injection testing. One stand is 3 control-plane nodes
-(`m6g.large`, public), 2 agents (`c6gd.metal`, private, local NVMe RAID0 pool),
-and 2 gateways (`t4g.medium`, public), in `eu-north-1`, on spot capacity
-(CP-0 is on-demand). DNS lives under the Route53 public zone `aws.otherix.dev`.
+(`m6g.large`, public), 2 agents (bare-metal arm64 with a local NVMe RAID0 pool,
+private), and 2 gateways (`m6g.large`, public), in `eu-north-1`, on spot capacity
+(CP-0 is on-demand). Each agent is a per-node EC2 Fleet that spreads its one
+instance over `var.agent_instance_pool` (interchangeable metals: `c6gd.metal`,
+`c7gd.metal`, `m6gd.metal`, `m7gd.metal`, `r6gd.metal`) with `price-capacity-optimized`,
+so a single-pool `InsufficientInstanceCapacity` no longer blocks the stand.
+DNS lives under the Route53 public zone `aws.otherix.dev`.
 
 Everything is driven from the repo root through `make harness-*` targets. Each
 target relies on the standard AWS credential chain (environment variables, an
@@ -54,9 +58,13 @@ Re-validate spot pricing and 90-day AZ stability before bring-up:
 make harness-spot-report
 ```
 
-If `eu-north-1a` / `eu-north-1c` `c6gd.metal` capacity has drifted (a high MAX
-price or coefficient of variation), consider pinning a different AZ before you
-bring a stand up.
+The agent fleet already diversifies across the metal pool, so a single type
+running dry no longer blocks a stand. Use the report to gate the region on
+capacity (SPS >= 7) and then rank by price/stability; if the whole pool in
+`eu-north-1a` / `eu-north-1c` has drifted, consider a different AZ or region.
+In the rare case the entire pool is spot-dry in the pinned AZ (the fleet has no
+automatic spot->on-demand fallback), set `on_demand_agent=true` to launch the
+agents on-demand.
 
 Bring up a named stand (each `NAME` is its own tofu workspace):
 
@@ -159,8 +167,14 @@ the `amazon-ssm-agent` and be registered with SSM. Ubuntu AMIs do not always
 ship it; when the node is not SSM-managed, `latency` reports that and does
 nothing. `kill` and `partition` do NOT need SSM.
 
-WARNING: never `aws ec2 stop-instances` a `c6gd.metal` agent to simulate a
+WARNING: never `aws ec2 stop-instances` a bare-metal agent to simulate a
 temporary fault - the instance-store pool is wiped on stop. Use `partition`.
+
+Reviving a killed agent is not a plain re-apply: agents are per-node EC2 fleets,
+so recreate the terminated one with
+`tofu apply -replace='aws_ec2_fleet.agent["agent-<i>"]'` (a plain apply won't
+self-heal it, and a stale `data.aws_instance.agent` may error on plan until the
+fleet is replaced). CP and gateway are plain instances - a re-apply recreates them.
 
 ## 7. Cost
 

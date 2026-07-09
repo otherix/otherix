@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Otherix AWS harness: c6gd.metal (agents) / m6g.large (CP) / t4g.medium (gateway)
-# spot-price + AZ-availability survey across candidate regions.
+# Otherix AWS harness: agent metal pool (c6gd/c7gd/m6gd/m7gd/r6gd.metal) + m6g.large
+# (CP and gateway). spot-price + AZ-availability survey across candidate regions.
 set -uo pipefail
 
 REGIONS="eu-west-1 eu-central-1 eu-north-1 us-east-1 us-east-2 ap-south-1"
-TYPES="c6gd.metal m6g.large t4g.medium"
+TYPES="c6gd.metal c7gd.metal m6gd.metal m7gd.metal r6gd.metal m6g.large"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   echo "AWS creds not valid in this shell." >&2
