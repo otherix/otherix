@@ -30,8 +30,12 @@ AGENT_TARGET=2
 AGENT_POOL="c6gd.metal c7gd.metal m6gd.metal m7gd.metal r6gd.metal"
 CP_TARGET=3
 CP_POOL="m6g.large m7g.large c6g.large c7g.large"
+# Gateways are L4 splice proxies. A single small t4g.medium has almost no spot
+# capacity (SPS 1-3 everywhere); the same arm64 .large spot pool as the CP scores
+# ~9 and spot .large is cheaper than an on-demand t4g.medium, so gateways ride
+# that pool too (the extra RAM is unused but you pay less).
 GW_TARGET=2
-GW_POOL="t4g.medium"
+GW_POOL="m6g.large m7g.large c6g.large c7g.large"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   echo "AWS creds not valid in this shell." >&2
@@ -127,7 +131,7 @@ AZ with allocation strategy `price-capacity-optimized` (not lowest-price) plus a
 on-demand fallback. Region choice then only improves the odds instead of gating
 the whole deploy on a single pool.
 
-Gateways (small arm64) score poorly on spot in every region and can't be widened
-into a large capacity pool - they are cheap, so run them on-demand rather than
-chasing spot capacity for them.
+A single small gateway type (t4g.medium) has almost no spot capacity (SPS 1-3);
+don't pin it. Run gateways on the same .large arm64 spot pool as the CP - it
+scores ~9 and spot .large costs less than an on-demand t4g.medium anyway.
 EOF
