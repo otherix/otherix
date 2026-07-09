@@ -43,11 +43,17 @@ resource "aws_launch_template" "agent" {
     raid0_pool      = var.raid0_pool
   }))
 
+  # Fleet-launched instances are not Terraform-managed resources, so the provider
+  # default_tags (otherix:harness / otherix:env) do NOT reach them - only these
+  # tag_specifications do. Replicate them here so cost attribution and console
+  # filtering still cover the two most expensive instances in the stand.
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name           = "otherix-${var.env_name}-${each.key}"
-      "otherix:role" = "agent"
+      Name              = "otherix-${var.env_name}-${each.key}"
+      "otherix:role"    = "agent"
+      "otherix:harness" = "true"
+      "otherix:env"     = var.env_name
     }
   }
 }

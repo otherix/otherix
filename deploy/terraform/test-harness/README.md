@@ -62,6 +62,9 @@ The agent fleet already diversifies across the metal pool, so a single type
 running dry no longer blocks a stand. Use the report to gate the region on
 capacity (SPS >= 7) and then rank by price/stability; if the whole pool in
 `eu-north-1a` / `eu-north-1c` has drifted, consider a different AZ or region.
+In the rare case the entire pool is spot-dry in the pinned AZ (the fleet has no
+automatic spot->on-demand fallback), set `on_demand_agent=true` to launch the
+agents on-demand.
 
 Bring up a named stand (each `NAME` is its own tofu workspace):
 
@@ -166,6 +169,12 @@ nothing. `kill` and `partition` do NOT need SSM.
 
 WARNING: never `aws ec2 stop-instances` a bare-metal agent to simulate a
 temporary fault - the instance-store pool is wiped on stop. Use `partition`.
+
+Reviving a killed agent is not a plain re-apply: agents are per-node EC2 fleets,
+so recreate the terminated one with
+`tofu apply -replace='aws_ec2_fleet.agent["agent-<i>"]'` (a plain apply won't
+self-heal it, and a stale `data.aws_instance.agent` may error on plan until the
+fleet is replaced). CP and gateway are plain instances - a re-apply recreates them.
 
 ## 7. Cost
 

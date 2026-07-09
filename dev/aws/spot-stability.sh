@@ -6,7 +6,7 @@
 set -uo pipefail
 
 REGIONS="eu-north-1 eu-central-1 ap-south-1 us-east-2 us-east-1 eu-west-1"
-TYPES="c6gd.metal m6g.large t4g.medium"
+TYPES="c6gd.metal c7gd.metal m6gd.metal m7gd.metal r6gd.metal m6g.large"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   echo "AWS creds not valid in this shell." >&2
