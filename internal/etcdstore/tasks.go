@@ -147,9 +147,11 @@ func (s *Store) EnqueueTask(ctx context.Context, params store.CreateTaskParams, 
 	// Then) - job seqs are sparse monotonic ids, harmless to skip.
 	kvs := resp.Responses[0].GetResponseRange().Kvs
 	if len(kvs) == 0 {
-		// The index vanished between the guard-fail and the Else read (a cleanup
-		// sweep raced). Treat as absent and fail closed rather than silently
-		// create a second task; the client retries.
+		// Defensive only: unreachable within one atomic Txn. etcd evaluates the
+		// CreateRevision compare and the Else(OpGet) at a single revision, so a
+		// guard-fail (key present at that revision) guarantees the same-revision
+		// OpGet observes it. Kept as a fail-closed guard against a future refactor
+		// to a post-txn read; fail closed rather than create a second task.
 		return uuid.Nil, store.ErrIdempotencyKeyMismatch
 	}
 	prior, err := unmarshalIdempotencyTaskIndex(kvs[0].Value)
