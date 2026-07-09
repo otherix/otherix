@@ -774,8 +774,8 @@ AWS_ENV := . dev/aws/ensure-aws-creds.sh
 
 .PHONY: harness-spot-report harness-up harness-config harness-down harness-chaos-kill harness-chaos-partition harness-chaos-heal harness-chaos-latency
 
-harness-spot-report: ## Survey spot price + 90-day stability for the harness instance types
-	$(AWS_ENV) && bash dev/aws/spot-report.sh && bash dev/aws/spot-stability.sh
+harness-spot-report: ## Survey spot price + 90-day stability + capacity availability for the harness instance types
+	$(AWS_ENV) && bash dev/aws/spot-report.sh && bash dev/aws/spot-stability.sh && bash dev/aws/spot-availability.sh
 
 harness-up: ## Bring up a named stand: make harness-up NAME=<env> [OTHERIX_VERSION=<ver>] (empty = latest release, resolved at node boot)
 ifndef NAME
