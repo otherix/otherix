@@ -682,6 +682,14 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 
 	waitPhase(t, m, migID, "completed")
 
+	// The phase is stamped "completed" at qemu-cont success, several best-effort
+	// steps (announce/GARP/persist/mux) BEFORE runIncomingResume releases the
+	// port pair, so waitPhase alone races the release and the reservation below
+	// intermittently sees the range still exhausted. Await the detached resume
+	// goroutine (resumeWG.Done fires after runIncomingResume returns, i.e. after
+	// the release) so the release has run before the check.
+	m.resumeWG.Wait()
+
 	// The reserved port pair must be released on success. The range holds
 	// exactly one pair (set above), so this fresh reservation succeeds only
 	// because runIncomingResume released the pair startIncomingLive held; if the
