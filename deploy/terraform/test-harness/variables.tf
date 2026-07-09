@@ -38,16 +38,20 @@ variable "cp_instance_type" {
   default     = "m6g.large"
 }
 
-variable "agent_instance_type" {
-  description = "EC2 instance type for agent nodes."
-  type        = string
-  default     = "c6gd.metal"
+variable "agent_instance_pool" {
+  description = "Ordered spot pool of interchangeable bare-metal agent types (arm64, nested-KVM, local NVMe). Each per-node fleet picks the cheapest type with capacity (price-capacity-optimized), diversifying away the single-pool exhaustion that causes InsufficientInstanceCapacity."
+  type        = list(string)
+  default     = ["c6gd.metal", "c7gd.metal", "m6gd.metal", "m7gd.metal", "r6gd.metal"]
+  validation {
+    condition     = length(var.agent_instance_pool) > 0
+    error_message = "agent_instance_pool must list at least one instance type."
+  }
 }
 
 variable "gateway_instance_type" {
-  description = "EC2 instance type for gateway nodes."
+  description = "EC2 instance type for gateway nodes. A single .large arm64 spot instance already scores SPS ~9, so gateways need no capacity pool; the tiny t4g.medium had almost none (SPS 1-3)."
   type        = string
-  default     = "t4g.medium"
+  default     = "m6g.large"
 }
 
 variable "on_demand_cp" {

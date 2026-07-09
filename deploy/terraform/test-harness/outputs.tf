@@ -12,7 +12,7 @@ output "instance_ids" {
   description = "Map from node name to EC2 instance id across all roles."
   value = merge(
     { for k, v in aws_instance.cp : k => v.id },
-    { for k, v in aws_instance.agent : k => v.id },
+    { for k, d in data.aws_instance.agent : k => d.id },
     { for k, v in aws_instance.gateway : k => v.id },
   )
 }
@@ -24,7 +24,7 @@ output "cp_public_ips" {
 
 output "agent_private_ips" {
   description = "Map from agent node name to private IP."
-  value       = { for k, v in aws_instance.agent : k => v.private_ip }
+  value       = { for k, d in data.aws_instance.agent : k => d.private_ip }
 }
 
 output "role_security_group_ids" {
