@@ -18,8 +18,8 @@
 #             bounded ~200M allocator; the overflow spills to zram and mm_stat
 #             shows compr_data_size < orig_data_size (the net compressed real pages)
 #   disable -> config restored (zram off, the default); agent restart swaps the
-#             device off; `node get` shows compressed_swap off and /proc/swaps has
-#             no /dev/zram
+#             device off; `node get` shows compressed_swap off and the agent's zram
+#             device is gone from /proc/swaps (any pre-existing host zram is left be)
 #
 # All allocations are bounded and confined to a cgroup memory limit - the smoke
 # never risks OOMing the node. The zram device number is discovered dynamically
@@ -100,10 +100,27 @@ compressed_swap_kind() {
     | jq -r '.capabilities.compressed_swap.kind // "off"' 2>/dev/null || true
 }
 
-# zram_swap_device -> the first /dev/zramN present in the node's /proc/swaps
-# ("" when none). Discovered dynamically, never hardcoded.
-zram_swap_device() {
-  on1 cat /proc/swaps 2>/dev/null | awk '/\/dev\/zram/ {print $1; exit}' || true
+# zram_swap_devices -> every /dev/zramN present in the node's /proc/swaps, one per
+# line ("" when none). Discovered dynamically, never hardcoded.
+zram_swap_devices() {
+  on1 cat /proc/swaps 2>/dev/null | awk '/\/dev\/zram/ {print $1}' || true
+}
+
+# zram_delta_device -> the first /dev/zramN in the node's current /proc/swaps that
+# is NOT in BASELINE_ZRAM (the pre-existing host devices snapshotted before we
+# enabled zram) - i.e. the agent's hot-added device. "" when none appeared. Keying
+# on the delta keeps the smoke correct on a shared Linux host that runs its own
+# system zram swap (systemd-zram-generator); on Lima the baseline is empty and the
+# delta is simply the single new device.
+zram_delta_device() {
+  local dev
+  while read -r dev; do
+    [[ -z "$dev" ]] && continue
+    case " ${BASELINE_ZRAM:-} " in
+      *" ${dev} "*) ;;                 # pre-existing baseline device, ignore
+      *) printf '%s\n' "$dev"; return 0 ;;
+    esac
+  done < <(zram_swap_devices)
 }
 
 # Restore the pristine (zram-off) config on node-1 and bounce the stack so the
@@ -133,9 +150,26 @@ info "CP version: $(cp_version)"
 on1 test -f "$AGENT_CONF" || fail "$NODE1 agent config not found at $AGENT_CONF"
 pass "CP up; $NODE1 ready; agent config present at $AGENT_CONF"
 
+# Snapshot any pre-existing host zram swap devices BEFORE we enable ours, so every
+# device assertion below keys on the agent's device as a delta (a Linux dev host
+# running systemd-zram-generator has its own zram swap that must not be mistaken
+# for ours, nor false-FAIL the teardown check).
+BASELINE_ZRAM="$(zram_swap_devices | tr '\n' ' ')"
+info "pre-existing zram swap devices (baseline): ${BASELINE_ZRAM:-none}"
+
 # --- step 1: enable zram on node-1 -------------------------------------
 echo "=== step 1: enable zram on $NODE1 (max_ram_percent=$MAX_RAM_PERCENT) ==="
-on1 sudo cp "$AGENT_CONF" "$AGENT_CONF_BAK" || fail "could not back up $AGENT_CONF"
+# A backup already present means a PRIOR run was hard-killed after appending the
+# zram block but before its trap restored - the on-disk config is already patched.
+# Restore FROM the stale backup (the pristine config) instead of backing up the
+# polluted one, otherwise teardown would later "restore" zram-on and leave it
+# durably enabled.
+if on1 test -f "$AGENT_CONF_BAK"; then
+  info "stale backup found ($AGENT_CONF_BAK) - a prior run died mid-flight; restoring pristine config"
+  on1 sudo cp "$AGENT_CONF_BAK" "$AGENT_CONF" || fail "could not restore pristine config from $AGENT_CONF_BAK"
+else
+  on1 sudo cp "$AGENT_CONF" "$AGENT_CONF_BAK" || fail "could not back up $AGENT_CONF"
+fi
 CONF_PATCHED=1
 # Append a top-level zram block (column 0 -> a new top-level mapping key, valid
 # regardless of the preceding block). Leading blank line guards against a config
@@ -159,11 +193,11 @@ otx node get "$NODE1" --output json | jq -e '.capabilities.compressed_swap.kind 
   || fail "node get does not report compressed_swap.kind == zram"
 pass "CP reports compressed_swap.kind == zram on $NODE1"
 
-# Node host: a /dev/zram device is an active swap.
-ZDEV="$(zram_swap_device)"
-[[ "$ZDEV" == /dev/zram* ]] || fail "no /dev/zram in $NODE1 /proc/swaps (got '${ZDEV:-none}')"
+# Node host: the agent hot-added a NEW /dev/zram swap (delta vs the baseline).
+ZDEV="$(zram_delta_device)"
+[[ "$ZDEV" == /dev/zram* ]] || fail "no new /dev/zram appeared in $NODE1 /proc/swaps beyond the baseline (got '${ZDEV:-none}')"
 ZNAME="$(basename "$ZDEV")"          # e.g. zram1
-info "zram swap device: $ZDEV"
+info "agent zram swap device: $ZDEV"
 
 # mem_limit is set and roughly 25% of MemTotal (generous band: not exact bytes).
 MEMLIMIT="$(on1 cat "/sys/block/${ZNAME}/mem_limit" 2>/dev/null | tr -dc '0-9')" || true
@@ -255,9 +289,9 @@ while (( SECONDS < deadline )); do
   sleep 3
 done
 (( off == 1 )) || fail "compressed_swap still reports 'zram' on $NODE1 after disable within ${CAP_WAIT}s"
-LEFT="$(zram_swap_device)"
-[[ -z "$LEFT" ]] || fail "a zram swap device is still present after disable: $LEFT"
-pass "compressed_swap off on $NODE1 and no /dev/zram in /proc/swaps"
+LEFT="$(zram_delta_device)"
+[[ -z "$LEFT" ]] || fail "the agent's zram swap device is still present after disable: $LEFT"
+pass "compressed_swap off on $NODE1 and no agent zram device beyond the baseline in /proc/swaps"
 
 trap - EXIT
 echo
