@@ -101,9 +101,11 @@ func TestNodeGetMemoryOvercommitView(t *testing.T) {
 	}
 	var node struct {
 		MemoryOvercommit *struct {
-			Eligible    bool   `json:"eligible"`
-			HeadroomMiB int64  `json:"headroom_mib"`
-			RealUsedMiB *int64 `json:"real_used_mib"`
+			Eligible        bool    `json:"eligible"`
+			ConfiguredRatio float64 `json:"configured_ratio"`
+			EffectiveRatio  float64 `json:"effective_ratio"`
+			HeadroomMiB     int64   `json:"headroom_mib"`
+			RealUsedMiB     *int64  `json:"real_used_mib"`
 		} `json:"memory_overcommit"`
 	}
 	decodeJSON(t, getResp, &node)
@@ -114,6 +116,10 @@ func TestNodeGetMemoryOvercommitView(t *testing.T) {
 	mo := node.MemoryOvercommit
 	if !mo.Eligible || mo.HeadroomMiB != 2048 {
 		t.Errorf("memory_overcommit = %+v, want eligible headroom_mib=2048", mo)
+	}
+	// configured = the operator ceiling (2.0); effective = (8192+2048)/8192 = 1.25.
+	if mo.ConfiguredRatio != 2.0 || mo.EffectiveRatio != 1.25 {
+		t.Errorf("ratios = configured %.3f effective %.3f, want 2.0 / 1.25", mo.ConfiguredRatio, mo.EffectiveRatio)
 	}
 	if mo.RealUsedMiB == nil || *mo.RealUsedMiB != 1500 {
 		t.Errorf("real_used_mib = %v, want 1500", mo.RealUsedMiB)

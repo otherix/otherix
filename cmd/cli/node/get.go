@@ -135,19 +135,28 @@ func printNodeHardware(cmd *cobra.Command, n cpclient.Node) {
 	printf(cmd, "memory_overcommit: %s\n", memoryOvercommitLine(n.MemoryOvercommit))
 }
 
-// memoryOvercommitLine renders the scheduler memory-overcommit status:
-// "off" when not eligible, else "on (headroom <N>MiB, real used <M>MiB)".
-// A missing block (summary projection, or the server did not populate it)
-// renders "off".
+// memoryOvercommitLine renders the scheduler memory-overcommit status in one of
+// three shapes: "on (effective Rx, ceiling Cx, headroom NMiB, real used MMiB)"
+// when overcommit is active on the node; "off - no zram net (ceiling Cx)" when
+// the operator enabled overcommit (ceiling > 1.0) but the node has no qualifying
+// zram device; and plain "off" when overcommit is disabled or the block is
+// absent (summary projection).
 func memoryOvercommitLine(mo *cpclient.NodeMemoryOvercommit) string {
-	if mo == nil || !mo.Eligible {
+	if mo == nil {
+		return "off"
+	}
+	if !mo.Eligible {
+		if mo.ConfiguredRatio > 1.0 {
+			return fmt.Sprintf("off - no zram net (ceiling %.2fx)", mo.ConfiguredRatio)
+		}
 		return "off"
 	}
 	used := "unset"
 	if mo.RealUsedMiB != nil {
 		used = fmt.Sprintf("%dMiB", *mo.RealUsedMiB)
 	}
-	return fmt.Sprintf("on (headroom %dMiB, real used %s)", mo.HeadroomMiB, used)
+	return fmt.Sprintf("on (effective %.2fx, ceiling %.2fx, headroom %dMiB, real used %s)",
+		mo.EffectiveRatio, mo.ConfiguredRatio, mo.HeadroomMiB, used)
 }
 
 // compressedSwapLine renders the node's compressed-swap safety net from the raw

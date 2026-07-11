@@ -5192,13 +5192,21 @@ components:
           properties:
             eligible:
               type: boolean
+            configured_ratio:
+              type: number
+              description: Operator ceiling (overcommit_ratio); 1.0 = overcommit off.
+            effective_ratio:
+              type: number
+              description: >-
+                Multiplier actually applied to this node, (total+headroom)/total
+                after the zram bound. Never exceeds configured_ratio; 1.0 strict.
             headroom_mib:
-              type: [integer, "null"]
+              type: integer
               format: int64
             real_used_mib:
               type: [integer, "null"]
               format: int64
-          required: [eligible, headroom_mib]
+          required: [eligible, configured_ratio, effective_ratio, headroom_mib]
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

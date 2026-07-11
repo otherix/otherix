@@ -175,9 +175,15 @@ type nodeView struct {
 // memory (nil when no running VM has reported yet). Only the get path populates
 // it; the list path leaves it nil to avoid an O(nodes) per-node scan fan-out.
 type memoryOvercommitView struct {
-	Eligible    bool   `json:"eligible"`
-	HeadroomMiB int64  `json:"headroom_mib"`
-	RealUsedMiB *int64 `json:"real_used_mib"`
+	Eligible bool `json:"eligible"`
+	// ConfiguredRatio is the operator ceiling (placement.resources.memory.
+	// overcommit_ratio); EffectiveRatio is the multiplier actually applied to
+	// this node, (total+headroom)/total, after the zram bound - it never exceeds
+	// the ceiling and is 1.0 when strict.
+	ConfiguredRatio float64 `json:"configured_ratio"`
+	EffectiveRatio  float64 `json:"effective_ratio"`
+	HeadroomMiB     int64   `json:"headroom_mib"`
+	RealUsedMiB     *int64  `json:"real_used_mib"`
 }
 
 // networkConditionView is one per-(node, network) materialisation record
@@ -503,10 +509,16 @@ func (h *Handler) writeNodeResponseEffective(w http.ResponseWriter, r *http.Requ
 		// leaves it nil, which the view renders as unset rather than 500ing a read.
 		headroom := scheduler.MemOvercommitHeadroom(n, h.memCfg)
 		realUsed, _ := h.store.NodeMemoryUsedMib(r.Context(), n.ID)
+		effRatio := 1.0
+		if n.MemoryTotalMib != nil && *n.MemoryTotalMib > 0 {
+			effRatio = float64(*n.MemoryTotalMib+headroom) / float64(*n.MemoryTotalMib)
+		}
 		v.MemoryOvercommit = &memoryOvercommitView{
-			Eligible:    headroom > 0,
-			HeadroomMiB: headroom,
-			RealUsedMiB: realUsed,
+			Eligible:        headroom > 0,
+			ConfiguredRatio: h.memCfg.OvercommitRatio,
+			EffectiveRatio:  effRatio,
+			HeadroomMiB:     headroom,
+			RealUsedMiB:     realUsed,
 		}
 		write(w, r, status, v)
 		return

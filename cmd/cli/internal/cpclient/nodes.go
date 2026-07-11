@@ -69,9 +69,11 @@ type Node struct {
 // how much, plus the node's aggregate balloon real-used memory. nil for the
 // summary projection (developer/viewer) and on the list path.
 type NodeMemoryOvercommit struct {
-	Eligible    bool   `json:"eligible"`
-	HeadroomMiB int64  `json:"headroom_mib"`
-	RealUsedMiB *int64 `json:"real_used_mib"`
+	Eligible        bool    `json:"eligible"`
+	ConfiguredRatio float64 `json:"configured_ratio"`
+	EffectiveRatio  float64 `json:"effective_ratio"`
+	HeadroomMiB     int64   `json:"headroom_mib"`
+	RealUsedMiB     *int64  `json:"real_used_mib"`
 }
 
 // NodeWireguard mirrors the server's NodeWireguard schema: the node's WG
