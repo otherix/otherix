@@ -366,9 +366,8 @@ type MigrationCap struct {
 }
 
 // CompressedSwapInfo reports the node's active compressed-swap safety net.
-// Observed from swapon --show + /sys/block/zramN, so a nil pointer on
-// NodeCapabilities means the net is off right now, regardless of what
-// agent.yaml configured.
+// Observed from /proc/swaps + /sys/block/zramN, so a nil pointer on
+// NodeCapabilities means the net is off right now, regardless of host config.
 type CompressedSwapInfo struct {
 	Kind        string `json:"kind"`
 	SizeMib     int64  `json:"size_mib"`
