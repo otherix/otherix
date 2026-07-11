@@ -215,17 +215,21 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 
 	// virtio-balloon with free-page-reporting lets the guest proactively
 	// return its own freed pages to the host (host MADV_FREEs the backing
-	// without changing the guest's size); stats-polling-interval keeps the
-	// guest memory stats fresh for a qom-get guest-stats read (observed
-	// memory_used_mib). The explicit id=balloon0 pins the QOM path the stats
-	// reader uses (/machine/peripheral/balloon0) - an id-less -device is
-	// anonymous (/machine/peripheral-anon/device[N]) and the qom-get would
-	// fail. Emitted unconditionally and in the common section so the device
-	// model is identical on both arches AND on the live-migration target
+	// without changing the guest's size); guest-stats-polling-interval arms
+	// the guest memory stats timer so a qom-get guest-stats read returns
+	// fresh data (observed memory_used_mib). The interval is in SECONDS (qemu
+	// multiplies by 1000 internally), so 2 = a 2s refresh - NOT milliseconds.
+	// The property is guest-stats-polling-interval (the virtio-balloon-pci
+	// device property); there is no bare stats-polling-interval. The explicit
+	// id=balloon0 pins the QOM path the stats reader uses
+	// (/machine/peripheral/balloon0) - an id-less -device is anonymous
+	// (/machine/peripheral-anon/device[N]) and the qom-get would fail.
+	// Emitted unconditionally and in the common section so the device model is
+	// identical on both arches AND on the live-migration target
 	// (migrations_live.go also calls BuildArgs) - live migration requires
 	// source and target to present the same device model.
 	args = append(args,
-		"-device", "virtio-balloon,id=balloon0,free-page-reporting=on,stats-polling-interval=2000",
+		"-device", "virtio-balloon,id=balloon0,free-page-reporting=on,guest-stats-polling-interval=2",
 	)
 
 	switch spec.Architecture {

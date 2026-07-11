@@ -280,7 +280,7 @@ func TestBuildArgs_BalloonDevicePresentBothArches(t *testing.T) {
 		Accelerator: "tcg", DiskPath: "/d.qcow2", QMPSocket: "/q.sock",
 		ConsoleSocket: "/c.sock", PIDFile: "/p.pid",
 	}
-	want := "-device virtio-balloon,id=balloon0,free-page-reporting=on,stats-polling-interval=2000"
+	want := "-device virtio-balloon,id=balloon0,free-page-reporting=on,guest-stats-polling-interval=2"
 	for _, tc := range []struct {
 		name string
 		spec VMSpec
