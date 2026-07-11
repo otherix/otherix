@@ -364,7 +364,11 @@ later.
 4. Trigger a test VM create. The scheduler's decision should respect
    the new ratios. `vm create` against a saturated pool returns 409
    `no_eligible_nodes` with a structured `details.node_utilization`
-   payload listing each candidate by name + per-resource usage.
+   payload listing each candidate by name + per-resource usage. Each
+   item also carries `overcommit_eligible` (true when the node has a
+   qualifying zram net) and `mem_overcommit_headroom_mib` (the extra
+   memory that net would grant), so a strict fit-reject makes clear
+   where adding or enlarging a zram device could let the request fit.
 
 There is currently no API or CLI endpoint to read or change the
 placement config at runtime — it's a deploy-time decision. Restart

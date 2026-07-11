@@ -1571,6 +1571,23 @@ func TestMemOvercommitHeadroom(t *testing.T) {
 	}
 }
 
+func TestRenderUtilizationCarriesOvercommit(t *testing.T) {
+	mem := func(v int64) *int64 { return &v }
+	cpu := func(v int32) *int32 { return &v }
+	memCfg := MemoryResourceConfig{Enabled: true, OvercommitRatio: 2.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 1.0}
+	rejected := []candidate{{row: store.ListEligiblePoolsByNameRow{
+		NodeEffectiveAvailability: store.NodeEffectiveAvailability{
+			Name: "zram-node", CPUCoresTotal: cpu(8), CPUCoresEffective: cpu(0),
+			MemoryTotalMib: mem(8192), MemoryEffectiveMib: mem(0),
+			Capabilities: []byte(`{"compressed_swap":{"size_mib":2048}}`),
+		},
+	}}}
+	out := renderUtilization(rejected, memCfg)
+	if len(out) != 1 || !out[0].OvercommitEligible || out[0].MemOvercommitHeadroomMiB != 2048 {
+		t.Errorf("renderUtilization overcommit = (%v, %d), want (true, 2048)", out[0].OvercommitEligible, out[0].MemOvercommitHeadroomMiB)
+	}
+}
+
 func TestMemoryOvercommitAdmitsOnlyZramNode(t *testing.T) {
 	// need 2560 MiB; node has 2048 MiB effective (strict reject) but 8192 total.
 	// With ratio 2.0 + zram 2048: headroom 2048 -> avail 4096 >= 2560 -> admit.

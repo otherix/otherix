@@ -191,6 +191,11 @@ type NodeUtilization struct {
 	MemTotalMiB    int64  `json:"mem_total_mib"`
 	DiskUsedBytes  int64  `json:"disk_used_bytes"`
 	DiskTotalBytes int64  `json:"disk_total_bytes"`
+	// OvercommitEligible is true when the node carries a qualifying zram net
+	// that would grant memory-overcommit headroom — a signal that adding /
+	// enlarging a zram device here could let a strict-rejected request fit.
+	OvercommitEligible       bool  `json:"overcommit_eligible"`
+	MemOvercommitHeadroomMiB int64 `json:"mem_overcommit_headroom_mib"`
 }
 
 // InsufficientResourcesDetail is the structured payload attached to
@@ -456,7 +461,7 @@ func SchedulePlacement(ctx context.Context, q Querier, req PlacementRequest, cfg
 			RequiredDiskBytes:    req.DiskBytes,
 			CandidatesConsidered: considered,
 			CandidatesEligible:   0,
-			NodeUtilization:      renderUtilization(rejected),
+			NodeUtilization:      renderUtilization(rejected, cfg.Resources.Memory),
 		}
 		return PlacementDecision{}, fmt.Errorf("scheduler: pool %q: %w", req.PoolName, &insufficientResourcesError{Detail: detail})
 	}
@@ -728,7 +733,7 @@ func candidateHasMetrics(r store.ListEligiblePoolsByNameRow, req PlacementReques
 // numbers. Nodes / pools missing metric columns surface as zeros
 // across the board — they have nothing to report. Order preserves
 // the input ordering (SQL `order by n.id`).
-func renderUtilization(rejected []candidate) []NodeUtilization {
+func renderUtilization(rejected []candidate, memCfg MemoryResourceConfig) []NodeUtilization {
 	out := make([]NodeUtilization, 0, len(rejected))
 	for _, c := range rejected {
 		n := c.row.NodeEffectiveAvailability
@@ -758,15 +763,18 @@ func renderUtilization(rejected []candidate) []NodeUtilization {
 		if diskUsed < 0 {
 			diskUsed = 0
 		}
+		headroom := MemOvercommitHeadroom(n, memCfg)
 		out = append(out, NodeUtilization{
-			Node:           n.Name,
-			Pool:           p.Name,
-			CPUUsed:        cpuTotal - cpuEff,
-			CPUTotal:       cpuTotal,
-			MemUsedMiB:     memTotal - memEff,
-			MemTotalMiB:    memTotal,
-			DiskUsedBytes:  diskUsed,
-			DiskTotalBytes: diskTotal,
+			Node:                     n.Name,
+			Pool:                     p.Name,
+			CPUUsed:                  cpuTotal - cpuEff,
+			CPUTotal:                 cpuTotal,
+			MemUsedMiB:               memTotal - memEff,
+			MemTotalMiB:              memTotal,
+			DiskUsedBytes:            diskUsed,
+			DiskTotalBytes:           diskTotal,
+			OvercommitEligible:       headroom > 0,
+			MemOvercommitHeadroomMiB: headroom,
 		})
 	}
 	return out
