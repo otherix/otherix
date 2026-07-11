@@ -38,7 +38,7 @@ func seedRuntime(t *testing.T, s *etcdstore.Store, nodeID uuid.UUID, phase store
 
 func TestNodeMemoryUsedMib(t *testing.T) {
 	ctx := context.Background()
-	s, _ := startStore(t)
+	s, cli := startStore(t)
 	nodeID := uuid.New()
 	mib := func(v int64) *int64 { return &v }
 
@@ -48,12 +48,28 @@ func TestNodeMemoryUsedMib(t *testing.T) {
 	seedRuntime(t, s, nodeID, store.VmPhaseRunning, nil)
 	seedRuntime(t, s, nodeID, store.VmPhaseStopped, mib(9999))
 
+	// A stale by-node index leaf left under nodeID after a live-migration cutover:
+	// a running VM now on otherNode, still pointed at by a leaf under nodeID. The
+	// real UpsertVMRuntime seam moves the leaf in one txn so this never happens
+	// through the projection; plant it raw to give the CurrentNodeID guard teeth.
+	// It must NOT be counted (its memory lives on otherNode), so the sum stays 2500.
+	staleVM := uuid.New()
+	otherNode := uuid.New()
+	now := time.Now().UTC()
+	staleRT := store.VMRuntime{VmID: staleVM, CurrentNodeID: &otherNode, Phase: store.VmPhaseRunning, MemoryUsedMib: mib(4000), LastObservedAt: &now, UpdatedAt: now}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_runtime", staleVM.String()), staleRT); err != nil {
+		t.Fatalf("seed stale runtime: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "vm_runtime", "node", nodeID.String(), staleVM.String()), []byte(staleVM.String())); err != nil {
+		t.Fatalf("seed stale runtime-node index: %v", err)
+	}
+
 	got, err := s.NodeMemoryUsedMib(ctx, nodeID)
 	if err != nil {
 		t.Fatalf("NodeMemoryUsedMib: %v", err)
 	}
 	if got == nil || *got != 2500 {
-		t.Errorf("NodeMemoryUsedMib = %v, want 2500 (1000+1500; nil and stopped excluded)", got)
+		t.Errorf("NodeMemoryUsedMib = %v, want 2500 (1000+1500; nil, stopped, and stale-leaf excluded)", got)
 	}
 
 	// A node with no readings returns nil.
