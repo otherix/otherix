@@ -74,7 +74,7 @@ sole positional.
 | `--node` | (scheduler picks) | Placement hint: node name or uuid. |
 | `--network` | (none, SLIRP fallback) | Bridge network name or uuid to attach one NIC. |
 | `--vcpus` | `2` | vCPU count (1..128). |
-| `--memory-mb` | `2048` | Memory in MiB (128..524288). |
+| `--memory-mib` | `2048` | Memory in MiB (128..524288). |
 | `--user-data` | (none) | Path to a `#cloud-config` user-data YAML, or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
 | `--network-config` | (none) | Path to a cloud-init network-config YAML (netplan v2), or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
 | `--no-cloud-init` | `false` | Explicitly disable cloud-init. Mutually exclusive with `--user-data` and `--network-config`. |
@@ -83,7 +83,7 @@ sole positional.
 
 ```bash
 otherix vm create web-1 --image-url https://example.com/ubuntu.qcow2 \
-  --arch arm64 --vcpus 2 --memory-mb 2048 --wait
+  --arch arm64 --vcpus 2 --memory-mib 2048 --wait
 ```
 
 ### vm get

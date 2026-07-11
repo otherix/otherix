@@ -86,7 +86,7 @@ func (m *Manager) seedStoppedVM(t *testing.T, name string) *VM {
 		ID:            id,
 		Name:          name,
 		VCPUs:         1,
-		MemoryMB:      512,
+		MemoryMib:     512,
 		PoolName:      m.defaultTestPool(),
 		Status:        StatusStopped,
 		CreatedAt:     now,

@@ -46,7 +46,7 @@ func TestRemoveAdoptedVM_RemovesDiskDir(t *testing.T) {
 	m := newTestManager(t)
 	vmID := uuid.New()
 	v, err := m.AdoptForMigration(AdoptSpec{
-		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMib: 512,
 		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
 	})
 	if err != nil {

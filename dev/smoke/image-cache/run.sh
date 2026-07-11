@@ -250,7 +250,7 @@ pass "pinned digest S=$S"
 echo "=== step 2: create $VM1 on $NODE1 pinned to S -> running (source download) ==="
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM1" \
   --image-url "$IMAGE_URL" --image-sha256 "$S" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM1 did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VM1" running
@@ -285,7 +285,7 @@ echo "=== step 3: create $VM2 on $NODE2 pinned to the SAME S -> running (peer pu
 # CLONES from the staged cache (a hit), never re-downloading from the source URL.
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM2" \
   --image-url "$IMAGE_URL" --image-sha256 "$S" --arch "$ARCH" --node "$NODE2" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${PULL_WAIT}s" \
   || fail "vm create $VM2 did not reach running within ${PULL_WAIT}s (peer pull failed?)"
 assert_phase "$VM2" running
@@ -349,7 +349,7 @@ done
 
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM3" \
   --image-url "$IMAGE_URL2" --image-sha256 "$S2" --arch "$ARCH" --node "$NODE3" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT2}s" \
   || fail "vm create $VM3 did not reach running within ${CREATE_WAIT2}s (fail-open source download failed?)"
 assert_phase "$VM3" running

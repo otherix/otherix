@@ -148,7 +148,7 @@ otherix vm create demo-vm \
   --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
   --arch arm64 \
   --vcpus 2 \
-  --memory-mb 2048 \
+  --memory-mib 2048 \
   --wait
 # created task=<task-id> status=pending
 # .....
@@ -175,7 +175,7 @@ otherix vm get demo-vm
 # status: running
 # node: node-1
 # vcpus: 2
-# memory_mb: 2048
+# memory_mib: 2048
 # ...
 ```
 

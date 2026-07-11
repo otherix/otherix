@@ -245,7 +245,7 @@ for (( i = 1; i <= BATCH; i++ )); do
   name="$(vm_name "$i")"
   ( printf '%s' "$CLOUD_INIT" | otx vm create "$name" \
       --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE" \
-      --vcpus 1 --memory-mb 1024 --user-data - \
+      --vcpus 1 --memory-mib 1024 --user-data - \
       --wait --wait-timeout "${CREATE_WAIT}s" ) &
   pids+=( "$!" )
 done

@@ -78,7 +78,7 @@ func TestRunCreate_FromSnapshot_MaterializesDisks(t *testing.T) {
 		ID:            vmID,
 		Name:          vmName,
 		VCPUs:         1,
-		MemoryMB:      512,
+		MemoryMib:     512,
 		PoolName:      poolName,
 		Status:        StatusPending,
 		DiskPath:      disk,
@@ -93,12 +93,12 @@ func TestRunCreate_FromSnapshot_MaterializesDisks(t *testing.T) {
 	task := m.tasks.Create(TaskKindVMCreate, vmID)
 
 	spec := CreateSpec{
-		UUID:     vmID,
-		Name:     vmName,
-		VCPUs:    1,
-		MemoryMB: 512,
-		PoolName: poolName,
-		Format:   "qcow2",
+		UUID:      vmID,
+		Name:      vmName,
+		VCPUs:     1,
+		MemoryMib: 512,
+		PoolName:  poolName,
+		Format:    "qcow2",
 		SourceSnapshot: &SnapshotRef{
 			Pool: poolName,
 			Disks: []SnapshotDiskRef{

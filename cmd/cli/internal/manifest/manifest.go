@@ -86,7 +86,7 @@ type VMSpec struct {
 	ImagePullPolicy   string `yaml:"imagePullPolicy"`
 	DiskGiB           int    `yaml:"diskGiB"`
 	VCPUs             int    `yaml:"vcpus"`
-	MemoryMB          int    `yaml:"memoryMB"`
+	MemoryMib         int    `yaml:"memoryMib"`
 	Pool              string `yaml:"pool"`
 	Network           string `yaml:"network"`
 	Node              string `yaml:"node"`

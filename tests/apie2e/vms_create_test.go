@@ -77,7 +77,7 @@ func TestVMCreate_OneOfImageOrSnapshot(t *testing.T) {
 	// Neither image_url nor source_snapshot_id -> 400 image_xor_snapshot.
 	neither := map[string]any{
 		"name": "vm-" + uuid.NewString()[:8], "arch": "amd64",
-		"vcpus": 2, "memory_mb": 2048, "pool": poolName,
+		"vcpus": 2, "memory_mib": 2048, "pool": poolName,
 	}
 	resp = h.post(t, "/v1/vms", neither, admin)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -94,7 +94,7 @@ func TestVMCreate_OneOfImageOrSnapshot(t *testing.T) {
 	readyID := seedReadySnapshot(t, h.store, vmID, adminID, store.CpuArchArm64)
 	body := map[string]any{
 		"name":  "vm-restored-" + uuid.NewString()[:8],
-		"vcpus": 2, "memory_mb": 2048, "pool": poolName,
+		"vcpus": 2, "memory_mib": 2048, "pool": poolName,
 		"source_snapshot_id": readyID.String(),
 	}
 	vmName := body["name"].(string)
@@ -128,7 +128,7 @@ func TestVMCreate_OneOfImageOrSnapshot(t *testing.T) {
 	// field_from_snapshot (arch/firmware come from the manifest, not the request).
 	withArch := map[string]any{
 		"name": "vm-" + uuid.NewString()[:8], "arch": "amd64",
-		"vcpus": 2, "memory_mb": 2048, "pool": poolName,
+		"vcpus": 2, "memory_mib": 2048, "pool": poolName,
 		"source_snapshot_id": readyID.String(),
 	}
 	resp = h.post(t, "/v1/vms", withArch, admin)
@@ -156,7 +156,7 @@ func TestVMCreate_OneOfImageOrSnapshot(t *testing.T) {
 	}
 	notReady := map[string]any{
 		"name":  "vm-" + uuid.NewString()[:8],
-		"vcpus": 2, "memory_mb": 2048, "pool": poolName,
+		"vcpus": 2, "memory_mib": 2048, "pool": poolName,
 		"source_snapshot_id": creatingID.String(),
 	}
 	resp = h.post(t, "/v1/vms", notReady, admin)
@@ -317,7 +317,7 @@ func TestVMCreate_FromSnapshot_CrossOwner404(t *testing.T) {
 	// A different user (developer) recreates from it -> 404 (no existence leak).
 	body := map[string]any{
 		"name":  "vm-" + uuid.NewString()[:8],
-		"vcpus": 2, "memory_mb": 2048, "pool": poolName,
+		"vcpus": 2, "memory_mib": 2048, "pool": poolName,
 		"source_snapshot_id": readyID.String(),
 	}
 	resp := h.post(t, "/v1/vms", body, devToken)

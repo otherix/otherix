@@ -158,7 +158,7 @@ echo "=== step 1: create $VM on $NODE1 -> running ==="
 cleanup >/dev/null 2>&1 || true   # best-effort delete-first of a stale leftover
 otx vm create "$VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VM" running

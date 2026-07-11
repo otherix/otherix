@@ -17,7 +17,7 @@ func validSpec() VMSpec {
 		Name:            "test-vm",
 		UUID:            uuid.MustParse("11111111-2222-3333-4444-555555555555"),
 		VCPUs:           2,
-		MemoryMB:        2048,
+		MemoryMib:       2048,
 		Accelerator:     "tcg",
 		DiskPath:        "/var/lib/otherix/pools/default/vms/abc/disk.qcow2",
 		QMPSocket:       "/var/lib/otherix/vms/abc/qmp.sock",
@@ -117,7 +117,7 @@ func TestBuildArgs_ValidatesSpec(t *testing.T) {
 		{"empty name", func(s *VMSpec) { s.Name = "" }},
 		{"nil uuid", func(s *VMSpec) { s.UUID = uuid.Nil }},
 		{"zero vcpus", func(s *VMSpec) { s.VCPUs = 0 }},
-		{"low memory", func(s *VMSpec) { s.MemoryMB = 64 }},
+		{"low memory", func(s *VMSpec) { s.MemoryMib = 64 }},
 		{"empty disk", func(s *VMSpec) { s.DiskPath = "" }},
 		{"empty qmp socket", func(s *VMSpec) { s.QMPSocket = "" }},
 		{"empty accelerator", func(s *VMSpec) { s.Accelerator = "" }},
@@ -276,7 +276,7 @@ func TestBinary(t *testing.T) {
 
 func TestBuildArgs_BalloonDevicePresentBothArches(t *testing.T) {
 	base := VMSpec{
-		Name: "vm1", UUID: uuid.New(), VCPUs: 1, MemoryMB: 512,
+		Name: "vm1", UUID: uuid.New(), VCPUs: 1, MemoryMib: 512,
 		Accelerator: "tcg", DiskPath: "/d.qcow2", QMPSocket: "/q.sock",
 		ConsoleSocket: "/c.sock", PIDFile: "/p.pid",
 	}

@@ -32,7 +32,7 @@ func validVMCreateRequest() agentclient.VMCreateRequest {
 		UUID:           uuid.New(),
 		Name:           "test-vm",
 		VCPUs:          2,
-		MemoryMB:       2048,
+		MemoryMib:      2048,
 		Pool:           "test-pool",
 		ImageURL:       "https://example.test/ubuntu.img",
 		ExpectedSHA256: strings.Repeat("a", 64),
@@ -211,7 +211,7 @@ func TestGetVM_HappyPath(t *testing.T) {
 		ID:           vmID,
 		Name:         vmName,
 		VCPUs:        4,
-		MemoryMB:     4096,
+		MemoryMib:    4096,
 		Pool:         "test-pool",
 		Architecture: "arm64",
 		Status:       "running",
@@ -228,7 +228,7 @@ func TestGetVM_HappyPath(t *testing.T) {
 			"id":           want.ID,
 			"name":         want.Name,
 			"vcpus":        want.VCPUs,
-			"memory_mb":    want.MemoryMB,
+			"memory_mib":   want.MemoryMib,
 			"pool":         want.Pool,
 			"architecture": want.Architecture,
 			"status":       want.Status,
@@ -272,8 +272,8 @@ func TestListVMs_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	want := []agentclient.AgentVM{
-		{ID: uuid.New(), Name: "a", Status: "running", VCPUs: 2, MemoryMB: 1024},
-		{ID: uuid.New(), Name: "b", Status: "stopped", VCPUs: 4, MemoryMB: 2048},
+		{ID: uuid.New(), Name: "a", Status: "running", VCPUs: 2, MemoryMib: 1024},
+		{ID: uuid.New(), Name: "b", Status: "stopped", VCPUs: 4, MemoryMib: 2048},
 	}
 
 	mux := http.NewServeMux()

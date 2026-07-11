@@ -7686,7 +7686,7 @@ components:
         - nics
         - architecture
         - vcpus
-        - memory_mb
+        - memory_mib
         - status
         - desired_phase
         - labels
@@ -7793,7 +7793,7 @@ components:
           type: integer
           minimum: 1
           maximum: 128
-        memory_mb:
+        memory_mib:
           type: integer
           format: int64
           minimum: 128
@@ -7930,7 +7930,7 @@ components:
         Firmware is resolved from `firmware` ("bios" | "uefi", default
         uefi) for the (arch, type) default, or from an explicit
         `firmware_id` uuid escape hatch (which wins over `firmware`).
-      required: [name, arch, vcpus, memory_mb]
+      required: [name, arch, vcpus, memory_mib]
       properties:
         name:
           type: string
@@ -8014,7 +8014,7 @@ components:
           type: integer
           minimum: 1
           maximum: 128
-        memory_mb:
+        memory_mib:
           type: integer
           format: int64
           minimum: 128

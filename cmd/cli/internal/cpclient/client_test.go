@@ -85,7 +85,7 @@ func TestCreateVM_HappyPath(t *testing.T) {
 			"pool":          "default",
 			"architecture":  "amd64",
 			"vcpus":         2,
-			"memory_mb":     2048,
+			"memory_mib":    2048,
 			"status":        map[string]any{"phase": "pending", "reason": "pending_schedule"},
 			"desired_phase": "running",
 			"labels":        map[string]any{},
@@ -97,12 +97,12 @@ func TestCreateVM_HappyPath(t *testing.T) {
 
 	c := fixtureClient(t, srv)
 	got, raw, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
-		Name:     "demo",
-		ImageURL: "https://example.com/img.qcow2",
-		Arch:     "amd64",
-		Pool:     uuid.NewString(),
-		VCPUs:    2,
-		MemoryMB: 2048,
+		Name:      "demo",
+		ImageURL:  "https://example.com/img.qcow2",
+		Arch:      "amd64",
+		Pool:      uuid.NewString(),
+		VCPUs:     2,
+		MemoryMib: 2048,
 	})
 	if err != nil {
 		t.Fatalf("CreateVM: %v", err)
@@ -135,7 +135,7 @@ func TestCreateVM_APIError404(t *testing.T) {
 
 	c := fixtureClient(t, srv)
 	_, _, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
-		Name: "demo", ImageURL: "https://example.com/img.qcow2", Arch: "amd64", Pool: uuid.NewString(), VCPUs: 2, MemoryMB: 1024,
+		Name: "demo", ImageURL: "https://example.com/img.qcow2", Arch: "amd64", Pool: uuid.NewString(), VCPUs: 2, MemoryMib: 1024,
 	})
 	if err == nil {
 		t.Fatalf("expected error for 404")
@@ -166,7 +166,7 @@ func TestCreateVM_APIError5xxRetryable(t *testing.T) {
 
 	c := fixtureClient(t, srv)
 	_, _, err := c.CreateVM(context.Background(), cpclient.CreateVMRequest{
-		Name: "x", ImageURL: "https://example.com/img.qcow2", Arch: "amd64", Pool: uuid.NewString(), VCPUs: 1, MemoryMB: 1024,
+		Name: "x", ImageURL: "https://example.com/img.qcow2", Arch: "amd64", Pool: uuid.NewString(), VCPUs: 1, MemoryMib: 1024,
 	})
 	var ae *cpclient.APIError
 	if !errors.As(err, &ae) {
@@ -194,7 +194,7 @@ func TestGetVM_HappyPath(t *testing.T) {
 			"node_id":       uuid.NewString(),
 			"architecture":  "amd64",
 			"vcpus":         2,
-			"memory_mb":     2048,
+			"memory_mib":    2048,
 			"status":        map[string]any{"phase": "running"},
 			"desired_phase": "running",
 			"labels":        map[string]any{},
@@ -224,7 +224,7 @@ func TestGetVM_AcceptsName(t *testing.T) {
 			t.Errorf("path = %s, want /v1/vms/demo-vm", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000001","name":"demo-vm","owner_id":"00000000-0000-0000-0000-000000000002","pool":"default","architecture":"amd64","vcpus":2,"memory_mb":2048,"status":{"phase":"running"},"desired_phase":"running","labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"id":"00000000-0000-0000-0000-000000000001","name":"demo-vm","owner_id":"00000000-0000-0000-0000-000000000002","pool":"default","architecture":"amd64","vcpus":2,"memory_mib":2048,"status":{"phase":"running"},"desired_phase":"running","labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`))
 	}))
 	defer srv.Close()
 

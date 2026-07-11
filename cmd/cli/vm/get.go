@@ -84,7 +84,7 @@ func printVMText(cmd *cobra.Command, vm cpclient.VM) {
 	printf(cmd, "node: %s\n", strOrUnset(vm.Node))
 	printf(cmd, "architecture: %s\n", vm.Architecture)
 	printf(cmd, "vcpus: %d\n", vm.VCPUs)
-	printf(cmd, "memory_mb: %d\n", vm.MemoryMB)
+	printf(cmd, "memory_mib: %d\n", vm.MemoryMib)
 	printf(cmd, "memory_used_mib: %s\n", formatMemoryUsed(vm.Status.MemoryUsedMib))
 	printf(cmd, "status: %s\n", formatVMStatus(vm.Status))
 	printf(cmd, "desired_phase: %s\n", vm.DesiredPhase)

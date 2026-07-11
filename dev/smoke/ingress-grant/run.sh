@@ -556,7 +556,7 @@ while (( SECONDS < deadline )); do net_ready "$NODE1" "$NET" && { ok=1; break; }
 info "creating $VM on $NODE1 (echo server on :${ECHO_PORT})"
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --network "$NET" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --user-data - --network-config "$NC_FILE" \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM did not reach running within ${CREATE_WAIT}s"
@@ -729,7 +729,7 @@ while (( SECONDS < deadline )); do net_ready "$NODE1" "$NET_BR" && { ok=1; break
 info "creating $VM_BR on $NODE1 (managed bridge $NET_BR, echo server on :${ECHO_PORT})"
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM_BR" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --network "$NET_BR" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --user-data - --network-config "$NC_FILE" \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM_BR did not reach running within ${CREATE_WAIT}s"

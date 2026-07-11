@@ -345,7 +345,7 @@ echo "=== step 2: create $VMB on $NODE2 ($IPB) -> running ==="
 # VM-B probes VM-A (@IPA) once it exists; create B first so A's probe finds a peer.
 gen_userdata "$IPB" "$IPA" | otx vm create "$VMB" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE2" --network "$NET" \
-  --vcpus 2 --memory-mb 2048 --disk-gib 10 --user-data - \
+  --vcpus 2 --memory-mib 2048 --disk-gib 10 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VMB did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VMB" running
@@ -359,7 +359,7 @@ pass "$VMB created and running on $NODE2"
 echo "=== step 3: create $VMA on $NODE1 ($IPA) -> running ==="
 gen_userdata "$IPA" "$IPB" | otx vm create "$VMA" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --network "$NET" \
-  --vcpus 2 --memory-mb 2048 --disk-gib 10 --user-data - \
+  --vcpus 2 --memory-mib 2048 --disk-gib 10 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VMA did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VMA" running

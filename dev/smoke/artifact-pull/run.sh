@@ -254,7 +254,7 @@ cleanup >/dev/null 2>&1 || true   # best-effort delete-first of stale leftovers
 echo "=== step 1: create $SRC_VM on $NODE1 -> running ==="
 printf '%s' "$CLOUD_INIT" | otx vm create "$SRC_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $SRC_VM did not reach running within ${CREATE_WAIT}s"
 assert_phase "$SRC_VM" running
@@ -301,7 +301,7 @@ echo "=== step 4: create $DST_VM --node $NODE2 --from-snapshot $SNAP_ID -> runni
 # No --image-url / --user-data: the disk materializes from the pulled snapshot blob
 # and gets a fresh cidata seed whose hostname is the NEW VM name ($DST_VM).
 otx vm create "$DST_VM" --from-snapshot "$SNAP_ID" --node "$NODE2" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --wait --wait-timeout "${RECREATE_WAIT}s" \
   || fail "vm create --from-snapshot (steered to $NODE2) did not reach running within ${RECREATE_WAIT}s (cross-node pull failed?)"
 assert_phase "$DST_VM" running

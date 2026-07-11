@@ -180,7 +180,7 @@ pass "CP up (${CP_VERSION}); $NODE1 + $NODE2 ready; default pool ready on both"
 echo "=== step 1: create $VM on $NODE1 (serial SEQ writer, no network) -> running ==="
 gen_userdata | otx vm create "$VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VM" running

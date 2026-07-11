@@ -127,12 +127,12 @@ func TestCreate_NICEdgeValidation(t *testing.T) {
 			h := newCreateHarness(t, fake, true)
 
 			body, _ := json.Marshal(map[string]any{
-				"name":      "vm1",
-				"vcpus":     2,
-				"memory_mb": 1024,
-				"pool":      "default",
-				"image_url": testImageURL,
-				"nics":      tc.nics,
+				"name":       "vm1",
+				"vcpus":      2,
+				"memory_mib": 1024,
+				"pool":       "default",
+				"image_url":  testImageURL,
+				"nics":       tc.nics,
 			})
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/v1/vms", bytes.NewReader(body))
@@ -163,11 +163,11 @@ func TestCreate_ValidNIC_PassesValidation(t *testing.T) {
 	h := newCreateHarness(t, fake, true)
 
 	body, _ := json.Marshal(map[string]any{
-		"name":      "vm1",
-		"vcpus":     2,
-		"memory_mb": 1024,
-		"pool":      "default",
-		"image_url": testImageURL,
+		"name":       "vm1",
+		"vcpus":      2,
+		"memory_mib": 1024,
+		"pool":       "default",
+		"image_url":  testImageURL,
 		"nics": []map[string]any{{
 			"id":           uuid.NewString(),
 			"bridge":       "br0",
@@ -219,12 +219,12 @@ func TestCreate_DuplicateUUID_ReAcceptsOriginalTask(t *testing.T) {
 
 	vmID := uuid.NewString()
 	body, _ := json.Marshal(map[string]any{
-		"uuid":      vmID,
-		"name":      "vm1",
-		"vcpus":     2,
-		"memory_mb": 1024,
-		"pool":      "default",
-		"image_url": testImageURL,
+		"uuid":       vmID,
+		"name":       "vm1",
+		"vcpus":      2,
+		"memory_mib": 1024,
+		"pool":       "default",
+		"image_url":  testImageURL,
 	})
 
 	post := func() *httptest.ResponseRecorder {
@@ -288,7 +288,7 @@ func TestCreateMapsNetworkConfig(t *testing.T) {
 		"uuid":           vmID.String(),
 		"name":           "vm1",
 		"vcpus":          2,
-		"memory_mb":      1024,
+		"memory_mib":     1024,
 		"pool":           "default",
 		"image_url":      testImageURL,
 		"network_config": "network:\n  version: 2\n",
@@ -345,13 +345,13 @@ func TestCreate_ImageFieldsReachManager(t *testing.T) {
 		{
 			name: "missing image_url",
 			body: map[string]any{
-				"name": "vm1", "vcpus": 2, "memory_mb": 1024, "pool": "default",
+				"name": "vm1", "vcpus": 2, "memory_mib": 1024, "pool": "default",
 			},
 		},
 		{
 			name: "malformed expected_sha256",
 			body: map[string]any{
-				"name": "vm1", "vcpus": 2, "memory_mb": 1024, "pool": "default",
+				"name": "vm1", "vcpus": 2, "memory_mib": 1024, "pool": "default",
 				"image_url": testImageURL, "expected_sha256": "deadbeef",
 			},
 		},

@@ -23,7 +23,7 @@ func TestTeardownIncomingTarget_ReapsAndIdempotent(t *testing.T) {
 		t.Fatalf("ReservePair: %v", err)
 	}
 	if _, err := m.AdoptForMigration(AdoptSpec{
-		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMib: 512,
 		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
 		InitialStatus: StatusMigratingIncoming,
 	}); err != nil {
@@ -106,7 +106,7 @@ func TestCancelLive_TargetReapsQemuAndPorts(t *testing.T) {
 		t.Fatalf("ReservePair: %v", err)
 	}
 	if _, err := m.AdoptForMigration(AdoptSpec{
-		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMib: 512,
 		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
 		InitialStatus: StatusMigratingIncoming,
 	}); err != nil {
@@ -142,7 +142,7 @@ func TestFailIncomingResume_KeepsDiskAndVM(t *testing.T) {
 		t.Fatalf("ReservePair: %v", err)
 	}
 	v, err := m.AdoptForMigration(AdoptSpec{
-		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMib: 512,
 		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
 		InitialStatus: StatusMigratingIncoming,
 	})

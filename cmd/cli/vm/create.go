@@ -29,15 +29,15 @@ const (
 	flagNode             = "node"
 	flagNetwork          = "network"
 	flagVCPUs            = "vcpus"
-	flagMemoryMB         = "memory-mb"
+	flagMemoryMib        = "memory-mib"
 	flagUserDataPath     = "user-data"
 	flagNetworkConfig    = "network-config"
 	flagCloudInitDisable = "no-cloud-init"
 	flagSSHIngress       = "ssh-ingress"
 	flagLabel            = "label"
 
-	defaultVCPUs    = 2
-	defaultMemoryMB = 2048
+	defaultVCPUs     = 2
+	defaultMemoryMib = 2048
 	// defaultWaitTO is the --wait budget. It matches the k8s-style 10m
 	// pending window a `vm create --wait` blocks for while the scheduler
 	// converges; delete / lifecycle --wait reuse it as a terminal-task poll
@@ -67,7 +67,7 @@ image flags are not supplied in that mode. --arch is required only in the
 
 Example:
   otherix vm create web-1 --image-url https://example.com/ubuntu.qcow2 \
-    --arch arm64 --vcpus 2 --memory-mb 2048
+    --arch arm64 --vcpus 2 --memory-mib 2048
 
 --pool accepts either a pool name or a per-instance UUID literal
 (multi-instance carve-out). The CLI forwards the raw string; the server
@@ -106,7 +106,7 @@ and the agent falls back to legacy SLIRP networking.`,
 	cmd.Flags().String(flagNode, "", "explicit placement hint — node name or uuid (optional)")
 	cmd.Flags().String(flagNetwork, "", "bridge network to attach one NIC to — network name or uuid (optional)")
 	cmd.Flags().Int(flagVCPUs, defaultVCPUs, "vCPU count (1..128)")
-	cmd.Flags().Int(flagMemoryMB, defaultMemoryMB, "memory in MiB (128..524288)")
+	cmd.Flags().Int(flagMemoryMib, defaultMemoryMib, "memory in MiB (128..524288)")
 	cmd.Flags().String(flagUserDataPath, "",
 		"path to a `#cloud-config` user-data YAML; use '-' to read stdin. Mutually exclusive with --no-cloud-init.")
 	cmd.Flags().String(flagNetworkConfig, "",
@@ -145,7 +145,7 @@ type createFlags struct {
 	node              string
 	network           string
 	vcpus             int
-	memoryMB          int
+	memoryMib         int
 	userData          *string
 	networkConfig     *string
 	cloudInitDisabled bool
@@ -173,7 +173,7 @@ func parseCreateFlags(cmd *cobra.Command) (createFlags, error) {
 	if f.vcpus, err = cmd.Flags().GetInt(flagVCPUs); err != nil {
 		return f, err
 	}
-	if f.memoryMB, err = cmd.Flags().GetInt(flagMemoryMB); err != nil {
+	if f.memoryMib, err = cmd.Flags().GetInt(flagMemoryMib); err != nil {
 		return f, err
 	}
 	if err = parseCloudInitFlags(cmd, &f); err != nil {
@@ -344,7 +344,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		Pool:              f.pool,
 		Network:           f.network,
 		VCPUs:             f.vcpus,
-		MemoryMB:          f.memoryMB,
+		MemoryMib:         f.memoryMib,
 		UserData:          f.userData,
 		NetworkConfig:     f.networkConfig,
 		CloudInitDisabled: f.cloudInitDisabled,

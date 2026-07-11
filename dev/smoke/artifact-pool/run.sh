@@ -183,7 +183,7 @@ pass "artifact-pool $POOL created and visible"
 echo "=== step 2: vm create $BAD_VM --pool $POOL MUST fail pool_role_invalid ==="
 err="$(otx vm create "$BAD_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --pool "$POOL" \
-  --vcpus 2 --memory-mb 2048 --no-cloud-init 2>&1 1>/dev/null || true)"
+  --vcpus 2 --memory-mib 2048 --no-cloud-init 2>&1 1>/dev/null || true)"
 echo "$err" | grep -q "pool_role_invalid" \
   || fail "vm create --pool $POOL did NOT return pool_role_invalid; got: ${err:-<no error>}"
 # defense-in-depth: the rejected VM must not exist
@@ -195,7 +195,7 @@ pass "vm create into an artifact pool rejected with pool_role_invalid"
 echo "=== step 3: create $SRC_VM on $NODE1 (default disk pool) -> running ==="
 printf '%s' "$CLOUD_INIT" | otx vm create "$SRC_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $SRC_VM did not reach running within ${CREATE_WAIT}s"
 assert_phase "$SRC_VM" running
@@ -235,7 +235,7 @@ pass "snapshot $SNAP_NAME tagged artifact_pool_name=$POOL"
 # --- step 6: recreate FROM the snapshot -> running ---------------------
 echo "=== step 6: vm create $DST_VM --from-snapshot $SNAP_ID -> running ==="
 otx vm create "$DST_VM" --from-snapshot "$SNAP_ID" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --wait --wait-timeout "${RECREATE_WAIT}s" \
   || fail "vm create --from-snapshot did not reach running within ${RECREATE_WAIT}s"
 assert_phase "$DST_VM" running

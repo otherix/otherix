@@ -37,7 +37,7 @@ func TestValidateCreateRequest(t *testing.T) {
 			Architecture: "amd64",
 			Pool:         "default",
 			VCPUs:        2,
-			MemoryMB:     2048,
+			MemoryMib:    2048,
 		}
 	}
 
@@ -104,8 +104,8 @@ func TestValidateCreateRequest(t *testing.T) {
 		},
 		{name: "vcpus too small", req: func() vmCreateRequest { r := base(); r.VCPUs = 0; return r }()},
 		{name: "vcpus too large", req: func() vmCreateRequest { r := base(); r.VCPUs = 129; return r }()},
-		{name: "memory too small", req: func() vmCreateRequest { r := base(); r.MemoryMB = 64; return r }()},
-		{name: "memory too large", req: func() vmCreateRequest { r := base(); r.MemoryMB = 1 << 30; return r }()},
+		{name: "memory too small", req: func() vmCreateRequest { r := base(); r.MemoryMib = 64; return r }()},
+		{name: "memory too large", req: func() vmCreateRequest { r := base(); r.MemoryMib = 1 << 30; return r }()},
 		{
 			// A node hint is a node name; a uuid literal is rejected at
 			// admission so it never becomes a permanently-pending VM.
@@ -155,7 +155,7 @@ func TestValidateCreateRequestInvalidNameEnvelope(t *testing.T) {
 		Architecture: "amd64",
 		Pool:         "default",
 		VCPUs:        2,
-		MemoryMB:     2048,
+		MemoryMib:    2048,
 	}
 	if got := validateCreateRequest(rec, fakeRequest(), req); got {
 		t.Fatal("validateCreateRequest(Bad_Name) = true, want false")
@@ -223,7 +223,7 @@ func TestCreateLabelsPersisted(t *testing.T) {
 	h := &Handler{store: st, log: discardLog()}
 
 	body := `{"name":"demo","image_url":"https://example.test/img.qcow2",` +
-		`"arch":"amd64","pool":"default","vcpus":2,"memory_mb":2048,` +
+		`"arch":"amd64","pool":"default","vcpus":2,"memory_mib":2048,` +
 		`"labels":{"app":"web"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/vms", strings.NewReader(body))
 	req = req.WithContext(auth.WithUser(req.Context(),
@@ -256,7 +256,7 @@ func TestCreateNoLabelsDefaultsEmpty(t *testing.T) {
 	h := &Handler{store: st, log: discardLog()}
 
 	body := `{"name":"demo","image_url":"https://example.test/img.qcow2",` +
-		`"arch":"amd64","pool":"default","vcpus":2,"memory_mb":2048}`
+		`"arch":"amd64","pool":"default","vcpus":2,"memory_mib":2048}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/vms", strings.NewReader(body))
 	req = req.WithContext(auth.WithUser(req.Context(),
 		&auth.User{ID: uuid.New(), Role: auth.RoleAdmin, Type: auth.TypeJWT}))

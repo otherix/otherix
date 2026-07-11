@@ -291,7 +291,7 @@ for v in "$EVAC_A" "$EVAC_B"; do
   info "creating $v on $NODE1 (1 vcpu)"
   printf '%s' "$CLOUD_INIT" | otx vm create "$v" \
     --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-    --vcpus 1 --memory-mb 1024 --user-data - \
+    --vcpus 1 --memory-mib 1024 --user-data - \
     --wait --wait-timeout "${CREATE_WAIT}s" \
     || fail "vm create $v did not reach running within ${CREATE_WAIT}s"
   assert_phase "$v" running
@@ -389,7 +389,7 @@ for pair in "$FILL_2:$NODE2" "$FILL_3:$NODE3"; do
   info "creating filler $v on $nn (4 vcpus, whole node)"
   printf '%s' "$CLOUD_INIT" | otx vm create "$v" \
     --image-url "$IMAGE_URL" --arch "$ARCH" --node "$nn" \
-    --vcpus 4 --memory-mb 2048 --user-data - \
+    --vcpus 4 --memory-mib 2048 --user-data - \
     --wait --wait-timeout "${CREATE_WAIT}s" \
     || fail "filler vm create $v on $nn did not reach running within ${CREATE_WAIT}s"
   assert_phase "$v" running
@@ -401,7 +401,7 @@ pass "$FILL_2 fills $NODE2, $FILL_3 fills $NODE3 (no room for another whole-node
 info "creating $STUCK_VM on $NODE1 (4 vcpus, whole node)"
 printf '%s' "$CLOUD_INIT" | otx vm create "$STUCK_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 4 --memory-mb 2048 --user-data - \
+  --vcpus 4 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $STUCK_VM did not reach running within ${CREATE_WAIT}s"
 assert_phase "$STUCK_VM" running

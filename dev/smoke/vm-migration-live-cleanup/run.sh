@@ -274,7 +274,7 @@ pass "$NET reconciled ready on both nodes"
 echo "=== step 2: create $VM on $NODE1 ($IPV, image-sized boot disk, NO --disk-gib) -> running ==="
 gen_userdata "$IPV" | otx vm create "$VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --network "$NET" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VM" running

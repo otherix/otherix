@@ -259,7 +259,7 @@ echo "=== step 2: create $VM1 on $NODE1 from UNPINNED $IMAGE_URL -> running (sou
 # success, seeding the peer-pull path for the second node.
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM1" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM1 did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VM1" running
@@ -296,7 +296,7 @@ echo "=== step 3: create $VM2 on $NODE2 from the SAME UNPINNED $IMAGE_URL -> run
 # cache, never re-downloading from U.
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM2" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE2" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${PULL_WAIT}s" \
   || fail "vm create $VM2 did not reach running within ${PULL_WAIT}s (peer pull failed?)"
 assert_phase "$VM2" running
@@ -332,7 +332,7 @@ echo "=== step 4: create $VM3 on $NODE3 from the SAME URL with --pull-policy alw
 image_blob_held "$NID1" "$D" || fail "$NODE1 unexpectedly stopped holding D before the always create - cannot prove always BYPASSES a live peer"
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM3" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE3" --pull-policy always \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM3 did not reach running within ${CREATE_WAIT}s (force download failed?)"
 assert_phase "$VM3" running

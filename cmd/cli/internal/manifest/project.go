@@ -300,10 +300,10 @@ func addVMLabelsSpec(spec map[string]any, labels map[string]any) {
 // not manifest-expressible and any NICs beyond the first are omitted.
 func ProjectVM(v cpclient.VM) ([]byte, error) {
 	spec := map[string]any{
-		"imageURL": v.ImageURL,
-		"arch":     v.Architecture,
-		"vcpus":    v.VCPUs,
-		"memoryMB": v.MemoryMB,
+		"imageURL":  v.ImageURL,
+		"arch":      v.Architecture,
+		"vcpus":     v.VCPUs,
+		"memoryMib": v.MemoryMib,
 	}
 	if v.ImageSHA256 != "" {
 		spec["imageSHA256"] = v.ImageSHA256

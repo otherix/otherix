@@ -131,7 +131,7 @@ echo "=== step 1: create $VM on $NODE1 -> running ==="
 otx vm delete "$VM" --force --wait --wait-timeout 60s >/dev/null 2>&1 || true
 otx vm create "$VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --disk-gib "$DISK_GIB" \
+  --vcpus 2 --memory-mib 2048 --disk-gib "$DISK_GIB" \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create did not reach running within ${CREATE_WAIT}s"
 [[ "$(vm_phase "$VM")" == "running" ]] || fail "$VM not running after create"

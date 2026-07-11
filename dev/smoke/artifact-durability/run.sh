@@ -253,7 +253,7 @@ pass "artifact-pool $POOL created (K=2)"
 echo "=== step 2: create $SRC_VM on $NODE1 -> running ==="
 printf '%s' "$CLOUD_INIT" | otx vm create "$SRC_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $SRC_VM did not reach running within ${CREATE_WAIT}s"
 assert_phase "$SRC_VM" running
@@ -338,7 +338,7 @@ pass "re-replicated: $SURVIVOR_NODE now holds the blob and durability is durable
 # --- step 8: recreate on the survivor boots from the re-replicated blob ----
 echo "=== step 8: vm create $DST_VM --from-snapshot $SNAP_ID --node $SURVIVOR_NODE -> running ==="
 otx vm create "$DST_VM" --from-snapshot "$SNAP_ID" --node "$SURVIVOR_NODE" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --wait --wait-timeout "${RECREATE_WAIT}s" \
   || fail "vm create --from-snapshot (steered to $SURVIVOR_NODE) did not reach running within ${RECREATE_WAIT}s"
 assert_phase "$DST_VM" running

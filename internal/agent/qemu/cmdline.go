@@ -81,7 +81,7 @@ type VMSpec struct {
 	Name            string
 	UUID            uuid.UUID
 	VCPUs           int
-	MemoryMB        int
+	MemoryMib       int
 	Architecture    Architecture
 	Accelerator     string // "kvm" or "tcg"; see DetectAccelerator
 	DiskPath        string
@@ -186,7 +186,7 @@ func BuildArgs(spec VMSpec) ([]string, error) {
 		// omission would make live guests unkillable-via-agent (a qemu leak).
 		"-uuid", spec.UUID.String(),
 		"-smp", strconv.Itoa(spec.VCPUs),
-		"-m", strconv.Itoa(spec.MemoryMB),
+		"-m", strconv.Itoa(spec.MemoryMib),
 		"-accel", accel,
 	}
 	if !spec.OmitBootDisk {
@@ -262,8 +262,8 @@ func validateSpec(spec VMSpec) error {
 	if spec.VCPUs < 1 {
 		return errors.New("vcpus must be >= 1")
 	}
-	if spec.MemoryMB < 128 {
-		return errors.New("memory_mb must be >= 128")
+	if spec.MemoryMib < 128 {
+		return errors.New("memory_mib must be >= 128")
 	}
 	if spec.DiskPath == "" || spec.QMPSocket == "" || spec.ConsoleSocket == "" || spec.PIDFile == "" {
 		return errors.New("disk_path, qmp_socket, console_socket, pid_file are all required")

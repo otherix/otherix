@@ -34,11 +34,11 @@ import (
 // identity instead of generating its own. Must be non-nil when called
 // from the CP worker.
 type VMCreateRequest struct {
-	UUID     uuid.UUID `json:"uuid"`
-	Name     string    `json:"name"`
-	VCPUs    int       `json:"vcpus"`
-	MemoryMB int       `json:"memory_mb"`
-	Pool     string    `json:"pool"`
+	UUID      uuid.UUID `json:"uuid"`
+	Name      string    `json:"name"`
+	VCPUs     int       `json:"vcpus"`
+	MemoryMib int       `json:"memory_mib"`
+	Pool      string    `json:"pool"`
 	// ImageURL is the HTTPS source the agent ensures into the pool's
 	// basename-keyed cache (IfNotPresent). ExpectedSHA256, when non-empty,
 	// pins the content digest the agent verifies after fetch. Format
@@ -137,7 +137,7 @@ type AgentVM struct {
 	ID           uuid.UUID `json:"id"`
 	Name         string    `json:"name"`
 	VCPUs        int       `json:"vcpus"`
-	MemoryMB     int       `json:"memory_mb"`
+	MemoryMib    int       `json:"memory_mib"`
 	Pool         string    `json:"pool"`
 	Architecture string    `json:"architecture"`
 	Status       string    `json:"status"`

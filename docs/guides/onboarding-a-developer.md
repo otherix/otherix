@@ -69,7 +69,7 @@ otherix vm create my-first-vm \
   --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img \
   --arch amd64 \
   --vcpus 2 \
-  --memory-mb 2048 \
+  --memory-mib 2048 \
   --wait
 
 otherix vm list

@@ -552,7 +552,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 			ID:            meta.VMID,
 			Name:          meta.Name,
 			VCPUs:         meta.VCPUs,
-			MemoryMB:      meta.MemoryMB,
+			MemoryMib:     meta.MemoryMib,
 			PoolName:      meta.PoolName,
 			Architecture:  qemu.Architecture(meta.Architecture),
 			Status:        Status(meta.Status),
@@ -953,7 +953,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		ID:            vmID,
 		Name:          spec.Name,
 		VCPUs:         spec.VCPUs,
-		MemoryMB:      spec.MemoryMB,
+		MemoryMib:     spec.MemoryMib,
 		PoolName:      spec.PoolName,
 		Architecture:  arch,
 		Status:        StatusPending,
@@ -1313,7 +1313,7 @@ func (m *Manager) spawnAndVerify(log *slog.Logger, v *VM) (string, error) {
 		Name:            v.Name,
 		UUID:            v.ID,
 		VCPUs:           v.VCPUs,
-		MemoryMB:        v.MemoryMB,
+		MemoryMib:       v.MemoryMib,
 		Architecture:    v.Architecture,
 		Accelerator:     m.accelerator,
 		DiskPath:        v.DiskPath,
@@ -2141,7 +2141,7 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 		VMID:          v.ID,
 		Name:          v.Name,
 		VCPUs:         v.VCPUs,
-		MemoryMB:      v.MemoryMB,
+		MemoryMib:     v.MemoryMib,
 		PoolName:      v.PoolName,
 		Architecture:  string(v.Architecture),
 		DiskPath:      v.DiskPath,
@@ -2202,8 +2202,8 @@ func validateCreateSpec(s CreateSpec) error {
 	if s.VCPUs < 1 || s.VCPUs > 128 {
 		return errors.New("vcpus must be in [1, 128]")
 	}
-	if s.MemoryMB < 128 || s.MemoryMB > 524288 {
-		return errors.New("memory_mb must be in [128, 524288]")
+	if s.MemoryMib < 128 || s.MemoryMib > 524288 {
+		return errors.New("memory_mib must be in [128, 524288]")
 	}
 	if s.PoolName == "" {
 		return errors.New("pool is required")

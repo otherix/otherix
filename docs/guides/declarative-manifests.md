@@ -81,7 +81,7 @@ spec:
   arch: arm64
   network: demo-net
   vcpus: 2
-  memoryMB: 2048
+  memoryMib: 2048
   diskGiB: 20
   # inline cloud-config, sent as user_data at create time:
   userData: |
@@ -115,7 +115,7 @@ otherix create -f cluster.yaml --dry-run
 | --- | --- | --- |
 | `Network` | `type` | `bridgeName`, `managed`, `dhcp`, `dns`, `egress`, `subnet`, `gateway`, `mtu`, `vlan` |
 | `StoragePool` | `path`, one of `node` / `nodeList` | `type` |
-| `VM` | `imageURL`, `arch` | `imageSHA256`, `firmware` / `firmwareID`, `format`, `diskGiB`, `vcpus`, `memoryMB`, `pool`, `network`, `node`, `userData`, `networkConfig` / `cloudInitDisabled` |
+| `VM` | `imageURL`, `arch` | `imageSHA256`, `firmware` / `firmwareID`, `format`, `diskGiB`, `vcpus`, `memoryMib`, `pool`, `network`, `node`, `userData`, `networkConfig` / `cloudInitDisabled` |
 
 The Network `dhcp` field enables CP-IPAM addressing and the per-node DHCP
 responder; `dns` advertises the anycast resolver (`169.254.1.1`). `dns` is
@@ -127,7 +127,7 @@ resolver-only network. `dhcp` requires a `subnet` and, for a bridge,
 
 Within a kind, a few fields are mutually exclusive: `node` and `nodeList`
 (StoragePool); `firmware` and `firmwareID`, and `userData` /
-`networkConfig` each with `cloudInitDisabled` (VM). When `vcpus` or `memoryMB` is omitted the CLI applies
+`networkConfig` each with `cloudInitDisabled` (VM). When `vcpus` or `memoryMib` is omitted the CLI applies
 the same defaults as `vm create` (2 vCPUs, 2048 MiB). See
 [Networks](networks.md), [Storage pools](storage-pools.md), and
 [Create and manage VMs](create-and-manage-vms.md) for the meaning of each field.

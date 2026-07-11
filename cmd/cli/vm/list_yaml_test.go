@@ -16,11 +16,11 @@ func TestVMListOutputYAML(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// Two VMs using the real cpclient.VM json tags (vms.go). ProjectVM
-		// needs name, image_url, architecture, vcpus, memory_mb; the rest
+		// needs name, image_url, architecture, vcpus, memory_mib; the rest
 		// decode tolerantly.
 		_, _ = w.Write([]byte(`{"data":[` +
-			`{"id":"` + uuid.NewString() + `","name":"web-1","image_url":"https://x/u.qcow2","architecture":"amd64","vcpus":2,"memory_mb":512},` +
-			`{"id":"` + uuid.NewString() + `","name":"web-2","image_url":"https://x/v.qcow2","architecture":"arm64","vcpus":1,"memory_mb":256}` +
+			`{"id":"` + uuid.NewString() + `","name":"web-1","image_url":"https://x/u.qcow2","architecture":"amd64","vcpus":2,"memory_mib":512},` +
+			`{"id":"` + uuid.NewString() + `","name":"web-2","image_url":"https://x/v.qcow2","architecture":"arm64","vcpus":1,"memory_mib":256}` +
 			`],"meta":{"next_cursor":null}}`))
 	}))
 	defer srv.Close()

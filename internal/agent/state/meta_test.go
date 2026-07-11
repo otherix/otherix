@@ -19,7 +19,7 @@ func sampleMeta() *VMMeta {
 		VMID:          uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
 		Name:          "test-vm",
 		VCPUs:         4,
-		MemoryMB:      4096,
+		MemoryMib:     4096,
 		PoolName:      "default",
 		Architecture:  "arm64",
 		DiskPath:      "/var/lib/otherix/pools/default/vms/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/disk.qcow2",

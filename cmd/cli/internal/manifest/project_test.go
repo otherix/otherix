@@ -269,7 +269,7 @@ func TestProjectMultiDocSeparator(t *testing.T) {
 }
 
 func TestProjectVMRoundTrips(t *testing.T) {
-	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 2, MemoryMB: 1024}
+	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 2, MemoryMib: 1024}
 	out, err := manifest.ProjectVM(v)
 	if err != nil {
 		t.Fatalf("ProjectVM() error = %v", err)
@@ -293,7 +293,7 @@ func TestProjectVMRoundTripsLabels(t *testing.T) {
 		ImageURL:     "http://x/i.qcow2",
 		Architecture: "amd64",
 		VCPUs:        2,
-		MemoryMB:     1024,
+		MemoryMib:    1024,
 		Labels:       map[string]any{"app": "web", "tier": "frontend"},
 	}
 	out, err := manifest.ProjectVM(v)
@@ -329,7 +329,7 @@ func TestProjectVM_StatusAndSourceSnapshot(t *testing.T) {
 		Name:             "vm-from-snap",
 		Architecture:     "amd64",
 		VCPUs:            2,
-		MemoryMB:         2048,
+		MemoryMib:        2048,
 		SourceSnapshotID: &snapID,
 		Status:           cpclient.VMStatus{Phase: "running"},
 	}
@@ -376,7 +376,7 @@ func TestProjectVM_StatusAndSourceSnapshot(t *testing.T) {
 func TestVMManifestWithStatusStillApplies(t *testing.T) {
 	v := cpclient.VM{
 		Name: "vm-applied", ImageURL: "http://x/i.qcow2", Architecture: "amd64",
-		VCPUs: 2, MemoryMB: 1024, Status: cpclient.VMStatus{Phase: "running"},
+		VCPUs: 2, MemoryMib: 1024, Status: cpclient.VMStatus{Phase: "running"},
 	}
 	out, err := manifest.ProjectVM(v)
 	if err != nil {
@@ -401,7 +401,7 @@ func TestVMManifestWithStatusStillApplies(t *testing.T) {
 // TestProjectVMOmitsStatusWhenPhaseEmpty guards that a VM with no reported
 // phase does not emit a noisy empty status block.
 func TestProjectVMOmitsStatusWhenPhaseEmpty(t *testing.T) {
-	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMB: 512}
+	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMib: 512}
 	out, err := manifest.ProjectVM(v)
 	if err != nil {
 		t.Fatalf("ProjectVM() error = %v", err)
@@ -570,7 +570,7 @@ func TestProjectVMRoundTripPreservesViewFields(t *testing.T) {
 	v := cpclient.VM{
 		Name: "vm-full", ImageURL: "http://x/i.qcow2", ImageSHA256: "abc123",
 		Architecture: "arm64", Format: "raw", Pool: "pool-a", Node: &node,
-		Networks: []string{"net-a"}, VCPUs: 8, MemoryMB: 16384,
+		Networks: []string{"net-a"}, VCPUs: 8, MemoryMib: 16384,
 		UserData: &userData, NetworkConfig: &netCfg,
 	}
 	out, err := manifest.ProjectVM(v)
@@ -597,8 +597,8 @@ func TestProjectVMRoundTripPreservesViewFields(t *testing.T) {
 	if got.Network != "net-a" {
 		t.Errorf("network = %q, want net-a", got.Network)
 	}
-	if got.VCPUs != 8 || got.MemoryMB != 16384 {
-		t.Errorf("vcpus/memoryMB = %d/%d, want 8/16384", got.VCPUs, got.MemoryMB)
+	if got.VCPUs != 8 || got.MemoryMib != 16384 {
+		t.Errorf("vcpus/memoryMib = %d/%d, want 8/16384", got.VCPUs, got.MemoryMib)
 	}
 	if got.UserData == nil || *got.UserData != userData {
 		t.Errorf("userData = %v, want %q", got.UserData, userData)
@@ -746,7 +746,7 @@ func TestProjectLoadBalancerPublishRoundTrips(t *testing.T) {
 }
 
 func TestProjectVMSingleNICOnly(t *testing.T) {
-	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMB: 512, Networks: []string{"net-a", "net-b"}}
+	v := cpclient.VM{Name: "vm1", ImageURL: "http://x/i.qcow2", Architecture: "amd64", VCPUs: 1, MemoryMib: 512, Networks: []string{"net-a", "net-b"}}
 	out, err := manifest.ProjectVM(v)
 	if err != nil {
 		t.Fatalf("ProjectVM: %v", err)

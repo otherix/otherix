@@ -276,7 +276,7 @@ echo "=== step 2: create $VMA on $NODE from image A pinned to SA -> running ==="
 # later exceeds the ceiling, A is the coldest and is evicted first.
 printf '%s' "$CLOUD_INIT" | otx vm create "$VMA" \
   --image-url "$IMAGE_A" --image-sha256 "$SA" --arch "$ARCH" --node "$NODE" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VMA did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VMA" running
@@ -298,7 +298,7 @@ echo "=== step 3: create $VMB on $NODE from image B pinned to SB -> caching B ev
 # sweeper evicts the COLDEST cached image (A) and keeps the warm one (B).
 printf '%s' "$CLOUD_INIT" | otx vm create "$VMB" \
   --image-url "$IMAGE_B" --image-sha256 "$SB" --arch "$ARCH" --node "$NODE" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VMB did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VMB" running
@@ -371,7 +371,7 @@ echo "=== step 6: RECOVERABLE - recreate $VMA2 from image A re-fetches it from s
 SINCE_RECREATE="$(date '+%Y-%m-%d %H:%M:%S')"
 printf '%s' "$CLOUD_INIT" | otx vm create "$VMA2" \
   --image-url "$IMAGE_A" --image-sha256 "$SA" --arch "$ARCH" --node "$NODE" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VMA2 did not reach running within ${CREATE_WAIT}s (re-fetch of image A failed?)"
 assert_phase "$VMA2" running

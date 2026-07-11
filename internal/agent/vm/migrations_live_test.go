@@ -103,7 +103,7 @@ func TestStartIncoming_LiveReservesPairAndReturnsBothEndpoints(t *testing.T) {
 		VMUUID:         uuid.New(),
 		VMName:         "demo",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -200,7 +200,7 @@ func TestStartIncoming_LiveMultiDiskReplicatesManifest(t *testing.T) {
 		VMUUID:         vmUUID,
 		VMName:         "demo",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -298,7 +298,7 @@ func TestStartIncoming_LiveUnsupportedDiskFormatFailsClosed(t *testing.T) {
 		VMUUID:         vmUUID,
 		VMName:         "demo",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -348,7 +348,7 @@ func TestStartIncoming_OfflineUnchanged(t *testing.T) {
 		VMUUID:         uuid.New(),
 		VMName:         "demo",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "offline",
@@ -527,7 +527,7 @@ func TestStartIncoming_LiveFailedPrepDoesNotPoisonRetry(t *testing.T) {
 		VMUUID:         vmUUID,
 		VMName:         "demo",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -647,7 +647,7 @@ func TestStartIncoming_LiveResumeDrivesToRunning(t *testing.T) {
 		VMUUID:         vmUUID,
 		VMName:         "demo",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -756,7 +756,7 @@ func TestStartIncoming_LiveResumeFailureMarksVMFailed(t *testing.T) {
 		VMUUID:         vmUUID,
 		VMName:         "demo",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -810,7 +810,7 @@ func TestStartIncomingLiveMaterializesNICs(t *testing.T) {
 		VMUUID:         uuid.New(),
 		VMName:         "demo",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -854,7 +854,7 @@ func TestRunIncomingResumeSendsGARP(t *testing.T) {
 		VMUUID:         vmUUID,
 		VMName:         "garpvm",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -922,7 +922,7 @@ func TestRunIncomingResumeAnnouncesSelf(t *testing.T) {
 		VMUUID:         vmUUID,
 		VMName:         "announcevm",
 		VCPUs:          1,
-		MemoryMB:       512,
+		MemoryMib:      512,
 		PoolName:       m.defaultTestPool(),
 		Architecture:   "amd64",
 		Mode:           "live",
@@ -959,7 +959,7 @@ func TestTeardownDepartedSource_RemovesVMAndDisk(t *testing.T) {
 	m := newTestManager(t)
 	vmID := uuid.New()
 	v, err := m.AdoptForMigration(AdoptSpec{
-		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMib: 512,
 		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
 	})
 	if err != nil {
@@ -1019,7 +1019,7 @@ func TestTeardownDepartedSource_ClosesMux(t *testing.T) {
 
 	vmID := uuid.New()
 	v, err := m.AdoptForMigration(AdoptSpec{
-		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMB: 512,
+		UUID: vmID, Name: "ex", VCPUs: 1, MemoryMib: 512,
 		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64,
 	})
 	if err != nil {

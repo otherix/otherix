@@ -18,7 +18,7 @@ and recreate VMs from snapshots, see the [Snapshots guide](snapshots.md).
 otherix vm create web-1 \
   --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
   --arch arm64 \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --wait
 ```
 
@@ -50,7 +50,7 @@ vm running name=<name>
 | `--node` | (scheduler picks) | Placement hint - node name or uuid. The VM is still admitted as `pending`; if the pool is not present on the requested node it stays pending with `status.reason=pool_not_on_node` (visible via `vm get`). |
 | `--network` | (unset) | Network name or uuid to attach one NIC. Bridge or overlay are both accepted; an unknown name becomes a pending scheduling reason at bind, not an admission error. When omitted the VM has no NIC and the agent falls back to SLIRP networking. |
 | `--vcpus` | `2` | vCPU count (1..128). |
-| `--memory-mb` | `2048` | Memory in MiB (128..524288). |
+| `--memory-mib` | `2048` | Memory in MiB (128..524288). |
 | `--user-data` | (unset) | Path to a `#cloud-config` user-data YAML, or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
 | `--network-config` | (unset) | Path to a cloud-init network-config YAML (netplan v2), or `-` for stdin. Mutually exclusive with `--no-cloud-init`. |
 | `--no-cloud-init` | `false` | Explicitly disable cloud-init. Mutually exclusive with `--user-data` and `--network-config`. |

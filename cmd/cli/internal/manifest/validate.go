@@ -147,7 +147,7 @@ var vmSpecKeys = map[string]bool{
 	"imageURL": true, "sourceSnapshotID": true, "imageSHA256": true,
 	"arch": true, "firmware": true, "firmwareID": true, "format": true,
 	"imagePullPolicy": true,
-	"diskGiB":         true, "vcpus": true, "memoryMB": true, "pool": true,
+	"diskGiB":         true, "vcpus": true, "memoryMib": true, "pool": true,
 	"network": true, "node": true, "userData": true, "networkConfig": true,
 	"cloudInitDisabled": true, "sshIngressEnabled": true,
 	"labels": true,
