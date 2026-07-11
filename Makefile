@@ -475,6 +475,34 @@ LIMA_VM_2   := otherix-dev-2
 LIMA_VM_3   := otherix-dev-3
 LIMA_VM     := $(LIMA_VM_1)
 
+# dev-zram-on / dev-zram-off toggle the host compressed-swap net (zram) on a Lima
+# dev node the way an operator would - via systemd-zram-generator. The agent is
+# unprivileged and only OBSERVES the result, so provisioning is a host action;
+# these run it for you over `limactl shell ... sudo`. NODE selects the Lima VM
+# (default node-1); ZRAM_SIZE / ZRAM_ALGO tune the device. Lima-only (the Linux
+# netns dev stack shares the real host kernel, so toggling zram there is refused).
+NODE      ?= $(LIMA_VM_1)
+ZRAM_SIZE ?= ram / 4
+ZRAM_ALGO ?= zstd
+
+.PHONY: dev-zram-on dev-zram-off
+
+dev-zram-on: ## Enable host zram on a Lima dev node (NODE=otherix-dev-1 ZRAM_SIZE='ram / 4' ZRAM_ALGO=zstd)
+	@command -v limactl >/dev/null || { echo "limactl not found - dev-zram-* is for the macOS Lima dev stack"; exit 1; }
+	@echo ">> enabling zram on $(NODE) (size='$(ZRAM_SIZE)' algo=$(ZRAM_ALGO))"
+	@limactl shell $(NODE) sudo bash -c 'apt-get update -qq && apt-get install -y -qq linux-modules-extra-$$(uname -r) systemd-zram-generator'
+	@printf '[zram0]\nzram-size = %s\ncompression-algorithm = %s\nswap-priority = 100\n' '$(ZRAM_SIZE)' '$(ZRAM_ALGO)' | limactl shell $(NODE) sudo tee /etc/systemd/zram-generator.conf >/dev/null
+	@limactl shell $(NODE) sudo sh -c 'systemctl daemon-reload && systemctl restart systemd-zram-setup@zram0'
+	@limactl shell $(NODE) swapon --show
+	@echo ">> zram on. verify: otherix node get <node> -o json | jq .capabilities.compressed_swap"
+
+dev-zram-off: ## Disable host zram on a Lima dev node (NODE=otherix-dev-1)
+	@command -v limactl >/dev/null || { echo "limactl not found - dev-zram-* is for the macOS Lima dev stack"; exit 1; }
+	@echo ">> disabling zram on $(NODE)"
+	@limactl shell $(NODE) sudo sh -c 'systemctl stop systemd-zram-setup@zram0 2>/dev/null; rm -f /etc/systemd/zram-generator.conf; systemctl daemon-reload; swapoff /dev/zram0 2>/dev/null; true'
+	@limactl shell $(NODE) swapon --show || true
+	@echo ">> zram off."
+
 # bootstrap-dev / deploy-dev / clean-dev / restart-agent are internal per-OS
 # dispatchers used by the local-dev-* family. They are intentionally NOT in
 # `make help` (no `##`) — the documented surface is local-dev-*.
