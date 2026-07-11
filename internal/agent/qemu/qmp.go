@@ -23,8 +23,9 @@ type QMPClient struct {
 }
 
 // DialQMP opens socketPath, runs the qmp_capabilities handshake, and
-// returns a connected client. dialTimeout bounds BOTH the unix-socket
-// connect attempt and the greeting exchange.
+// returns a connected client. dialTimeout bounds the unix-socket connect
+// attempt AND, as a separate sequential budget, the greeting exchange, so
+// the worst-case wall time is ~2x dialTimeout.
 //
 // The bound on the greeting matters: go-qemu's Connect reads the QMP
 // greeting with no read deadline of its own, so a second dial to a
