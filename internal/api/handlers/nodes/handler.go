@@ -24,6 +24,7 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/queue"
+	"github.com/otherix/otherix/internal/scheduler"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -49,6 +50,7 @@ type Store interface {
 	ListAgentWireguard(ctx context.Context) ([]store.AgentWireguard, error)
 	NodeByID(ctx context.Context, id uuid.UUID) (store.Node, error)
 	NodeIDsWithPool(ctx context.Context) (map[uuid.UUID]struct{}, error)
+	NodeMemoryUsedMib(ctx context.Context, nodeID uuid.UUID) (*int64, error)
 
 	// Node-drain surface. The HTTP Drain handler uses StartNodeDrain (atomic
 	// node-flip + task + job enqueue), the cluster-default timeout / concurrency
@@ -80,18 +82,22 @@ type Handler struct {
 	// handler rejects a new drain with 409 once this many nodes already are, so a
 	// fleet drain cannot exhaust the worker pool. Always >= 1 after New clamps it.
 	maxConcurrentDrains int
+	// memCfg is the scheduler memory-placement config, used only to surface the
+	// memory-overcommit status block on the effective node get view.
+	memCfg scheduler.MemoryResourceConfig
 }
 
 // New constructs a Handler. It takes the Store interface so any
 // conforming backend can be wired in; production passes *store.Store.
 // maxConcurrentDrains caps simultaneous node drains; a value < 1 falls back to
 // config.DefaultMaxConcurrentDrains so a misconfiguration cannot disable the
-// guard (0 would otherwise reject every drain).
-func New(s Store, log *slog.Logger, maxConcurrentDrains int) *Handler {
+// guard (0 would otherwise reject every drain). memCfg is the scheduler memory
+// config the node get view reports overcommit eligibility / headroom from.
+func New(s Store, log *slog.Logger, maxConcurrentDrains int, memCfg scheduler.MemoryResourceConfig) *Handler {
 	if maxConcurrentDrains < 1 {
 		maxConcurrentDrains = config.DefaultMaxConcurrentDrains
 	}
-	return &Handler{store: s, log: log, maxConcurrentDrains: maxConcurrentDrains}
+	return &Handler{store: s, log: log, maxConcurrentDrains: maxConcurrentDrains, memCfg: memCfg}
 }
 
 // nodeOwnsPool reports whether the node owns at least one non-deleted storage
@@ -158,6 +164,20 @@ type nodeView struct {
 	UpdatedAt                 string                 `json:"updated_at"`
 	NetworkConditions         []networkConditionView `json:"network_conditions"`
 	WireGuard                 *wireguardView         `json:"wireguard"`
+	MemoryOvercommit          *memoryOvercommitView  `json:"memory_overcommit,omitempty"`
+}
+
+// memoryOvercommitView surfaces, on the effective node get view, whether the
+// scheduler would grant this node memory overcommit and how much. Eligible is
+// true when the node reports a qualifying zram device and the operator enabled
+// memory overcommit; HeadroomMiB is the additive headroom the fit check grants
+// (0 when strict); RealUsedMiB is the node's aggregate balloon-reported used
+// memory (nil when no running VM has reported yet). Only the get path populates
+// it; the list path leaves it nil to avoid an O(nodes) per-node scan fan-out.
+type memoryOvercommitView struct {
+	Eligible    bool   `json:"eligible"`
+	HeadroomMiB int64  `json:"headroom_mib"`
+	RealUsedMiB *int64 `json:"real_used_mib"`
 }
 
 // networkConditionView is one per-(node, network) materialisation record
@@ -469,7 +489,7 @@ func toSummaryViewEffective(n store.NodeEffectiveAvailability, ownsPool bool) no
 //
 // wg is the WG underlay fabric block, likewise full-view only and nil when the
 // caller does not surface it (or the node has not reported WG yet).
-func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, ownsPool bool, conditions []networkConditionView, wg *wireguardView, write func(http.ResponseWriter, *http.Request, int, any)) {
+func (h *Handler) writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status int, n store.NodeEffectiveAvailability, ownsPool bool, conditions []networkConditionView, wg *wireguardView, write func(http.ResponseWriter, *http.Request, int, any)) {
 	user := auth.UserFromContext(r.Context())
 	if user != nil && (user.Role == auth.RoleAdmin || user.Role == auth.RoleOperator) {
 		v := toViewEffective(n, ownsPool)
@@ -477,6 +497,17 @@ func writeNodeResponseEffective(w http.ResponseWriter, r *http.Request, status i
 			v.NetworkConditions = conditions
 		}
 		v.WireGuard = wg
+		// Eligible == headroom > 0 keeps the two consistent: a node with a
+		// qualifying zram but ratio 1.0 shows eligible=false, headroom=0
+		// (overcommit is not active). RealUsedMiB is best-effort - a scan error
+		// leaves it nil, which the view renders as unset rather than 500ing a read.
+		headroom := scheduler.MemOvercommitHeadroom(n, h.memCfg)
+		realUsed, _ := h.store.NodeMemoryUsedMib(r.Context(), n.ID)
+		v.MemoryOvercommit = &memoryOvercommitView{
+			Eligible:    headroom > 0,
+			HeadroomMiB: headroom,
+			RealUsedMiB: realUsed,
+		}
 		write(w, r, status, v)
 		return
 	}

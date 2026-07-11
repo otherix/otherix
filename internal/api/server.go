@@ -116,6 +116,7 @@ func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.Life
 		VMConsole:           vmConsole,
 		ClusterMembership:   membership,
 		MaxConcurrentDrains: cfg.Workers.MaxConcurrentDrains,
+		PlacementResources:  cfg.Placement.Resources,
 	})
 
 	srv := &Server{
@@ -151,6 +152,7 @@ func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.Life
 			PressureSystemDisk: cfg.Placement.Pressure.SystemDisk,
 			PressureDisk:       cfg.Placement.Pressure.Disk,
 			ClusterMembership:  membership,
+			PlacementResources: cfg.Placement.Resources,
 		})
 		srv.agentServer = &http.Server{
 			Addr:              cfg.AgentServer.Listen,

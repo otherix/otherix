@@ -76,6 +76,27 @@ func TestPrintNodeTextCompressedSwapOff(t *testing.T) {
 	}
 }
 
+func TestMemoryOvercommitLine(t *testing.T) {
+	used := int64(1500)
+	tests := []struct {
+		name string
+		in   *cpclient.NodeMemoryOvercommit
+		want string
+	}{
+		{"nil", nil, "off"},
+		{"not eligible", &cpclient.NodeMemoryOvercommit{Eligible: false, HeadroomMiB: 0}, "off"},
+		{"eligible with real used", &cpclient.NodeMemoryOvercommit{Eligible: true, HeadroomMiB: 2048, RealUsedMiB: &used}, "on (headroom 2048MiB, real used 1500MiB)"},
+		{"eligible nil real used", &cpclient.NodeMemoryOvercommit{Eligible: true, HeadroomMiB: 2048}, "on (headroom 2048MiB, real used unset)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := memoryOvercommitLine(tt.in); got != tt.want {
+				t.Errorf("memoryOvercommitLine(%+v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPrintNodeWireguard(t *testing.T) {
 	name := "node-2"
 	n := cpclient.Node{

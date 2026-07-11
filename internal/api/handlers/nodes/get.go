@@ -79,5 +79,5 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeNodeResponseEffective(w, r, http.StatusOK, row, ownsPool, conditions, wg, response.WriteJSON)
+	h.writeNodeResponseEffective(w, r, http.StatusOK, row, ownsPool, conditions, wg, response.WriteJSON)
 }

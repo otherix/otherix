@@ -76,6 +76,7 @@ type RouterDeps struct {
 	SSHCertTTL          time.Duration             // guest SSH user-cert validity; 0 falls back to vmshandlers.defaultGuestCertTTL
 	ClusterMembership   ClusterMembership         // CP-mediated etcd membership seam (join + admin + promote loop)
 	MaxConcurrentDrains int                       // cap on simultaneous node drains; 0 falls back to config.DefaultMaxConcurrentDrains in the nodes handler
+	PlacementResources  config.ResourcesConfig    // placement-time per-resource knobs; the nodes handler reads Memory to surface overcommit status on node get
 }
 
 // NewRouter constructs the api-server's HTTP handler: a chi router with
@@ -220,7 +221,7 @@ func mountV1(r chi.Router, deps RouterDeps) {
 	nodeJoinH := nodejoinhandlers.New(deps.Store, deps.Logger)
 	usersH := usershandlers.New(deps.Store)
 	tokensH := apitokenshandlers.New(deps.Store)
-	nodesH := nodeshandlers.New(deps.Store, deps.Logger, deps.MaxConcurrentDrains)
+	nodesH := nodeshandlers.New(deps.Store, deps.Logger, deps.MaxConcurrentDrains, SchedulerResourcesFromConfig(deps.PlacementResources).Memory)
 	joinTokensH := jointokenshandlers.New(deps.Store, deps.Logger)
 	networksH := networkshandlers.New(deps.Store, deps.Logger)
 	storagePoolsH := storagepoolshandlers.New(deps.Store, deps.StoragePools, deps.Logger)

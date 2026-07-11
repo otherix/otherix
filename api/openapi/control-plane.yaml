@@ -5181,6 +5181,24 @@ components:
             admin / operator only, populated only on
             `GET /v1/nodes/{id}`. Null when the node has not reported
             WireGuard state yet.
+        memory_overcommit:
+          type: object
+          description: >-
+            Scheduler memory-overcommit status for this node. admin / operator
+            only, populated only on `GET /v1/nodes/{id}`. eligible together with
+            headroom_mib > 0 means the node carries a qualifying zram safety net
+            and overcommit is enabled; real_used_mib is the node's aggregate
+            balloon-reported used memory (null when no running VM has reported).
+          properties:
+            eligible:
+              type: boolean
+            headroom_mib:
+              type: [integer, "null"]
+              format: int64
+            real_used_mib:
+              type: [integer, "null"]
+              format: int64
+          required: [eligible, headroom_mib]
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

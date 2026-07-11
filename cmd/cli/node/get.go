@@ -132,6 +132,22 @@ func printNodeHardware(cmd *cobra.Command, n cpclient.Node) {
 		printf(cmd, "qemu_version: %s\n", *n.QEMUVersion)
 	}
 	printf(cmd, "compressed_swap: %s\n", compressedSwapLine(n.Capabilities))
+	printf(cmd, "memory_overcommit: %s\n", memoryOvercommitLine(n.MemoryOvercommit))
+}
+
+// memoryOvercommitLine renders the scheduler memory-overcommit status:
+// "off" when not eligible, else "on (headroom <N>MiB, real used <M>MiB)".
+// A missing block (summary projection, or the server did not populate it)
+// renders "off".
+func memoryOvercommitLine(mo *cpclient.NodeMemoryOvercommit) string {
+	if mo == nil || !mo.Eligible {
+		return "off"
+	}
+	used := "unset"
+	if mo.RealUsedMiB != nil {
+		used = fmt.Sprintf("%dMiB", *mo.RealUsedMiB)
+	}
+	return fmt.Sprintf("on (headroom %dMiB, real used %s)", mo.HeadroomMiB, used)
 }
 
 // compressedSwapLine renders the node's compressed-swap safety net from the raw

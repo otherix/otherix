@@ -36,31 +36,42 @@ type Node struct {
 
 	// Admin / operator full-view fields. Optional pointers / raw
 	// values: nil in the developer/viewer summary projection.
-	UpdatedAt                 *string            `json:"updated_at,omitempty"`
-	AdvertisedEndpoint        *string            `json:"advertised_endpoint,omitempty"`
-	IngressAdvertisedEndpoint *string            `json:"ingress_advertised_endpoint,omitempty"`
-	Migration                 *MigrationCap      `json:"migration,omitempty"`
-	CPUCoresTotal             *int32             `json:"cpu_cores_total,omitempty"`
-	CPUCoresAvailable         *int32             `json:"cpu_cores_available,omitempty"`
-	CPUCoresEffective         *int32             `json:"cpu_cores_effective,omitempty"`
-	CPUModel                  *string            `json:"cpu_model,omitempty"`
-	CPUFlags                  []string           `json:"cpu_flags,omitempty"`
-	MemoryTotalMiB            *int64             `json:"memory_total_mib,omitempty"`
-	MemoryAvailableMiB        *int64             `json:"memory_available_mib,omitempty"`
-	MemoryEffectiveMiB        *int64             `json:"memory_effective_mib,omitempty"`
-	Hugepages2MiB             *int32             `json:"hugepages_2mib_total,omitempty"`
-	Hugepages1GiB             *int32             `json:"hugepages_1gib_total,omitempty"`
-	KernelVersion             *string            `json:"kernel_version,omitempty"`
-	QEMUVersion               *string            `json:"qemu_version,omitempty"`
-	NumaTopology              json.RawMessage    `json:"numa_topology,omitempty"`
-	Capabilities              json.RawMessage    `json:"capabilities,omitempty"`
-	LastHeartbeatAt           *string            `json:"last_heartbeat_at,omitempty"`
-	AgentVersion              *string            `json:"agent_version,omitempty"`
-	MemoryPressure            *PressureCondition `json:"memory_pressure,omitempty"`
-	SystemDiskTotalBytes      *int64             `json:"system_disk_total_bytes,omitempty"`
-	SystemDiskAvailableBytes  *int64             `json:"system_disk_available_bytes,omitempty"`
-	SystemDiskPressure        *PressureCondition `json:"system_disk_pressure,omitempty"`
-	WireGuard                 *NodeWireguard     `json:"wireguard,omitempty"`
+	UpdatedAt                 *string               `json:"updated_at,omitempty"`
+	AdvertisedEndpoint        *string               `json:"advertised_endpoint,omitempty"`
+	IngressAdvertisedEndpoint *string               `json:"ingress_advertised_endpoint,omitempty"`
+	Migration                 *MigrationCap         `json:"migration,omitempty"`
+	CPUCoresTotal             *int32                `json:"cpu_cores_total,omitempty"`
+	CPUCoresAvailable         *int32                `json:"cpu_cores_available,omitempty"`
+	CPUCoresEffective         *int32                `json:"cpu_cores_effective,omitempty"`
+	CPUModel                  *string               `json:"cpu_model,omitempty"`
+	CPUFlags                  []string              `json:"cpu_flags,omitempty"`
+	MemoryTotalMiB            *int64                `json:"memory_total_mib,omitempty"`
+	MemoryAvailableMiB        *int64                `json:"memory_available_mib,omitempty"`
+	MemoryEffectiveMiB        *int64                `json:"memory_effective_mib,omitempty"`
+	Hugepages2MiB             *int32                `json:"hugepages_2mib_total,omitempty"`
+	Hugepages1GiB             *int32                `json:"hugepages_1gib_total,omitempty"`
+	KernelVersion             *string               `json:"kernel_version,omitempty"`
+	QEMUVersion               *string               `json:"qemu_version,omitempty"`
+	NumaTopology              json.RawMessage       `json:"numa_topology,omitempty"`
+	Capabilities              json.RawMessage       `json:"capabilities,omitempty"`
+	LastHeartbeatAt           *string               `json:"last_heartbeat_at,omitempty"`
+	AgentVersion              *string               `json:"agent_version,omitempty"`
+	MemoryPressure            *PressureCondition    `json:"memory_pressure,omitempty"`
+	SystemDiskTotalBytes      *int64                `json:"system_disk_total_bytes,omitempty"`
+	SystemDiskAvailableBytes  *int64                `json:"system_disk_available_bytes,omitempty"`
+	SystemDiskPressure        *PressureCondition    `json:"system_disk_pressure,omitempty"`
+	WireGuard                 *NodeWireguard        `json:"wireguard,omitempty"`
+	MemoryOvercommit          *NodeMemoryOvercommit `json:"memory_overcommit,omitempty"`
+}
+
+// NodeMemoryOvercommit mirrors the server's memory_overcommit block on the full
+// node get view: whether the scheduler grants this node memory overcommit and
+// how much, plus the node's aggregate balloon real-used memory. nil for the
+// summary projection (developer/viewer) and on the list path.
+type NodeMemoryOvercommit struct {
+	Eligible    bool   `json:"eligible"`
+	HeadroomMiB int64  `json:"headroom_mib"`
+	RealUsedMiB *int64 `json:"real_used_mib"`
 }
 
 // NodeWireguard mirrors the server's NodeWireguard schema: the node's WG
