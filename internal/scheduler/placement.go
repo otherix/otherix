@@ -82,8 +82,19 @@ type PlacementConfig struct {
 // time.
 type ResourcesConfig struct {
 	CPU    ResourceConfig
-	Memory ResourceConfig
+	Memory MemoryResourceConfig
 	Disk   ResourceConfig
+}
+
+// MemoryResourceConfig mirrors config.MemoryResourceConfig at the scheduler
+// layer (internal/scheduler is a leaf package and must not import
+// internal/config). The api-server copies fields via
+// SchedulerResourcesFromConfig at construction time.
+type MemoryResourceConfig struct {
+	Enabled                  bool
+	OvercommitRatio          float64
+	OvercommitZramFloorMib   int64
+	OvercommitZramConfidence float64
 }
 
 // ResourceConfig pins one resource dimension's placement contribution.

@@ -227,7 +227,7 @@ func toStoragePool(r store.ListEligiblePoolsByNameRow) store.StoragePool {
 func defaultResources() ResourcesConfig {
 	return ResourcesConfig{
 		CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-		Memory: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+		Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 		Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 	}
 }

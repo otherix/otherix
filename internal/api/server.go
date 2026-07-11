@@ -39,9 +39,14 @@ func SchedulerResourcesFromConfig(c config.ResourcesConfig) scheduler.ResourcesC
 		}
 	}
 	return scheduler.ResourcesConfig{
-		CPU:    convert(c.CPU),
-		Memory: convert(c.Memory),
-		Disk:   convert(c.Disk),
+		CPU: convert(c.CPU),
+		Memory: scheduler.MemoryResourceConfig{
+			Enabled:                  c.Memory.Enabled,
+			OvercommitRatio:          c.Memory.OvercommitRatio,
+			OvercommitZramFloorMib:   c.Memory.OvercommitZramFloorMib,
+			OvercommitZramConfidence: c.Memory.OvercommitZramConfidence,
+		},
+		Disk: convert(c.Disk),
 	}
 }
 

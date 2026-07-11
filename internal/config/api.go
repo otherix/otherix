@@ -262,9 +262,24 @@ type PlacementConfig struct {
 // both the fit check and the score, and if every resource is disabled the
 // scoring degrades to count-based (Least-VM-count parity).
 type ResourcesConfig struct {
-	CPU    ResourceConfig `koanf:"cpu"`
-	Memory ResourceConfig `koanf:"memory"`
-	Disk   ResourceConfig `koanf:"disk"`
+	CPU    ResourceConfig       `koanf:"cpu"`
+	Memory MemoryResourceConfig `koanf:"memory"`
+	Disk   ResourceConfig       `koanf:"disk"`
+}
+
+// MemoryResourceConfig configures memory placement. It carries the shared
+// Enabled / OvercommitRatio knobs plus two memory-only knobs that bind
+// memory overcommit to the node's zram compressed-swap safety net: a node
+// is overcommit-eligible only when it reports a compressed_swap device of at
+// least OvercommitZramFloorMib, and the granted headroom is capped at the
+// zram size times OvercommitZramConfidence. Memory is the one dimension with
+// a host-side safety net, so it gets a purpose-built model; CPU and disk keep
+// the plain ResourceConfig multiplier.
+type MemoryResourceConfig struct {
+	Enabled                  bool    `koanf:"enabled"`
+	OvercommitRatio          float64 `koanf:"overcommit_ratio"`
+	OvercommitZramFloorMib   int64   `koanf:"overcommit_zram_floor_mib"`
+	OvercommitZramConfidence float64 `koanf:"overcommit_zram_confidence"`
 }
 
 // ResourceConfig configures placement consideration of a single
@@ -382,9 +397,14 @@ func (p PressureConditionConfig) validate(name string) error {
 // who want to skip a resource flip Enabled=false.
 func defaultResourcesConfig() ResourcesConfig {
 	return ResourcesConfig{
-		CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-		Memory: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-		Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+		CPU: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+		Memory: MemoryResourceConfig{
+			Enabled:                  true,
+			OvercommitRatio:          1.0,
+			OvercommitZramFloorMib:   256,
+			OvercommitZramConfidence: 0.5,
+		},
+		Disk: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 	}
 }
 
@@ -425,6 +445,23 @@ func (r ResourceConfig) validate(name string) error {
 	return nil
 }
 
+// validate checks the memory placement knobs. Ratio must be strictly
+// positive even when disabled (config hygiene); the zram floor must be
+// non-negative; confidence must lie in (0, 1.0] - it is the physically safe
+// fraction of the zram disksize, never a multiplier above 1.0.
+func (c MemoryResourceConfig) validate(name string) error {
+	if c.OvercommitRatio <= 0 {
+		return fmt.Errorf("placement.resources.%s.overcommit_ratio must be > 0, got %.2f", name, c.OvercommitRatio)
+	}
+	if c.OvercommitZramFloorMib < 0 {
+		return fmt.Errorf("placement.resources.%s.overcommit_zram_floor_mib must be >= 0, got %d", name, c.OvercommitZramFloorMib)
+	}
+	if v := c.OvercommitZramConfidence; v <= 0 || v > 1.0 {
+		return fmt.Errorf("placement.resources.%s.overcommit_zram_confidence must be in (0, 1.0], got %.2f", name, v)
+	}
+	return nil
+}
+
 // Warnings returns operator-facing diagnostics about placement
 // configurations that pass Validate but warrant attention at startup:
 // per-resource overcommit ratios > 1.0, extreme ratios > 2.0, and the
@@ -440,13 +477,13 @@ func (r ResourceConfig) validate(name string) error {
 func (p PlacementConfig) Warnings() []string {
 	const link = "see docs/scheduler-configuration.md"
 	var out []string
-	appendOvercommit := func(name string, r ResourceConfig, risk string) {
-		if !r.Enabled || r.OvercommitRatio <= 1.0 {
+	appendOvercommit := func(name string, enabled bool, ratio float64, risk string) {
+		if !enabled || ratio <= 1.0 {
 			return
 		}
-		prefix := fmt.Sprintf("placement.resources.%s.overcommit_ratio=%.2f", name, r.OvercommitRatio)
+		prefix := fmt.Sprintf("placement.resources.%s.overcommit_ratio=%.2f", name, ratio)
 		severity := "overcommit enabled"
-		if r.OvercommitRatio > 2.0 {
+		if ratio > 2.0 {
 			severity = "extreme overcommit (>2.0)"
 		}
 		if risk == "" {
@@ -455,9 +492,11 @@ func (p PlacementConfig) Warnings() []string {
 		}
 		out = append(out, fmt.Sprintf("%s — %s (%s); %s", prefix, severity, risk, link))
 	}
-	appendOvercommit("cpu", p.Resources.CPU, "")
-	appendOvercommit("memory", p.Resources.Memory, "OOM kill risk under memory pressure")
-	appendOvercommit("disk", p.Resources.Disk, "disk-full risk under sparse qcow2 growth")
+	appendOvercommit("cpu", p.Resources.CPU.Enabled, p.Resources.CPU.OvercommitRatio, "")
+	appendOvercommit("memory", p.Resources.Memory.Enabled, p.Resources.Memory.OvercommitRatio,
+		"applies only to nodes with a zram safety net; OOM kill risk on nodes without one")
+	appendOvercommit("disk", p.Resources.Disk.Enabled, p.Resources.Disk.OvercommitRatio,
+		"disk-full risk under sparse qcow2 growth")
 	if !p.Resources.CPU.Enabled && !p.Resources.Memory.Enabled && !p.Resources.Disk.Enabled {
 		out = append(out, fmt.Sprintf("placement.resources: all dimensions disabled — scheduler degrades to count-based scoring; %s", link))
 	}
