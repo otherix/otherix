@@ -80,27 +80,3 @@ func TestGatewayConfigValidatesIngressListenWithoutEnabled(t *testing.T) {
 		t.Errorf("validate() with ingress listen == control listen returned nil, want a distinct-port error")
 	}
 }
-
-func TestZramConfigValidate(t *testing.T) {
-	cases := []struct {
-		name    string
-		z       ZramConfig
-		wantErr bool
-	}{
-		{"disabled ignores fields", ZramConfig{Enabled: false, MaxRAMPercent: 0, Algorithm: ""}, false},
-		{"enabled defaults ok", ZramConfig{Enabled: true, MaxRAMPercent: 25, Algorithm: "zstd"}, false},
-		{"enabled empty algorithm ok (defaults)", ZramConfig{Enabled: true, MaxRAMPercent: 25, Algorithm: ""}, false},
-		{"percent too low", ZramConfig{Enabled: true, MaxRAMPercent: 0, Algorithm: "zstd"}, true},
-		{"percent too high", ZramConfig{Enabled: true, MaxRAMPercent: 101, Algorithm: "zstd"}, true},
-		{"bad algorithm", ZramConfig{Enabled: true, MaxRAMPercent: 25, Algorithm: "snappy"}, true},
-		{"lz4 ok", ZramConfig{Enabled: true, MaxRAMPercent: 50, Algorithm: "lz4"}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.z.validate()
-			if (err != nil) != tc.wantErr {
-				t.Errorf("ZramConfig{%+v}.validate() err = %v, wantErr %v", tc.z, err, tc.wantErr)
-			}
-		})
-	}
-}

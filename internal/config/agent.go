@@ -32,35 +32,6 @@ type AgentConfig struct {
 	QEMU         QEMUConfig         `koanf:"qemu"`
 	WireGuard    WireGuardConfig    `koanf:"wireguard"`
 	Gateway      GatewayConfig      `koanf:"gateway"`
-	Zram         ZramConfig         `koanf:"zram"`
-}
-
-// ZramConfig configures the node's zram compressed-swap safety net. Default
-// off. MaxRAMPercent is the hard physical RAM cap
-// (zram mem_limit) - the primary knob - NOT a disksize reservation. When
-// enabled the agent derives disksize = 3 x mem_limit from host RAM.
-type ZramConfig struct {
-	Enabled       bool   `koanf:"enabled"`
-	MaxRAMPercent int    `koanf:"max_ram_percent"`
-	Algorithm     string `koanf:"algorithm"`
-}
-
-// zramAlgorithms is the accepted comp_algorithm allowlist.
-var zramAlgorithms = map[string]bool{"zstd": true, "lz4": true, "lzo-rle": true, "lzo": true}
-
-// validate checks the zram knobs. A disabled net ignores the other fields. An
-// empty algorithm is accepted (the agent defaults it to zstd).
-func (z ZramConfig) validate() error {
-	if !z.Enabled {
-		return nil
-	}
-	if z.MaxRAMPercent < 1 || z.MaxRAMPercent > 100 {
-		return fmt.Errorf("zram.max_ram_percent must be in [1, 100], got %d", z.MaxRAMPercent)
-	}
-	if z.Algorithm != "" && !zramAlgorithms[z.Algorithm] {
-		return fmt.Errorf("zram.algorithm %q not in {zstd, lz4, lzo-rle, lzo}", z.Algorithm)
-	}
-	return nil
 }
 
 // GatewayConfig configures the agent's ingress plane. When Enabled, the agent
@@ -326,9 +297,6 @@ func (c AgentConfig) Validate() error {
 		return err
 	}
 	if err := c.Gateway.validate(c.Server.Listen); err != nil {
-		return err
-	}
-	if err := c.Zram.validate(); err != nil {
 		return err
 	}
 	return c.Artifacts.Validate()

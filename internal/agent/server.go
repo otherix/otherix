@@ -37,7 +37,6 @@ import (
 	"github.com/otherix/otherix/internal/agent/reconciler"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/agent/wgkey"
-	"github.com/otherix/otherix/internal/agent/zram"
 	"github.com/otherix/otherix/internal/api/middleware"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/config"
@@ -105,22 +104,6 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		return fmt.Errorf("parse node name from cert: %w", err)
 	}
 	log.Info("agent: resolved node name from cert CN", "node_name", nodeName)
-
-	// Host-level compressed-swap safety net. Set up once at boot; the observed
-	// capability is reported on the next heartbeat.
-	if active, err := zram.Ensure(zram.Params{
-		Enabled:       cfg.Zram.Enabled,
-		MaxRAMPercent: cfg.Zram.MaxRAMPercent,
-		Algorithm:     cfg.Zram.Algorithm,
-	}, log); err != nil {
-		// Non-fatal: a failed safety-net setup must never crash the agent. The
-		// observed capability then reports off (fail-closed for the overcommit gate).
-		log.Warn("zram safety net setup failed", "err", err)
-	} else if active != nil {
-		log.Info("zram safety net active",
-			"device", active.Device, "size_mib", active.SizeMib,
-			"mem_limit_mib", active.MemLimitMib, "algorithm", active.Algorithm)
-	}
 
 	// Single fabric shared by the VM manager (tap create/attach) and the
 	// network reconciler (bridge/NAT materialisation). Linux-only impl;
