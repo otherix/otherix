@@ -248,6 +248,30 @@ func TestToView_MigrationSummary(t *testing.T) {
 	}
 }
 
+// TestToView_SurfacesMemoryUsedMib locks that the runtime's guest-reported
+// MemoryUsedMib is echoed onto status.memory_used_mib, and stays nil when no
+// runtime row exists yet (un-materialized VM).
+func TestToView_SurfacesMemoryUsedMib(t *testing.T) {
+	t.Parallel()
+
+	base := store.VM{
+		ID: uuid.New(), Name: "mem", OwnerID: uuid.New(),
+		SchedulingStatus: store.VMSchedulingScheduled, Labels: []byte(`{}`),
+		ImageFormat: store.ImageFormatQcow2, Architecture: store.CpuArchAmd64,
+	}
+	rt := &store.VMRuntime{VmID: base.ID, Phase: store.VmPhaseRunning, MemoryUsedMib: ptr(int64(1536))}
+	v := toView(base, rt, vmViewNames{}, false, false, nil)
+	if v.Status.MemoryUsedMib == nil || *v.Status.MemoryUsedMib != 1536 {
+		t.Errorf("status.memory_used_mib = %v, want 1536", v.Status.MemoryUsedMib)
+	}
+
+	// runtime nil -> nil
+	v2 := toView(base, nil, vmViewNames{}, false, false, nil)
+	if v2.Status.MemoryUsedMib != nil {
+		t.Errorf("status.memory_used_mib = %v, want nil (no runtime)", *v2.Status.MemoryUsedMib)
+	}
+}
+
 // ptr returns a pointer to v - a tiny test helper for building optional
 // fields inline.
 func ptr[T any](v T) *T { return &v }

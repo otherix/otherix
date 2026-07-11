@@ -259,6 +259,11 @@ type vmStatusView struct {
 	// the top-level `node` field) stays = source until cutover, so the
 	// summary's target_node_id is the only forward-looking signal here.
 	Migration *vmMigrationSummary `json:"migration,omitempty"`
+	// MemoryUsedMib is the guest-reported in-use memory (MiB) from
+	// virtio-balloon stats. Best-effort observability; null when the guest
+	// balloon driver is absent or has not yet reported. Does NOT affect
+	// scheduling - placement uses declared memory.
+	MemoryUsedMib *int64 `json:"memory_used_mib,omitempty"`
 }
 
 // vmMigrationSummary is the compact in-flight-migration view embedded under
@@ -339,6 +344,9 @@ type vmViewNames struct {
 // cutover); that override is enforced in resolveViewNames, not here.
 func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, includeSecrets bool, activeMig *store.Migration) vmView {
 	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting, activeMig != nil), Migration: migrationSummary(activeMig)}
+	if runtime != nil {
+		status.MemoryUsedMib = runtime.MemoryUsedMib
+	}
 	pool := names.pool
 	nets := names.networks
 	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {

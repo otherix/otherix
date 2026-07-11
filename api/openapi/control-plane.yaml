@@ -5547,6 +5547,14 @@ components:
             Short error description set when `phase = "error"`. Distinct
             from the structured `Error` envelope — heartbeat error
             payloads are plain strings.
+        memory_used_mib:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+          description: |
+            Guest-reported in-use memory (MiB) from virtio-balloon stats.
+            Best-effort observability; null when the guest balloon driver
+            is absent or has not yet reported. Does not affect scheduling.
 
     HeartbeatRequest:
       type: object
@@ -7858,6 +7866,14 @@ components:
                     Target node of the migration. `null` while a
                     scheduler-placed migration has not bound a target
                     yet.
+            memory_used_mib:
+              type: [integer, "null"]
+              format: int64
+              minimum: 0
+              description: |
+                Guest-reported in-use memory (MiB) from virtio-balloon stats.
+                Best-effort observability; null when the guest balloon driver
+                is absent or has not yet reported. Does not affect scheduling.
         desired_phase:
           type: string
           enum: [running, stopped, deleted]
