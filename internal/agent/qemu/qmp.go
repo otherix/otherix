@@ -23,16 +23,33 @@ type QMPClient struct {
 }
 
 // DialQMP opens socketPath, runs the qmp_capabilities handshake, and
-// returns a connected client. The dialTimeout bounds the unix-socket
-// connect attempt; the qmp_capabilities exchange itself is bounded by
-// the same deadline.
+// returns a connected client. dialTimeout bounds BOTH the unix-socket
+// connect attempt and the greeting exchange.
+//
+// The bound on the greeting matters: go-qemu's Connect reads the QMP
+// greeting with no read deadline of its own, so a second dial to a
+// single-client (server,nowait) socket whose one connection is already
+// held open - e.g. by an in-flight live migration - would otherwise block
+// here forever and wedge the single-goroutine reconciler. A watchdog
+// closes the socket out of band once dialTimeout elapses; Disconnect
+// unblocks Connect with an error, and Stop is a no-op if Connect already
+// returned.
 func DialQMP(socketPath string, dialTimeout time.Duration) (*QMPClient, error) {
 	mon, err := qmp.NewSocketMonitor("unix", socketPath, dialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("open qmp socket %s: %w", socketPath, err)
 	}
-	if err := mon.Connect(); err != nil {
+	wd := time.AfterFunc(dialTimeout, func() { _ = mon.Disconnect() })
+	err = mon.Connect()
+	timedOut := !wd.Stop()
+	if err != nil {
 		return nil, fmt.Errorf("qmp connect: %w", err)
+	}
+	if timedOut {
+		// The watchdog fired concurrently with a "successful" Connect, so the
+		// socket is being torn down under us - treat as a failed dial.
+		_ = mon.Disconnect()
+		return nil, fmt.Errorf("qmp connect: greeting timed out after %s", dialTimeout)
 	}
 	return &QMPClient{monitor: mon}, nil
 }
