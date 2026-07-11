@@ -361,14 +361,19 @@ later.
    effective free CPU / memory; `otherix pool list` shows raw vs
    effective free disk. The "(effective N free)" suffix renders when
    pending placements have not yet been observed by a heartbeat / scan.
-4. Trigger a test VM create. The scheduler's decision should respect
-   the new ratios. `vm create` against a saturated pool returns 409
-   `no_eligible_nodes` with a structured `details.node_utilization`
-   payload listing each candidate by name + per-resource usage. Each
-   item also carries `overcommit_eligible` (true when the node has a
-   qualifying zram net) and `mem_overcommit_headroom_mib` (the extra
-   memory that net would grant), so a strict fit-reject makes clear
-   where adding or enlarging a zram device could let the request fit.
+4. Trigger a test VM create. `vm create` is async: it returns 202 with
+   a task, and placement runs later in the background scheduling loop,
+   not synchronously at the request. When no node fits, the reject is
+   recorded as the VM's scheduling reason - `vm get` surfaces
+   `status.reason` (`insufficient_resources` / `no_eligible_nodes`) plus
+   a human `status.message`. The structured per-candidate detail is
+   persisted on the VM (its `SchedulingDetails`), listing each rejected
+   candidate by name + per-resource usage, and now also
+   `overcommit_eligible` (true when the node has a qualifying zram net)
+   and `mem_overcommit_headroom_mib` (the extra memory that net would
+   grant), so a strict fit-reject shows where adding or enlarging a zram
+   device could let the request fit. This structured detail is persisted
+   only; it is not currently rendered into any API response.
 
 There is currently no API or CLI endpoint to read or change the
 placement config at runtime — it's a deploy-time decision. Restart

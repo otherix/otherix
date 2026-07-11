@@ -192,7 +192,7 @@ type NodeUtilization struct {
 	DiskUsedBytes  int64  `json:"disk_used_bytes"`
 	DiskTotalBytes int64  `json:"disk_total_bytes"`
 	// OvercommitEligible is true when the node carries a qualifying zram net
-	// that would grant memory-overcommit headroom — a signal that adding /
+	// that would grant memory-overcommit headroom - a signal that adding /
 	// enlarging a zram device here could let a strict-rejected request fit.
 	OvercommitEligible       bool  `json:"overcommit_eligible"`
 	MemOvercommitHeadroomMiB int64 `json:"mem_overcommit_headroom_mib"`
