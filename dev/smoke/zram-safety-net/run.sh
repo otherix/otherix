@@ -172,6 +172,20 @@ pass "CP up; $NODE1 ready"
 BASELINE_ZRAM="$(zram_swap_devices | tr '\n' ' ')"
 info "pre-existing zram swap devices (baseline): ${BASELINE_ZRAM:-none}"
 
+# Fail toward inaction on a shared host: on the netns path the "node" is the
+# developer's real machine, which may already run its own systemd-zram-generator.
+# Refuse to clobber an existing operator config or a pre-existing host zram swap -
+# SKIP rather than overwrite-then-delete someone else's zram. (On the isolated Lima
+# VM both are empty, so this never trips there.)
+if on1 test -e "$ZRAM_CONF"; then
+  skip "$NODE1 already has $ZRAM_CONF; refusing to clobber an existing operator config"
+  exit 0
+fi
+if [[ -n "$BASELINE_ZRAM" ]]; then
+  skip "$NODE1 already has a host zram swap ($BASELINE_ZRAM); refusing to disturb it"
+  exit 0
+fi
+
 # --- step 1: operator provisions zram on node-1 ------------------------
 echo "=== step 1: provision host zram on $NODE1 (systemd-zram-generator) ==="
 # Install the package (idempotent). universe pocket, so a flaky mirror/network is a
@@ -181,10 +195,13 @@ if on1 sudo dpkg -s systemd-zram-generator >/dev/null 2>&1; then
   info "systemd-zram-generator already installed"
 else
   info "installing systemd-zram-generator (apt-get update + install)"
-  if ! on1 sudo bash -c 'apt-get update && apt-get install -y systemd-zram-generator' >/dev/null 2>&1; then
-    skip "could not install systemd-zram-generator (transient mirror/network?); nothing was provisioned"
+  apt_log="$(on1 sudo bash -c 'apt-get update && apt-get install -y systemd-zram-generator' 2>&1)" || {
+    # Surface the tail so a permanently-broken sources.list / missing-universe (which
+    # would SKIP every run and silently test nothing) is distinguishable from a
+    # transient mirror blip.
+    skip "could not install systemd-zram-generator; nothing was provisioned. apt tail: $(printf '%s' "$apt_log" | tail -n 3 | tr '\n' ' ')"
     exit 0
-  fi
+  }
 fi
 
 # Drop the operator config: a single [zram0] swap sized to a quarter of RAM,
