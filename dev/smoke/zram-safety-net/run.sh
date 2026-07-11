@@ -2,40 +2,50 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Andrei Taranik
 #
-# zram compressed-swap safety-net smoke - proves the agent's host-level zram net
-# on a REAL node: enabling it in the node's agent config brings up a zram swap
-# device (mem_limit-capped to a percentage of physical RAM), the control plane
-# surfaces the observed capability on `node get`, pages spilled under bounded
-# memory pressure land in zram COMPRESSED, and disabling it tears the device back
-# down. This is real-kernel behaviour (zram module, swapon, cgroup pressure) that
-# no mock agent can exercise.
+# zram compressed-swap safety-net smoke - proves the agent OBSERVES a
+# host-provisioned zram swap on a REAL node and surfaces it as a node capability.
+# The agent no longer configures zram; the OPERATOR provisions it (here via
+# systemd-zram-generator, as root on the node) and the agent's heartbeat collector
+# reports whatever /proc/swaps + /sys/block/zramN currently show. This smoke plays
+# that operator: it installs and configures systemd-zram-generator on node-1, then
+# asserts the control plane surfaces compressed_swap.kind=zram WITHOUT any agent
+# restart (Observe runs every heartbeat), that spilled pages land COMPRESSED under
+# bounded memory pressure, and that de-provisioning returns the node to
+# compressed_swap off. This is real-kernel behaviour (zram module, swapon, cgroup
+# pressure) that no mock agent can exercise.
 #
 # What it proves, end to end, on node-1:
-#   enable  -> agent config zram.enabled=true, max_ram_percent=25; agent restart
-#             brings up /dev/zramN as swap, mem_limit ~= 25% of MemTotal
-#   report  -> `node get --output json` shows capabilities.compressed_swap.kind=zram
-#   compress-> a scratch memory cgroup (memory.max=128M, swap unbounded) runs a
-#             bounded ~200M allocator; the overflow spills to zram and mm_stat
-#             shows compr_data_size < orig_data_size (the net compressed real pages)
-#   disable -> config restored (zram off, the default); agent restart swaps the
-#             device off; `node get` shows compressed_swap off and the agent's zram
-#             device is gone from /proc/swaps (any pre-existing host zram is left be)
+#   provision -> operator installs systemd-zram-generator, drops
+#               /etc/systemd/zram-generator.conf ([zram0], zram-size=ram/4,
+#               zstd), daemon-reload, starts systemd-zram-setup@zram0; a
+#               /dev/zramN swap comes up. No agent change, no agent restart.
+#   observe   -> the agent's next heartbeat reports the device; `node get
+#               --output json` shows capabilities.compressed_swap.kind=zram with
+#               size_mib > 0, and /proc/swaps on the node lists /dev/zramN.
+#   compress  -> a scratch memory cgroup (memory.max=128M, swap unbounded) runs a
+#               bounded ~200M allocator; the overflow spills to zram and the
+#               device's mm_stat shows compr_data_size < orig_data_size (real
+#               pages compressed).
+#   teardown  -> operator stops the unit, removes the conf, daemon-reload,
+#               swapoff + hot_remove the device; `node get` returns to
+#               compressed_swap off (any pre-existing host zram is left be).
 #
 # All allocations are bounded and confined to a cgroup memory limit - the smoke
 # never risks OOMing the node. The zram device number is discovered dynamically
-# from /proc/swaps (never hardcoded zram0). The compression step needs cgroup-v2
-# memory+swap controls; where those are unavailable it SKIPS with a clear message
-# (not a failure), but the enable / report / mem_limit / disable asserts are hard.
+# from /proc/swaps as a DELTA against the set present before provisioning (never
+# hardcoded zram0), so a host already running its own system zram swap is not
+# disturbed. The compression step needs cgroup-v2 memory+swap controls; where
+# those are unavailable it SKIPS with a clear message (not a failure), but the
+# provision / observe asserts are hard.
 #
-# Per-node agent config path (the file this smoke patches to toggle zram):
-#   Lima (macOS host):   /etc/otherix/agent.yaml            inside each Lima node VM
-#   netns (Linux host):  /var/lib/otherix/dev/node1/agent.yaml   on the host FS
-# Bootstrap writes agent.yaml only when absent and never overwrites it, so this
-# smoke appends a zram block to the existing file (and restores a pristine backup
-# on teardown) rather than regenerating the config. Both are reached uniformly
-# through run_on <node-1 handle> (a Lima VM shell, or the node-1 netns which
-# shares the host FS); an inner `sudo` is a real elevation on Lima and a harmless
-# no-op inside the netns.
+# Provisioning and teardown run as ROOT on the node (the operator role), reached
+# through run_on <node-1 handle>: a Lima VM shell where an inner `sudo` is a real
+# elevation, or the node-1 netns which is already root (sudo is a no-op). The agent
+# user itself stays unprivileged and only observes.
+#
+# systemd-zram-generator lives in the universe pocket; a transient mirror/network
+# error installing it SKIPS the whole smoke with a clear message rather than
+# hard-failing (the kernel/observer path under test is unaffected by a flaky apt).
 #
 # PREREQUISITES: a seeded three-node dev stack built from the CURRENT tree:
 #   make build && make local-dev-start
@@ -52,18 +62,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 # --- configuration -----------------------------------------------------
 OTX="${OTX:-./bin/otherix}"
 NODE1="node-1"
-MAX_RAM_PERCENT=25                        # the zram mem_limit knob this smoke sets
-READY_WAIT="${READY_WAIT:-150}"           # seconds for a node to return ready after a restart
-CAP_WAIT="${CAP_WAIT:-90}"                # seconds for the compressed_swap capability to appear
+ZRAM_CONF="/etc/systemd/zram-generator.conf"   # operator drop-in this smoke installs
+ZRAM_UNIT="systemd-zram-setup@zram0"           # the generator's setup unit for [zram0]
+CAP_WAIT="${CAP_WAIT:-90}"                # seconds for the observed capability to appear/clear
 PRESSURE_FILL="${PRESSURE_FILL:-6}"       # seconds to let the allocator fill before sampling mm_stat
-
-# The node-1 agent config file, per platform (see the header block).
-case "${SMOKE_PLATFORM}" in
-  lima)  AGENT_CONF="/etc/otherix/agent.yaml" ;;
-  netns) AGENT_CONF="$(smoke_state 1)/agent.yaml" ;;
-  *)     echo "unsupported SMOKE_PLATFORM: ${SMOKE_PLATFORM}" >&2; exit 1 ;;
-esac
-AGENT_CONF_BAK="${AGENT_CONF}.zram-smoke-bak"
 SCRATCH_CGROUP="/sys/fs/cgroup/otherix-zram-smoke"
 
 # --- helpers -----------------------------------------------------------
@@ -83,16 +85,6 @@ on1() { run_on "$SMOKE_HANDLE_1" "$@"; }
 # node_status NAME -> the CP-observed node status ("" if unknown).
 node_status() { otx node get "$1" --output json 2>/dev/null | jq -r '.status' 2>/dev/null || true; }
 
-# wait_node_ready NAME -> poll until the node reports ready.
-wait_node_ready() {
-  local name="$1" deadline; deadline=$(( SECONDS + READY_WAIT ))
-  while (( SECONDS < deadline )); do
-    [[ "$(node_status "$name")" == "ready" ]] && { pass "$name ready"; return 0; }
-    sleep 3
-  done
-  fail "$name did not reach ready within ${READY_WAIT}s"
-}
-
 # compressed_swap_kind NAME -> the CP-reported compressed-swap kind ("off" when
 # the capability is absent/null, i.e. the net is not active).
 compressed_swap_kind() {
@@ -108,10 +100,10 @@ zram_swap_devices() {
 
 # zram_delta_device -> the first /dev/zramN in the node's current /proc/swaps that
 # is NOT in BASELINE_ZRAM (the pre-existing host devices snapshotted before we
-# enabled zram) - i.e. the agent's hot-added device. "" when none appeared. Keying
+# provisioned) - i.e. the device this smoke created. "" when none appeared. Keying
 # on the delta keeps the smoke correct on a shared Linux host that runs its own
-# system zram swap (systemd-zram-generator); on Lima the baseline is empty and the
-# delta is simply the single new device.
+# system zram swap; on Lima the baseline is empty and the delta is simply the
+# single new device.
 zram_delta_device() {
   local dev
   while read -r dev; do
@@ -123,20 +115,44 @@ zram_delta_device() {
   done < <(zram_swap_devices)
 }
 
-# Restore the pristine (zram-off) config on node-1 and bounce the stack so the
-# agent re-observes and swaps the zram device off. Best-effort; used by both the
-# explicit disable step and the failure trap.
+# De-provision zram on node-1: stop the setup unit, remove the conf we installed,
+# daemon-reload, then swapoff + hot_remove any zram swap device NOT in the
+# baseline. Best-effort and idempotent - safe to run even if provisioning never
+# happened (e.g. the apt-install SKIP path), and it only ever touches the conf we
+# wrote and the swap devices we created (baseline devices are left be).
 teardown_zram() {
-  on1 sudo cp "$AGENT_CONF_BAK" "$AGENT_CONF" 2>/dev/null || true
-  on1 sudo rm -f "$AGENT_CONF_BAK" 2>/dev/null || true
+  on1 sudo systemctl stop "$ZRAM_UNIT" 2>/dev/null || true
+  # Stopping the unit is harmless and idempotent. Everything below only runs once
+  # we have actually provisioned (CONF_WRITTEN=1) - and a smoke-created zram device
+  # can ONLY exist after that point, so guarding here keeps teardown from ever
+  # touching a pre-existing host zram (or its config) when the smoke aborts before
+  # provisioning or before the baseline snapshot.
+  (( CONF_WRITTEN == 1 )) || return 0
+  on1 sudo rm -f "$ZRAM_CONF" 2>/dev/null || true
+  on1 sudo systemctl daemon-reload 2>/dev/null || true
+  # swapoff + hot_remove every non-baseline /dev/zram swap. hot_remove takes the
+  # bare device number on /sys/class/zram-control/hot_remove.
+  on1 sudo bash -s "$BASELINE_ZRAM" 2>/dev/null <<'NODE_EOF' || true
+set -u
+BASELINE=" $1 "
+while read -r dev _; do
+  case "$dev" in /dev/zram*) ;; *) continue ;; esac
+  case "$BASELINE" in *" $dev "*) continue ;; esac
+  swapoff "$dev" 2>/dev/null || true
+  echo "${dev#/dev/zram}" > /sys/class/zram-control/hot_remove 2>/dev/null || true
+done < /proc/swaps
+NODE_EOF
   on1 sudo rmdir "$SCRATCH_CGROUP" 2>/dev/null || true
-  make local-dev-restart >/dev/null 2>&1 || true
 }
 
-CONF_PATCHED=0
+# Trap-referenced state, initialised before the trap is installed. BASELINE_ZRAM
+# is captured for real in preconditions (before any provisioning); the device
+# loop above never runs until CONF_WRITTEN=1, which is strictly after that capture.
+BASELINE_ZRAM=""
+CONF_WRITTEN=0
 cleanup() {
   echo "--- cleanup ---"
-  (( CONF_PATCHED == 1 )) && teardown_zram
+  teardown_zram
 }
 trap cleanup EXIT
 
@@ -147,42 +163,55 @@ command -v jq >/dev/null || fail "jq is required"
 cp_ready || fail "CP not up on :8080 (run make local-dev-start)"
 info "CP version: $(cp_version)"
 [[ "$(node_status "$NODE1")" == "ready" ]] || fail "$NODE1 not ready; run make local-dev-start"
-on1 test -f "$AGENT_CONF" || fail "$NODE1 agent config not found at $AGENT_CONF"
-pass "CP up; $NODE1 ready; agent config present at $AGENT_CONF"
+pass "CP up; $NODE1 ready"
 
-# Snapshot any pre-existing host zram swap devices BEFORE we enable ours, so every
-# device assertion below keys on the agent's device as a delta (a Linux dev host
-# running systemd-zram-generator has its own zram swap that must not be mistaken
-# for ours, nor false-FAIL the teardown check).
+# Snapshot any pre-existing host zram swap devices BEFORE we provision ours, so
+# every device assertion below keys on the delta and cleanup only touches what this
+# smoke created (a host already running its own zram swap must not be mistaken for
+# ours, nor false-FAIL the teardown check).
 BASELINE_ZRAM="$(zram_swap_devices | tr '\n' ' ')"
 info "pre-existing zram swap devices (baseline): ${BASELINE_ZRAM:-none}"
 
-# --- step 1: enable zram on node-1 -------------------------------------
-echo "=== step 1: enable zram on $NODE1 (max_ram_percent=$MAX_RAM_PERCENT) ==="
-# A backup already present means a PRIOR run was hard-killed after appending the
-# zram block but before its trap restored - the on-disk config is already patched.
-# Restore FROM the stale backup (the pristine config) instead of backing up the
-# polluted one, otherwise teardown would later "restore" zram-on and leave it
-# durably enabled.
-if on1 test -f "$AGENT_CONF_BAK"; then
-  info "stale backup found ($AGENT_CONF_BAK) - a prior run died mid-flight; restoring pristine config"
-  on1 sudo cp "$AGENT_CONF_BAK" "$AGENT_CONF" || fail "could not restore pristine config from $AGENT_CONF_BAK"
+# --- step 1: operator provisions zram on node-1 ------------------------
+echo "=== step 1: provision host zram on $NODE1 (systemd-zram-generator) ==="
+# Install the package (idempotent). universe pocket, so a flaky mirror/network is a
+# SKIP of the whole smoke, not a FAIL: the kernel/observer path under test is
+# unaffected by apt weather.
+if on1 sudo dpkg -s systemd-zram-generator >/dev/null 2>&1; then
+  info "systemd-zram-generator already installed"
 else
-  on1 sudo cp "$AGENT_CONF" "$AGENT_CONF_BAK" || fail "could not back up $AGENT_CONF"
+  info "installing systemd-zram-generator (apt-get update + install)"
+  if ! on1 sudo bash -c 'apt-get update && apt-get install -y systemd-zram-generator' >/dev/null 2>&1; then
+    skip "could not install systemd-zram-generator (transient mirror/network?); nothing was provisioned"
+    exit 0
+  fi
 fi
-CONF_PATCHED=1
-# Append a top-level zram block (column 0 -> a new top-level mapping key, valid
-# regardless of the preceding block). Leading blank line guards against a config
-# whose last line has no trailing newline.
-printf '\n%s\n%s\n%s\n' 'zram:' '  enabled: true' "  max_ram_percent: ${MAX_RAM_PERCENT}" \
-  | on1 sudo tee -a "$AGENT_CONF" >/dev/null || fail "could not patch $AGENT_CONF"
-info "patched $AGENT_CONF -> zram.enabled=true; restarting the stack"
-make local-dev-restart >/dev/null 2>&1 || fail "make local-dev-restart failed"
-wait_node_ready "$NODE1"
 
-# --- step 2: assert the net is active ----------------------------------
-echo "=== step 2: assert the compressed-swap net is active ==="
-# CP surface: the capability propagates on the next heartbeat after the restart.
+# Drop the operator config: a single [zram0] swap sized to a quarter of RAM,
+# zstd-compressed, high swap priority. Written by the operator (root), never by the
+# agent.
+on1 sudo tee "$ZRAM_CONF" >/dev/null <<'NODE_EOF' || fail "could not write $ZRAM_CONF on $NODE1"
+[zram0]
+zram-size = ram / 4
+compression-algorithm = zstd
+swap-priority = 100
+NODE_EOF
+CONF_WRITTEN=1
+on1 sudo systemctl daemon-reload || fail "systemctl daemon-reload failed on $NODE1"
+on1 sudo systemctl start "$ZRAM_UNIT" || fail "systemctl start $ZRAM_UNIT failed on $NODE1"
+info "provisioned $ZRAM_CONF and started $ZRAM_UNIT"
+
+# The device must actually come up as swap before we assert observation.
+ZDEV="$(zram_delta_device)"
+[[ "$ZDEV" == /dev/zram* ]] \
+  || fail "no new /dev/zram appeared in $NODE1 /proc/swaps beyond the baseline (got '${ZDEV:-none}')"
+ZNAME="$(basename "$ZDEV")"          # e.g. zram0
+pass "host zram provisioned: $ZDEV up as swap on $NODE1"
+
+# --- step 2: assert the agent OBSERVES it ------------------------------
+echo "=== step 2: assert the CP surfaces the observed compressed-swap net ==="
+# No agent restart: Observe runs every heartbeat, so the capability appears on the
+# next heartbeat after the device came up.
 deadline=$(( SECONDS + CAP_WAIT )); seen=0
 while (( SECONDS < deadline )); do
   [[ "$(compressed_swap_kind "$NODE1")" == "zram" ]] && { seen=1; break; }
@@ -191,28 +220,11 @@ done
 (( seen == 1 )) || fail "compressed_swap.kind never became 'zram' on $NODE1 within ${CAP_WAIT}s"
 otx node get "$NODE1" --output json | jq -e '.capabilities.compressed_swap.kind == "zram"' >/dev/null \
   || fail "node get does not report compressed_swap.kind == zram"
-pass "CP reports compressed_swap.kind == zram on $NODE1"
-
-# Node host: the agent hot-added a NEW /dev/zram swap (delta vs the baseline).
-ZDEV="$(zram_delta_device)"
-[[ "$ZDEV" == /dev/zram* ]] || fail "no new /dev/zram appeared in $NODE1 /proc/swaps beyond the baseline (got '${ZDEV:-none}')"
-ZNAME="$(basename "$ZDEV")"          # e.g. zram1
-info "agent zram swap device: $ZDEV"
-
-# mem_limit is set and roughly 25% of MemTotal (generous band: not exact bytes).
-MEMLIMIT="$(on1 cat "/sys/block/${ZNAME}/mem_limit" 2>/dev/null | tr -dc '0-9')" || true
-if [[ ! "$MEMLIMIT" =~ ^[0-9]+$ ]] || (( MEMLIMIT == 0 )); then
-  fail "/sys/block/${ZNAME}/mem_limit is unset or zero (got '${MEMLIMIT:-none}')"
-fi
-read -r _ MEMTOTAL_KB _ < <(on1 grep -m1 MemTotal /proc/meminfo)
-[[ "$MEMTOTAL_KB" =~ ^[0-9]+$ ]] || fail "could not read MemTotal from $NODE1"
-MEMTOTAL_B=$(( MEMTOTAL_KB * 1024 ))
-# Accept 10%..40% of physical RAM (target 25%, wide tolerance for rounding /
-# page alignment / the kernel's own accounting).
-BAND_LO=$(( MEMTOTAL_B * 10 / 100 )); BAND_HI=$(( MEMTOTAL_B * 40 / 100 ))
-(( MEMLIMIT >= BAND_LO && MEMLIMIT <= BAND_HI )) \
-  || fail "mem_limit ${MEMLIMIT}B not within 10-40% of MemTotal ${MEMTOTAL_B}B (target ~25%)"
-pass "mem_limit=${MEMLIMIT}B is ~$(( MEMLIMIT * 100 / MEMTOTAL_B ))% of MemTotal (band 10-40%)"
+SIZE_MIB="$(otx node get "$NODE1" --output json | jq -r '.capabilities.compressed_swap.size_mib // 0')"
+[[ "$SIZE_MIB" =~ ^[0-9]+$ ]] || fail "compressed_swap.size_mib not an integer (got '${SIZE_MIB:-none}')"
+(( SIZE_MIB > 0 )) || fail "compressed_swap.size_mib is not > 0 (got $SIZE_MIB)"
+on1 grep -q '/dev/zram' /proc/swaps || fail "/dev/zram not present in $NODE1 /proc/swaps"
+pass "CP observes compressed_swap.kind == zram, size_mib=${SIZE_MIB} on $NODE1"
 
 # --- step 3: prove compression under BOUNDED pressure ------------------
 echo "=== step 3: pages spill to zram COMPRESSED under a bounded cgroup limit ==="
@@ -278,20 +290,19 @@ case "$RESULT" in
     ;;
 esac
 
-# --- step 4: disable zram -> device torn down --------------------------
-echo "=== step 4: disable zram on $NODE1 -> device gone ==="
+# --- step 4: de-provision -> observed off ------------------------------
+echo "=== step 4: de-provision zram on $NODE1 -> device gone, capability clears ==="
 teardown_zram
-CONF_PATCHED=0                          # config restored; the trap has nothing left to do
-wait_node_ready "$NODE1"
+CONF_WRITTEN=0                          # de-provisioned; the trap has nothing left to do
 deadline=$(( SECONDS + CAP_WAIT )); off=0
 while (( SECONDS < deadline )); do
   [[ "$(compressed_swap_kind "$NODE1")" != "zram" ]] && { off=1; break; }
   sleep 3
 done
-(( off == 1 )) || fail "compressed_swap still reports 'zram' on $NODE1 after disable within ${CAP_WAIT}s"
+(( off == 1 )) || fail "compressed_swap still reports 'zram' on $NODE1 after de-provision within ${CAP_WAIT}s"
 LEFT="$(zram_delta_device)"
-[[ -z "$LEFT" ]] || fail "the agent's zram swap device is still present after disable: $LEFT"
-pass "compressed_swap off on $NODE1 and no agent zram device beyond the baseline in /proc/swaps"
+[[ -z "$LEFT" ]] || fail "a smoke-created zram swap device is still present after de-provision: $LEFT"
+pass "compressed_swap off on $NODE1 and no smoke zram device beyond the baseline in /proc/swaps"
 
 trap - EXIT
 echo
