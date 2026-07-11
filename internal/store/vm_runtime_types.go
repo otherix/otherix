@@ -22,6 +22,11 @@ type UpsertVMRuntimeParams struct {
 	QEMUPID            *int32
 	LastStartedAt      *time.Time
 	LastErrorMessage   *string
+	// MemoryUsedMib is the guest-reported used memory (total - free) from the
+	// balloon stats, nil when no observation this tick (old QEMU, no balloon
+	// driver, dial failure). The UpsertVMRuntime merge writes it unconditionally,
+	// so a nil overwrites the prior value - "no observation, self-heal next tick".
+	MemoryUsedMib *int64
 	// VMRowModRevision is the etcd ModRevision of the vms row the heartbeat read
 	// to decide this runtime claim. UpsertVMRuntime commits the runtime write
 	// under If(ModRevision(vmKey)==VMRowModRevision), so a soft-delete or a

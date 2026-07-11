@@ -1426,6 +1426,7 @@ func (h *Handler) applyVMReport(ctx context.Context, hp store.HeartbeatProjectio
 		QEMUPID:            r.QEMUPID,
 		LastStartedAt:      lastStarted,
 		LastErrorMessage:   r.LastErrorMessage,
+		MemoryUsedMib:      r.MemoryUsedMib,
 		VMRowModRevision:   vmRev,
 	}
 	if err := hp.UpsertVMRuntime(ctx, params); err != nil {

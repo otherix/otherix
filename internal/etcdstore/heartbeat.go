@@ -203,6 +203,7 @@ func (h heartbeatProjection) UpsertVMRuntime(ctx context.Context, arg store.Upse
 	rt.QEMUPID = arg.QEMUPID
 	rt.LastStartedAt = arg.LastStartedAt
 	rt.LastErrorMessage = arg.LastErrorMessage
+	rt.MemoryUsedMib = arg.MemoryUsedMib
 	now := time.Now().UTC()
 	rt.LastObservedAt = &now
 
