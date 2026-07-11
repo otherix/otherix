@@ -273,3 +273,30 @@ func TestBinary(t *testing.T) {
 		t.Fatalf("Binary(foo) = nil, want error")
 	}
 }
+
+func TestBuildArgs_BalloonDevicePresentBothArches(t *testing.T) {
+	base := VMSpec{
+		Name: "vm1", UUID: uuid.New(), VCPUs: 1, MemoryMB: 512,
+		Accelerator: "tcg", DiskPath: "/d.qcow2", QMPSocket: "/q.sock",
+		ConsoleSocket: "/c.sock", PIDFile: "/p.pid",
+	}
+	want := "-device virtio-balloon,id=balloon0,free-page-reporting=on,stats-polling-interval=2000"
+	for _, tc := range []struct {
+		name string
+		spec VMSpec
+	}{
+		{"amd64", func() VMSpec { s := base; s.Architecture = ArchAMD64; return s }()},
+		{"arm64", func() VMSpec { s := base; s.Architecture = ArchARM64; s.AArch64Firmware = "/fw.fd"; return s }()},
+		{"migration-target-omitbootdisk", func() VMSpec { s := base; s.Architecture = ArchAMD64; s.OmitBootDisk = true; return s }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args, err := BuildArgs(tc.spec)
+			if err != nil {
+				t.Fatalf("BuildArgs(%s) error: %v", tc.name, err)
+			}
+			if got := strings.Join(args, " "); !strings.Contains(got, want) {
+				t.Errorf("BuildArgs(%s) missing balloon device.\n got: %s\nwant substring: %s", tc.name, got, want)
+			}
+		})
+	}
+}
