@@ -8,6 +8,7 @@
 package zram
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,9 @@ import (
 
 // swapLabel is the swap LABEL that tags an otherix-owned zram device.
 const swapLabel = "otxzram"
+
+// swapPriority is the swapon priority for the otherix zram device.
+const swapPriority = 100
 
 // Params is the desired zram state, mapped from config.ZramConfig by the
 // caller (kept config-free so this package does not import internal/config).
@@ -26,7 +30,7 @@ type Params struct {
 }
 
 // Active describes an active otherix zram swap device, or is nil when none is
-// active. It is derived from observed reality (/proc/swaps + /sys/block/zramN),
+// active. It is derived from observed reality (swapon --show + /sys/block/zramN),
 // not from configured intent.
 type Active struct {
 	Device      string
@@ -105,4 +109,102 @@ func observeOwned(labels map[string]string, sysRoot, wantLabel string) *Active {
 		return a
 	}
 	return nil
+}
+
+// hostOps is the seam over the privileged host operations Ensure performs, so
+// the orchestration is unit-testable without a real kernel.
+type hostOps interface {
+	modprobe() error
+	hotAdd() (int, error)                      // read /sys/class/zram-control/hot_add -> device id
+	hotRemove(id int) error                    // write /sys/class/zram-control/hot_remove
+	writeAttr(dev int, attr, val string) error // write /sys/block/zram<dev>/<attr>
+	readAttr(dev int, attr string) (string, error)
+	mkswap(dev int, label string) error // mkswap -L <label> /dev/zram<dev>
+	swapon(dev, prio int) error
+	swapoff(dev int) error
+}
+
+// devNum extracts N from "/dev/zramN". Returns -1 when unparseable.
+func devNum(device string) int {
+	base := filepath.Base(device)
+	n, err := strconv.Atoi(strings.TrimPrefix(base, "zram"))
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// ensureWith reconciles the node to the desired zram state. existing is the
+// currently-observed otherix zram (nil if none). ramBytes is host RAM total.
+// Enabled=false tears down existing; Enabled=true sets up a fresh device when
+// none is active and no-ops when one already is.
+func ensureWith(p Params, ops hostOps, ramBytes int64, existing *Active) (*Active, error) {
+	if !p.Enabled {
+		if existing == nil {
+			return nil, nil
+		}
+		if err := ops.swapoff(devNum(existing.Device)); err != nil {
+			return existing, fmt.Errorf("zram swapoff %s: %w", existing.Device, err)
+		}
+		if err := ops.hotRemove(devNum(existing.Device)); err != nil {
+			return nil, fmt.Errorf("zram hot_remove %s: %w", existing.Device, err)
+		}
+		return nil, nil
+	}
+
+	if existing != nil {
+		// Already active - do not add a second device (idempotent restart).
+		return existing, nil
+	}
+
+	if err := ops.modprobe(); err != nil {
+		return nil, fmt.Errorf("modprobe zram: %w", err)
+	}
+	id, err := ops.hotAdd()
+	if err != nil {
+		return nil, fmt.Errorf("zram hot_add: %w", err)
+	}
+	// Crash-during-setup cleanup (design-review Med): if any step below errors,
+	// remove the just-added device rather than leaking a half-set-up zram.
+	setupOK := false
+	defer func() {
+		if !setupOK {
+			_ = ops.hotRemove(id)
+		}
+	}()
+
+	memLimit := ramBytes * int64(p.MaxRAMPercent) / 100 // multiply-FIRST (design-review High)
+	if memLimit <= 0 {                                  // kernel treats 0 as UNLIMITED (design-review Low)
+		return nil, fmt.Errorf("zram mem_limit computed <= 0 (ram=%d pct=%d)", ramBytes, p.MaxRAMPercent)
+	}
+	disksize := 3 * memLimit
+
+	if err := ops.writeAttr(id, "comp_algorithm", p.Algorithm); err != nil {
+		return nil, fmt.Errorf("zram comp_algorithm: %w", err)
+	}
+	// Exact bracketed-token match, not substring (design-review Low): "lzo" must
+	// not match an active "[lzo-rle]".
+	if got, _ := ops.readAttr(id, "comp_algorithm"); activeAlgorithm(got) != p.Algorithm {
+		return nil, fmt.Errorf("zram rejected algorithm %q (read back %q)", p.Algorithm, got)
+	}
+	if err := ops.writeAttr(id, "disksize", strconv.FormatInt(disksize, 10)); err != nil {
+		return nil, fmt.Errorf("zram disksize: %w", err)
+	}
+	if err := ops.writeAttr(id, "mem_limit", strconv.FormatInt(memLimit, 10)); err != nil {
+		return nil, fmt.Errorf("zram mem_limit: %w", err)
+	}
+	if err := ops.mkswap(id, swapLabel); err != nil { // -L otxzram stamps ownership (design-review Blocker)
+		return nil, fmt.Errorf("zram mkswap: %w", err)
+	}
+	if err := ops.swapon(id, swapPriority); err != nil {
+		return nil, fmt.Errorf("zram swapon: %w", err)
+	}
+	setupOK = true // past the last fallible op; the deferred cleanup will not fire
+	return &Active{
+		Device:      fmt.Sprintf("/dev/zram%d", id),
+		Kind:        "zram",
+		SizeMib:     disksize / (1024 * 1024),
+		MemLimitMib: memLimit / (1024 * 1024),
+		Algorithm:   p.Algorithm,
+	}, nil
 }
