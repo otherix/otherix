@@ -4,6 +4,7 @@
 package node
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -130,6 +131,30 @@ func printNodeHardware(cmd *cobra.Command, n cpclient.Node) {
 	if n.QEMUVersion != nil && *n.QEMUVersion != "" {
 		printf(cmd, "qemu_version: %s\n", *n.QEMUVersion)
 	}
+	printf(cmd, "compressed_swap: %s\n", compressedSwapLine(n.Capabilities))
+}
+
+// compressedSwapLine renders the node's compressed-swap safety net from the raw
+// capabilities blob: "zram 768MiB (cap 256MiB) zstd" when active, else "off".
+// A missing / empty / unparseable blob renders "off" — the Unmarshal error is
+// intentionally ignored (best-effort display, never panics).
+func compressedSwapLine(caps []byte) string {
+	var c struct {
+		CompressedSwap *struct {
+			Kind        string `json:"kind"`
+			SizeMib     int64  `json:"size_mib"`
+			MemLimitMib int64  `json:"mem_limit_mib"`
+			Algorithm   string `json:"algorithm"`
+		} `json:"compressed_swap"`
+	}
+	if len(caps) > 0 {
+		_ = json.Unmarshal(caps, &c)
+	}
+	if c.CompressedSwap == nil {
+		return "off"
+	}
+	cs := c.CompressedSwap
+	return fmt.Sprintf("%s %dMiB (cap %dMiB) %s", cs.Kind, cs.SizeMib, cs.MemLimitMib, cs.Algorithm)
 }
 
 // formatSystemDiskUsage renders "used N / M GiB" with the percentage

@@ -13,6 +13,43 @@ import (
 	"github.com/otherix/otherix/cmd/cli/internal/cpclient"
 )
 
+func renderNodeText(t *testing.T, n cpclient.Node) string {
+	t.Helper()
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	printNodeText(cmd, n, false)
+	return buf.String()
+}
+
+func lineFor(out, key string) (string, bool) {
+	for ln := range strings.SplitSeq(out, "\n") {
+		if v, ok := strings.CutPrefix(ln, key+": "); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func TestPrintNodeTextCompressedSwap(t *testing.T) {
+	n := cpclient.Node{
+		Name:         "node-1",
+		Capabilities: []byte(`{"kvm_available":true,"compressed_swap":{"kind":"zram","size_mib":768,"mem_limit_mib":256,"algorithm":"zstd"}}`),
+	}
+	out := renderNodeText(t, n)
+	if got, ok := lineFor(out, "compressed_swap"); !ok || got != "zram 768MiB (cap 256MiB) zstd" {
+		t.Errorf("compressed_swap line = %q (present=%v), want %q", got, ok, "zram 768MiB (cap 256MiB) zstd")
+	}
+}
+
+func TestPrintNodeTextCompressedSwapOff(t *testing.T) {
+	n := cpclient.Node{Name: "node-1", Capabilities: []byte(`{"kvm_available":true}`)}
+	out := renderNodeText(t, n)
+	if got, ok := lineFor(out, "compressed_swap"); !ok || got != "off" {
+		t.Errorf("compressed_swap line = %q (present=%v), want %q", got, ok, "off")
+	}
+}
+
 func TestPrintNodeWireguard(t *testing.T) {
 	name := "node-2"
 	n := cpclient.Node{
