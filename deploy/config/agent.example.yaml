@@ -29,3 +29,7 @@ wireguard:
   persistent_keepalive: 25s
   private_key_path: /var/lib/otherix/wg/private.key
   advertised_endpoint: ""   # host:port peers dial; empty for single-node fabric
+
+# Compressed-swap safety net: provisioned on the HOST (not by the agent) via
+# systemd-zram-generator. See deploy/config/zram-generator.conf.example. The
+# agent observes /proc/swaps and reports compressed_swap on the node view.

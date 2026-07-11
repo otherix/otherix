@@ -1,0 +1,12 @@
+# Host compressed-swap safety net for an otherix agent node.
+# Copy to /etc/systemd/zram-generator.conf, then:
+#   systemctl daemon-reload && systemctl start systemd-zram-setup@zram0
+# (or reboot). Requires the systemd-zram-generator package.
+#
+# zram-size is the RAM you lend zram; it also bounds the physical RAM zram
+# can consume (~zram-size worst case, far less with compression). The agent
+# reports the active device as node capability compressed_swap.
+[zram0]
+zram-size = ram / 4
+compression-algorithm = zstd
+swap-priority = 100

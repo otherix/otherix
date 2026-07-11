@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/vm"
+	"github.com/otherix/otherix/internal/agent/zram"
 	"github.com/otherix/otherix/internal/config"
 )
 
@@ -562,3 +563,50 @@ const syntheticMemInfo = `MemTotal:       16777216 kB
 MemFree:         1234567 kB
 MemAvailable:    9876543 kB
 `
+
+// TestCollectCompressedSwapFromObserver confirms the collector maps the injected
+// zram observation into caps.CompressedSwap. The seam is injected so the test
+// never reads the host's real swap state.
+func TestCollectCompressedSwapFromObserver(t *testing.T) {
+	c := &LinuxCollector{
+		procPath:     t.TempDir(),
+		vms:          stubLister{},
+		agentVersion: "test",
+		architecture: "amd64",
+		zramObserve: func() *zram.Active {
+			return &zram.Active{Kind: "zram", SizeMib: 768, MemLimitMib: 256, Algorithm: "zstd", SwappedMib: 240, RAMUsedMib: 60}
+		},
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	got := rep.Capabilities.CompressedSwap
+	if got == nil || got.MemLimitMib != 256 || got.Algorithm != "zstd" {
+		t.Fatalf("CompressedSwap = %+v, want mem_limit 256 / zstd", got)
+	}
+	if got.SwappedMib != 240 || got.RAMUsedMib != 60 {
+		t.Errorf("CompressedSwap utilization = swapped %d / ram %d, want 240 / 60", got.SwappedMib, got.RAMUsedMib)
+	}
+}
+
+// TestCollectCompressedSwapNilWhenObserverNil confirms a nil observation (the
+// safety net is off) leaves caps.CompressedSwap nil, so it serializes absent.
+func TestCollectCompressedSwapNilWhenObserverNil(t *testing.T) {
+	c := &LinuxCollector{
+		procPath:     t.TempDir(),
+		vms:          stubLister{},
+		agentVersion: "test",
+		architecture: "amd64",
+		zramObserve:  func() *zram.Active { return nil },
+	}
+
+	rep, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if rep.Capabilities.CompressedSwap != nil {
+		t.Errorf("CompressedSwap = %+v, want nil", rep.Capabilities.CompressedSwap)
+	}
+}

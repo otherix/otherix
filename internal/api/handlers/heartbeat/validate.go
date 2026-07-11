@@ -131,6 +131,9 @@ func buildCapabilitiesJSON(c nodeCapabilitiesReport) ([]byte, error) {
 		"nested_virt":   c.NestedVirt,
 		"qemu_binaries": binaries,
 	}
+	if c.CompressedSwap != nil {
+		payload["compressed_swap"] = c.CompressedSwap
+	}
 	return json.Marshal(payload)
 }
 

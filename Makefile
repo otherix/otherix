@@ -223,6 +223,10 @@ smoke-node-lifecycle: ## Node-lifecycle smoke: `otherix node delete` an empty no
 smoke-node-placement-pressure: ## Node-placement-pressure smoke: a node under disk pressure is excluded from placement - VMs avoid it, a pinned VM stays pending, and clearing the pressure lets placement converge (run after local-dev-start)
 	bash dev/smoke/node-placement-pressure/run.sh
 
+.PHONY: smoke-zram-safety-net
+smoke-zram-safety-net: ## zram safety-net smoke: enabling zram brings up a mem_limit-capped swap device, `node get` reports compressed_swap.kind=zram, pages spilled under bounded cgroup pressure compress in zram, and disabling tears the device down (run after local-dev-start)
+	bash dev/smoke/zram-safety-net/run.sh
+
 .PHONY: smoke-user
 smoke-user: ## User CLI smoke: otherix user create/get/set-role/set-password/delete + login + RBAC gating (run after local-dev-start)
 	bash dev/smoke/user/run.sh
@@ -470,6 +474,49 @@ LIMA_VM_1   := otherix-dev-1
 LIMA_VM_2   := otherix-dev-2
 LIMA_VM_3   := otherix-dev-3
 LIMA_VM     := $(LIMA_VM_1)
+
+# dev-zram-on / dev-zram-off toggle the host compressed-swap net (zram) on a Lima
+# dev node the way an operator would - via systemd-zram-generator. The agent is
+# unprivileged and only OBSERVES the result, so provisioning is a host action;
+# these run it for you over `limactl shell ... sudo`. NODE selects the Lima VM
+# (default node-1); ZRAM_SIZE / ZRAM_ALGO tune the device. Lima-only (the Linux
+# netns dev stack shares the real host kernel, so toggling zram there is refused).
+NODE      ?= $(LIMA_VM_1)
+ZRAM_SIZE ?= ram / 4
+ZRAM_ALGO ?= zstd
+
+.PHONY: dev-zram-on dev-zram-off
+
+dev-zram-on: ## Enable host zram on a Lima dev node (NODE=otherix-dev-1 ZRAM_SIZE='ram / 4' ZRAM_ALGO=zstd)
+	@command -v limactl >/dev/null || { echo "limactl not found - dev-zram-* is for the macOS Lima dev stack"; exit 1; }
+	@echo ">> enabling zram on $(NODE) (size='$(ZRAM_SIZE)' algo=$(ZRAM_ALGO))"
+	@limactl shell $(NODE) sudo bash -c 'apt-get update -qq && apt-get install -y -qq linux-modules-extra-$$(uname -r) systemd-zram-generator'
+	@printf '[zram0]\nzram-size = %s\ncompression-algorithm = %s\nswap-priority = 100\n' '$(ZRAM_SIZE)' '$(ZRAM_ALGO)' | limactl shell $(NODE) sudo tee /etc/systemd/zram-generator.conf >/dev/null
+	@limactl shell $(NODE) sudo sh -c 'systemctl daemon-reload && systemctl restart systemd-zram-setup@zram0'
+	@limactl shell $(NODE) swapon --show
+	@echo ">> zram on. verify: otherix node get <node> -o json | jq .capabilities.compressed_swap"
+
+dev-zram-off: ## Disable host zram on a Lima dev node (NODE=otherix-dev-1)
+	@command -v limactl >/dev/null || { echo "limactl not found - dev-zram-* is for the macOS Lima dev stack"; exit 1; }
+	@echo ">> disabling zram on $(NODE)"
+	@limactl shell $(NODE) sudo sh -c 'systemctl stop systemd-zram-setup@zram0 2>/dev/null; rm -f /etc/systemd/zram-generator.conf; systemctl daemon-reload; swapoff /dev/zram0 2>/dev/null; true'
+	@limactl shell $(NODE) swapon --show || true
+	@echo ">> zram off."
+
+dev-zram-stat: ## Show host zram utilization on a Lima dev node (NODE=otherix-dev-1)
+	@command -v limactl >/dev/null || { echo "limactl not found - dev-zram-* is for the macOS Lima dev stack"; exit 1; }
+	@limactl shell $(NODE) sudo sh -c '\
+	  d=/sys/block/zram0; \
+	  [ -e $$d/mm_stat ] || { echo "zram not active on $(NODE)"; exit 0; }; \
+	  set -- $$(cat $$d/mm_stat); orig=$$1; compr=$$2; memused=$$3; \
+	  disksize=$$(cat $$d/disksize); \
+	  echo "swap (logical):"; swapon --show=NAME,SIZE,USED,PRIO; \
+	  echo; \
+	  printf "disksize (ceiling):        %6s MiB\n" $$((disksize/1048576)); \
+	  printf "orig  (logical swapped):   %6s MiB  (%s%% of ceiling)\n" $$((orig/1048576)) $$((orig*100/disksize)); \
+	  printf "compr (physical RAM used): %6s MiB\n" $$((compr/1048576)); \
+	  printf "mem_used_total:            %6s MiB\n" $$((memused/1048576)); \
+	  [ $$compr -gt 0 ] && printf "compression ratio:         %s.%02sx\n" $$((orig/compr)) $$(((orig*100/compr)%100)) || true'
 
 # bootstrap-dev / deploy-dev / clean-dev / restart-agent are internal per-OS
 # dispatchers used by the local-dev-* family. They are intentionally NOT in
