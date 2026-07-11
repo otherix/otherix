@@ -175,6 +175,10 @@ smoke-manifests: ## YAML-manifest CLI smoke: `otherix create -f` / `get -o yaml`
 smoke-vm-lifecycle: ## VM lifecycle smoke: `otherix vm` start/stop/poweroff/reboot/pause/resume/reset on a real agent (run after local-dev-start)
 	bash dev/smoke/vm-lifecycle/run.sh
 
+.PHONY: smoke-scheduler-memory-overcommit
+smoke-scheduler-memory-overcommit: ## Memory overcommit smoke: a VM lands only on a zram-equipped node (run after local-dev-deploy)
+	bash dev/smoke/scheduler-memory-overcommit/run.sh
+
 .PHONY: smoke-vm-network-config
 smoke-vm-network-config: ## VM network-config smoke: static guest IP via `otherix vm create --network-config` on a real agent (run after local-dev-start)
 	bash dev/smoke/vm-network-config/run.sh
