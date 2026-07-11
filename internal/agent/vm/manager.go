@@ -771,6 +771,22 @@ func (m *Manager) GuestMemUsedMiB(name string) *int64 {
 	if err != nil {
 		return nil
 	}
+	return clampObservedMemUsed(used, v.MemoryMib)
+}
+
+// clampObservedMemUsed drops a guest-reported used-MiB reading that exceeds the
+// VM's own allocation. guest-stats come from the (untrusted) virtio-balloon
+// driver, and a guest cannot use more memory than it was given, so a larger
+// value is a lying or buggy guest - fail toward "no observation" rather than
+// surface an attacker-chosen number on the API. allocMiB <= 0 (allocation
+// unknown) disables the clamp.
+func clampObservedMemUsed(used *int64, allocMiB int) *int64 {
+	if used == nil || allocMiB <= 0 {
+		return used
+	}
+	if *used > int64(allocMiB) {
+		return nil
+	}
 	return used
 }
 

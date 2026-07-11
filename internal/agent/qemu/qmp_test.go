@@ -4,11 +4,49 @@
 package qemu
 
 import (
+	"net"
+	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
+
+// TestDialQMPBoundsGreetingRead pins the reconciler-wedge fix: a second dial to
+// a single-client QMP socket whose one connection is already held open (the
+// live-migration case) must not block forever on the greeting read. DialQMP
+// must return an error within ~dialTimeout, not hang until the far side closes.
+func TestDialQMPBoundsGreetingRead(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "qmp.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Accept the dial but never write the QMP greeting, then hold the
+	// connection well past dialTimeout - exactly what qemu does to a second
+	// connection on a `server,nowait` socket that is already in use.
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		time.Sleep(3 * time.Second)
+	}()
+
+	start := time.Now()
+	_, err = DialQMP(sock, 200*time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("DialQMP succeeded against a greeting-less socket, want error")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("DialQMP blocked %v on a greeting-less socket, want bounded ~200ms", elapsed)
+	}
+}
 
 func TestParseGuestStatsUsedMiB(t *testing.T) {
 	const mib = 1024 * 1024

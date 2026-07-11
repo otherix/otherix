@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,5 +194,61 @@ func TestScanState_CreatesMissingDir(t *testing.T) {
 	}
 	if _, err := os.Stat(stateDir); err != nil {
 		t.Errorf("ScanState should mkdir state dir: %v", err)
+	}
+}
+
+// TestReadMetaFoldsLegacyMemoryKey pins the in-place-upgrade back-compat: a
+// meta.json written by a pre-#242 agent carries `memory_mb`, not `memory_mib`.
+// ReadMeta must fold the legacy key into MemoryMib (else the VM reads memory 0
+// and is stranded at the >=128 MiB spec check on the next respawn/migration),
+// clear the legacy field, and never re-persist it.
+func TestReadMetaFoldsLegacyMemoryKey(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"vm_id":"` + uuid.New().String() + `","name":"v1","vcpus":2,` +
+		`"memory_mb":2048,"pool_name":"default","status":"running"}`
+	if err := os.WriteFile(filepath.Join(dir, MetaFileName), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy meta: %v", err)
+	}
+
+	m, err := ReadMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadMeta: %v", err)
+	}
+	if m.MemoryMib != 2048 {
+		t.Errorf("MemoryMib = %d, want 2048 (folded from legacy memory_mb)", m.MemoryMib)
+	}
+	if m.MemoryMbLegacy != 0 {
+		t.Errorf("MemoryMbLegacy = %d, want 0 (cleared after fold)", m.MemoryMbLegacy)
+	}
+
+	// Re-persisting must not carry the old key forward.
+	if err := WriteMeta(dir, m); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, MetaFileName))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if strings.Contains(string(raw), "memory_mb\"") {
+		t.Errorf("re-persisted meta still carries a memory_mb key: %s", raw)
+	}
+}
+
+// TestReadMetaNewKeyWinsOverLegacy: when both keys are present (a mixed/hand-
+// edited file), the current memory_mib is authoritative and the legacy fold
+// does not clobber it.
+func TestReadMetaNewKeyWinsOverLegacy(t *testing.T) {
+	dir := t.TempDir()
+	both := `{"vm_id":"` + uuid.New().String() + `","name":"v1",` +
+		`"memory_mib":4096,"memory_mb":2048,"status":"running"}`
+	if err := os.WriteFile(filepath.Join(dir, MetaFileName), []byte(both), 0o600); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+	m, err := ReadMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadMeta: %v", err)
+	}
+	if m.MemoryMib != 4096 {
+		t.Errorf("MemoryMib = %d, want 4096 (new key wins)", m.MemoryMib)
 	}
 }
