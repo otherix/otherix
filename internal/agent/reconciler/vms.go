@@ -24,6 +24,7 @@ import (
 type VMManager interface {
 	List() []*vm.VM
 	HasInFlight(name string) bool
+	GuestMemUsedMiB(name string) *int64
 	Start(ctx context.Context, name string) (*vm.AgentTask, error)
 	Stop(ctx context.Context, name string) (*vm.AgentTask, error)
 	DeleteByName(ctx context.Context, name string) (*vm.AgentTask, error)
@@ -160,7 +161,11 @@ func (r *VMs) reconcile(ctx context.Context) {
 	observed := r.manager.List()
 	nextReports := make(map[string]heartbeat.VMReport, len(observed))
 	for _, v := range observed {
-		nextReports[v.ID.String()] = vmReport(v)
+		var memUsed *int64
+		if v.Status == vm.StatusRunning {
+			memUsed = r.manager.GuestMemUsedMiB(v.Name)
+		}
+		nextReports[v.ID.String()] = vmReport(v, memUsed)
 	}
 
 	for _, v := range observed {
@@ -245,10 +250,11 @@ func (r *VMs) dispatch(ctx context.Context, v *vm.VM, decl heartbeat.DeclaredVM)
 // populate (vm.VM has no field for observed_generation; CP records
 // it CP-side via the desired generation in declared_vms once the
 // reconciler runs).
-func vmReport(v *vm.VM) heartbeat.VMReport {
+func vmReport(v *vm.VM, memUsedMiB *int64) heartbeat.VMReport {
 	return heartbeat.VMReport{
-		VMUUID: v.ID,
-		Phase:  mapPhase(v.Status),
+		VMUUID:        v.ID,
+		Phase:         mapPhase(v.Status),
+		MemoryUsedMib: memUsedMiB,
 	}
 }
 
