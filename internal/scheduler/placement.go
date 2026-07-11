@@ -5,8 +5,10 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -673,7 +675,8 @@ func fitsAllResources(r store.ListEligiblePoolsByNameRow, req PlacementRequest, 
 		}
 	}
 	if cfg.Memory.Enabled {
-		avail := float64(*r.NodeEffectiveAvailability.MemoryEffectiveMib) * cfg.Memory.OvercommitRatio
+		headroom := MemOvercommitHeadroom(r.NodeEffectiveAvailability, cfg.Memory)
+		avail := float64(*r.NodeEffectiveAvailability.MemoryEffectiveMib) + float64(headroom)
 		if avail < float64(req.MemoryMiB) {
 			return false
 		}
@@ -842,7 +845,8 @@ func utilizationScore(r store.ListEligiblePoolsByNameRow, req PlacementRequest, 
 		factors++
 	}
 	if cfg.Memory.Enabled && n.MemoryTotalMib != nil && n.MemoryEffectiveMib != nil {
-		sum += computeUtil(*n.MemoryTotalMib, *n.MemoryEffectiveMib, int64(req.MemoryMiB), cfg.Memory.OvercommitRatio)
+		headroom := MemOvercommitHeadroom(r.NodeEffectiveAvailability, cfg.Memory)
+		sum += computeUtilCap(*n.MemoryTotalMib, *n.MemoryEffectiveMib, int64(req.MemoryMiB), *n.MemoryTotalMib+headroom)
 		factors++
 	}
 	if cfg.Disk.Enabled && req.DiskBytes > 0 && p.CapacityBytes != nil && p.AvailableBytesEffective != nil {
@@ -868,6 +872,65 @@ func computeUtil(total, effective, need int64, ratio float64) float64 {
 		used = 0
 	}
 	return float64(used+need) / (float64(total) * ratio)
+}
+
+// parseCompressedSwapSizeMib extracts compressed_swap.size_mib from a node's
+// capabilities blob (written by the heartbeat projection). Returns (0, false)
+// when the blob is empty, unparseable, or carries no compressed_swap object,
+// so the caller fails closed (treats the node as having no zram net).
+func parseCompressedSwapSizeMib(caps []byte) (int64, bool) {
+	if len(caps) == 0 {
+		return 0, false
+	}
+	var c struct {
+		CompressedSwap *struct {
+			SizeMib int64 `json:"size_mib"`
+		} `json:"compressed_swap"`
+	}
+	if err := json.Unmarshal(caps, &c); err != nil || c.CompressedSwap == nil {
+		return 0, false
+	}
+	return c.CompressedSwap.SizeMib, true
+}
+
+// MemOvercommitHeadroom returns the additional memory (MiB) the scheduler may
+// commit on a node beyond its physical RAM, bounded by the smaller of the
+// operator ceiling (total*(ratio-1)) and the physical net (zram size *
+// confidence). It returns 0 - strict, no overcommit - unless the node reports
+// a compressed_swap device of at least the configured floor and the operator
+// set a ratio above 1.0. Fail-closed on missing metrics or an absent/small
+// zram device: overcommit defaults to inaction on any uncertainty about the
+// net. Exported for the node view and the insufficient-resources envelope.
+func MemOvercommitHeadroom(n store.NodeEffectiveAvailability, cfg MemoryResourceConfig) int64 {
+	if !cfg.Enabled || cfg.OvercommitRatio <= 1.0 || n.MemoryTotalMib == nil {
+		return 0
+	}
+	sizeMib, ok := parseCompressedSwapSizeMib(n.Capabilities)
+	if !ok || sizeMib < cfg.OvercommitZramFloorMib {
+		return 0
+	}
+	operatorCeil := float64(*n.MemoryTotalMib) * (cfg.OvercommitRatio - 1.0)
+	zramCeil := float64(sizeMib) * cfg.OvercommitZramConfidence
+	headroom := math.Min(operatorCeil, zramCeil)
+	if headroom < 0 {
+		return 0
+	}
+	return int64(headroom)
+}
+
+// computeUtilCap returns post-placement utilization (used+need)/capacity for a
+// resource whose capacity is an absolute figure (memory: total + zram
+// headroom) rather than total*ratio. Floors used at zero. Pure - mirrors
+// computeUtil for the additive-capacity case.
+func computeUtilCap(total, effective, need, capacity int64) float64 {
+	if total <= 0 || capacity <= 0 {
+		return 0
+	}
+	used := total - effective
+	if used < 0 {
+		used = 0
+	}
+	return float64(used+need) / float64(capacity)
 }
 
 // scoreLeastVMCount implements the count-based algorithm: minimum

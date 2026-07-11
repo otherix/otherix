@@ -6,6 +6,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,7 @@ type nodeFixture struct {
 	capacityBytes           *int64
 	availableBytes          *int64
 	availableBytesEffective *int64
+	capabilities            []byte
 }
 
 func makeRow(f nodeFixture) store.ListEligiblePoolsByNameRow {
@@ -166,6 +168,7 @@ func makeRow(f nodeFixture) store.ListEligiblePoolsByNameRow {
 			MemoryTotalMib:     f.memTotalMib,
 			MemoryAvailableMib: f.memAvailMib,
 			MemoryEffectiveMib: memEff,
+			Capabilities:       f.capabilities,
 		},
 		PoolEffectiveCapacity: store.PoolEffectiveCapacity{
 			ID:                      poolID,
@@ -1130,18 +1133,19 @@ func TestSchedulePlacement_AllDisabled_CountFallback(t *testing.T) {
 	}
 }
 
-// TestSchedulePlacement_OvercommitInflatesCapacity — ratio > 1.0
-// allows a fit that strict 1.0 would reject. Asserts the multiplier
-// reaches the fit check.
+// TestSchedulePlacement_OvercommitInflatesCapacity — ratio > 1.0 on a
+// node with a zram net allows a fit that strict 1.0 would reject.
+// Asserts the zram-bounded headroom reaches the fit check.
 func TestSchedulePlacement_OvercommitInflatesCapacity(t *testing.T) {
 	// Memory is the tight resource: 8192 MiB total, 2048 MiB effective,
-	// request 3000 MiB. Strict 1.0 rejects (2048 < 3000); ratio 2.0
-	// inflates effective to 4096 and admits the candidate.
+	// request 3000 MiB. Strict 1.0 rejects (2048 < 3000); ratio 2.0 with a
+	// 2048 MiB zram net adds 2048 MiB headroom (avail 4096) and admits.
 	cpuTotal, cpuAvail, memTotal, memAvail := metrics(8, 8, 8192, 2048)
 	row := diskRow(nodeFixture{
 		uuidSuffix: 1, name: "node-a", nameOverride: true,
 		cpuTotal: cpuTotal, cpuAvailable: cpuAvail,
 		memTotalMib: memTotal, memAvailMib: memAvail,
+		capabilities: []byte(`{"compressed_swap":{"size_mib":2048}}`),
 	}, 200*1073741824, 200*1073741824)
 	q := &fakeQuerier{eligible: []store.ListEligiblePoolsByNameRow{row}}
 
@@ -1154,9 +1158,11 @@ func TestSchedulePlacement_OvercommitInflatesCapacity(t *testing.T) {
 		t.Errorf("strict err = %v, want ErrInsufficientResources", err)
 	}
 
-	// 2.0 overcommit on memory: admitted.
+	// 2.0 overcommit on memory, bounded by the zram net: admitted.
 	loose := defaultResources()
 	loose.Memory.OvercommitRatio = 2.0
+	loose.Memory.OvercommitZramFloorMib = 256
+	loose.Memory.OvercommitZramConfidence = 1.0
 	got, err := SchedulePlacement(context.Background(), q,
 		PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 3000, DiskBytes: 1073741824},
 		PlacementConfig{Algorithm: AlgorithmResourceAware, Resources: loose})
@@ -1476,5 +1482,134 @@ func TestSchedulePlacement_NoExcludeUnchanged(t *testing.T) {
 	}
 	if got.Node.ID != spare.NodeEffectiveAvailability.ID {
 		t.Errorf("winner = %s, want node-spare (nil exclude must be a no-op)", got.Node.Name)
+	}
+}
+
+func TestParseCompressedSwapSizeMib(t *testing.T) {
+	tests := []struct {
+		name     string
+		caps     string
+		wantSize int64
+		wantOK   bool
+	}{
+		{name: "present", caps: `{"compressed_swap":{"size_mib":2048,"algorithm":"zstd"}}`, wantSize: 2048, wantOK: true},
+		{name: "absent field", caps: `{"cpu_model":"x"}`, wantSize: 0, wantOK: false},
+		{name: "empty", caps: ``, wantSize: 0, wantOK: false},
+		{name: "malformed", caps: `{not json`, wantSize: 0, wantOK: false},
+		{name: "null compressed_swap", caps: `{"compressed_swap":null}`, wantSize: 0, wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseCompressedSwapSizeMib([]byte(tt.caps))
+			if got != tt.wantSize || ok != tt.wantOK {
+				t.Errorf("parseCompressedSwapSizeMib(%q) = (%d, %v), want (%d, %v)", tt.caps, got, ok, tt.wantSize, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestMemOvercommitHeadroom(t *testing.T) {
+	total := func(v int64) *int64 { return &v }
+	caps := func(sizeMib int64) []byte {
+		return []byte(fmt.Sprintf(`{"compressed_swap":{"size_mib":%d}}`, sizeMib))
+	}
+	tests := []struct {
+		name string
+		node store.NodeEffectiveAvailability
+		cfg  MemoryResourceConfig
+		want int64
+	}{
+		{
+			name: "ratio 1.0 is a no-op",
+			node: store.NodeEffectiveAvailability{MemoryTotalMib: total(8192), Capabilities: caps(2048)},
+			cfg:  MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 1.0},
+			want: 0,
+		},
+		{
+			name: "no zram device is strict",
+			node: store.NodeEffectiveAvailability{MemoryTotalMib: total(8192), Capabilities: []byte(`{}`)},
+			cfg:  MemoryResourceConfig{Enabled: true, OvercommitRatio: 2.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 1.0},
+			want: 0,
+		},
+		{
+			name: "zram below floor is strict",
+			node: store.NodeEffectiveAvailability{MemoryTotalMib: total(8192), Capabilities: caps(100)},
+			cfg:  MemoryResourceConfig{Enabled: true, OvercommitRatio: 2.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 1.0},
+			want: 0,
+		},
+		{
+			name: "zram ceiling binds (ratio 2.0, zram=ram/4 -> 1.25x)",
+			node: store.NodeEffectiveAvailability{MemoryTotalMib: total(8192), Capabilities: caps(2048)},
+			cfg:  MemoryResourceConfig{Enabled: true, OvercommitRatio: 2.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 1.0},
+			want: 2048, // min(8192*(2-1)=8192, 2048*1.0=2048)
+		},
+		{
+			name: "operator ceiling binds (ratio 1.1)",
+			node: store.NodeEffectiveAvailability{MemoryTotalMib: total(8192), Capabilities: caps(4096)},
+			cfg:  MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.1, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 1.0},
+			want: 819, // min(8192*0.1=819.2 -> 819, 4096*1.0=4096)
+		},
+		{
+			name: "confidence discount",
+			node: store.NodeEffectiveAvailability{MemoryTotalMib: total(8192), Capabilities: caps(2048)},
+			cfg:  MemoryResourceConfig{Enabled: true, OvercommitRatio: 2.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.9},
+			want: 1843, // min(8192, 2048*0.9=1843.2 -> 1843)
+		},
+		{
+			name: "nil total is fail-closed",
+			node: store.NodeEffectiveAvailability{MemoryTotalMib: nil, Capabilities: caps(2048)},
+			cfg:  MemoryResourceConfig{Enabled: true, OvercommitRatio: 2.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 1.0},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MemOvercommitHeadroom(tt.node, tt.cfg); got != tt.want {
+				t.Errorf("MemOvercommitHeadroom(%s) = %d, want %d", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMemoryOvercommitAdmitsOnlyZramNode(t *testing.T) {
+	// need 2560 MiB; node has 2048 MiB effective (strict reject) but 8192 total.
+	// With ratio 2.0 + zram 2048: headroom 2048 -> avail 4096 >= 2560 -> admit.
+	// The strict node sorts ahead of the zram node by name, so under the old
+	// blind multiplier (2048*2.0=4096 >= 2560) it would wrongly win.
+	zCPUTotal, zCPUAvail, zMemTotal, zMemAvail := metrics(8, 8, 8192, 2048)
+	withZram := makeRow(nodeFixture{
+		uuidSuffix: 1, name: "zram-node",
+		cpuTotal: zCPUTotal, cpuAvailable: zCPUAvail,
+		memTotalMib: zMemTotal, memAvailMib: zMemAvail,
+		capabilities: []byte(`{"compressed_swap":{"size_mib":2048}}`),
+	})
+	sCPUTotal, sCPUAvail, sMemTotal, sMemAvail := metrics(8, 8, 8192, 2048)
+	noZram := makeRow(nodeFixture{
+		uuidSuffix: 2, name: "strict-node",
+		cpuTotal: sCPUTotal, cpuAvailable: sCPUAvail,
+		memTotalMib: sMemTotal, memAvailMib: sMemAvail,
+		capabilities: []byte(`{}`),
+	})
+
+	cfg := PlacementConfig{
+		Algorithm: AlgorithmResourceAware,
+		Resources: ResourcesConfig{
+			CPU:  ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+			Disk: ResourceConfig{Enabled: false},
+			Memory: MemoryResourceConfig{
+				Enabled: true, OvercommitRatio: 2.0,
+				OvercommitZramFloorMib: 256, OvercommitZramConfidence: 1.0,
+			},
+		},
+	}
+	req := PlacementRequest{PoolName: "default", VCPUs: 1, MemoryMiB: 2560}
+
+	q := &fakeQuerier{eligible: []store.ListEligiblePoolsByNameRow{withZram, noZram}}
+	dec, err := SchedulePlacement(context.Background(), q, req, cfg)
+	if err != nil {
+		t.Fatalf("SchedulePlacement: %v", err)
+	}
+	if dec.Node.Name != "zram-node" {
+		t.Errorf("winner = %q, want zram-node (only the zram node has headroom for 2560 MiB)", dec.Node.Name)
 	}
 }
