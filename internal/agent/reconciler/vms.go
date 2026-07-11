@@ -244,8 +244,9 @@ func (r *VMs) dispatch(ctx context.Context, v *vm.VM, decl heartbeat.DeclaredVM)
 	}
 }
 
-// vmReport projects a vm.VM snapshot to heartbeat.VMReport. Currently
-// surfaces vm_uuid + phase only; pid / observed_generation / timestamps
+// vmReport projects a vm.VM snapshot to heartbeat.VMReport. Surfaces
+// vm_uuid + phase, plus memory_used_mib (nil for non-running VMs or when
+// the balloon stats read failed); pid / observed_generation / timestamps
 // are forward-compatibility slots that the agent does not yet
 // populate (vm.VM has no field for observed_generation; CP records
 // it CP-side via the desired generation in declared_vms once the
