@@ -121,6 +121,26 @@ func TestPrintVMTextCloudInit(t *testing.T) {
 	})
 }
 
+// TestPrintVMTextMemoryUsed covers the observed guest memory-used line: the
+// value when the guest balloon has reported, and <unset> when nil (VM not
+// running or the guest has not reported yet). The line is always present so
+// the observed field is discoverable in the text view.
+func TestPrintVMTextMemoryUsed(t *testing.T) {
+	used := int64(206)
+	t.Run("reported value", func(t *testing.T) {
+		out := renderVMText(t, cpclient.VM{Status: cpclient.VMStatus{Phase: "running", MemoryUsedMib: &used}})
+		if got, ok := lineFor(out, "memory_used_mib"); !ok || got != "206" {
+			t.Errorf("memory_used_mib line = %q (present=%v), want %q", got, ok, "206")
+		}
+	})
+	t.Run("nil renders unset", func(t *testing.T) {
+		out := renderVMText(t, cpclient.VM{Status: cpclient.VMStatus{Phase: "stopped"}})
+		if got, ok := lineFor(out, "memory_used_mib"); !ok || got != "<unset>" {
+			t.Errorf("memory_used_mib line = %q (present=%v), want %q", got, ok, "<unset>")
+		}
+	})
+}
+
 // TestPrintVMTextImageSHA256 covers the conditional image_sha256 line:
 // shown when the VM row carries a digest, omitted when empty.
 func TestPrintVMTextImageSHA256(t *testing.T) {

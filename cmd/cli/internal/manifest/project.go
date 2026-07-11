@@ -35,9 +35,10 @@ type outMetadata struct {
 // reason and message are emitted only when set. It is informational output
 // only -- the create/apply path reads spec, never status.
 type outVMStatus struct {
-	Phase   string `yaml:"phase"`
-	Reason  string `yaml:"reason,omitempty"`
-	Message string `yaml:"message,omitempty"`
+	Phase         string `yaml:"phase"`
+	Reason        string `yaml:"reason,omitempty"`
+	Message       string `yaml:"message,omitempty"`
+	MemoryUsedMib *int64 `yaml:"memoryUsedMib,omitempty"`
 }
 
 // encodeDoc marshals one outDoc with two-space indentation.
@@ -339,9 +340,10 @@ func ProjectVM(v cpclient.VM) ([]byte, error) {
 	var status *outVMStatus
 	if v.Status.Phase != "" {
 		status = &outVMStatus{
-			Phase:   v.Status.Phase,
-			Reason:  v.Status.Reason,
-			Message: v.Status.Message,
+			Phase:         v.Status.Phase,
+			Reason:        v.Status.Reason,
+			Message:       v.Status.Message,
+			MemoryUsedMib: v.Status.MemoryUsedMib,
 		}
 	}
 	return encodeDoc(outDoc{

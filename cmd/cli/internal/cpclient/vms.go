@@ -154,6 +154,10 @@ type VMStatus struct {
 	Phase   string `json:"phase"`
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
+	// MemoryUsedMib is the guest-reported in-use memory (MiB) from
+	// virtio-balloon stats. Best-effort observed state: nil when the VM is
+	// not running or the guest balloon driver has not reported yet.
+	MemoryUsedMib *int64 `json:"memory_used_mib,omitempty"`
 }
 
 // IsTerminalPhase reports whether the VM's scheduling/lifecycle phase has
