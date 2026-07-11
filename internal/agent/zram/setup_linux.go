@@ -18,7 +18,9 @@ import (
 // Ensure reconciles the node to the desired zram state described by p, reading
 // host RAM and current zram state itself. It is idempotent across agent
 // restarts. The caller must treat a returned error as non-fatal (log WARN and
-// continue) so a setup failure never crashes the agent.
+// continue) so a setup failure never crashes the agent. Call once at agent
+// boot; Ensure re-observes host state internally and is not safe for
+// concurrent invocation.
 func Ensure(p Params, log *slog.Logger) (*Active, error) {
 	if p.Enabled && p.Algorithm == "" {
 		p.Algorithm = "zstd"
