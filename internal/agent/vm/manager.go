@@ -766,7 +766,7 @@ func (m *Manager) GuestMemUsedMiB(name string) *int64 {
 	// no-ops if the read already returned.
 	wd := time.AfterFunc(2*time.Second, func() { _ = conn.Close() })
 	defer wd.Stop()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	used, err := conn.GuestMemUsedMiB()
 	if err != nil {
 		return nil
