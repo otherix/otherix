@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/otherix/otherix/internal/agent/vm"
+	"github.com/otherix/otherix/internal/agent/zram"
 	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/version"
 )
@@ -137,6 +138,7 @@ type LinuxCollector struct {
 	publishedListeners PublishedListenerReporter
 	migration          config.MigrationConfig
 	qemu               config.QEMUConfig
+	zramObserve        func() *zram.Active
 	agentVersion       string
 	architecture       string
 	hostName           string
@@ -167,6 +169,10 @@ type CollectorDeps struct {
 	PublishedListeners PublishedListenerReporter
 	Migration          config.MigrationConfig
 	QEMU               config.QEMUConfig
+	// ZramObserve reports the node's active zram safety net (memory-density
+	// slice 2). Defaults to zram.Observe; injected in tests to avoid coupling
+	// the collector to the host's real swap state.
+	ZramObserve func() *zram.Active
 	// IngressAdvertisedEndpoint is the node's ingress splicer URL. Set only when
 	// the ingress plane is active (a co-located hypervisor or standalone gateway);
 	// left empty for a plain hypervisor.
@@ -188,6 +194,10 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		procPath = "/proc"
 	}
 	host, _ := os.Hostname()
+	zo := deps.ZramObserve
+	if zo == nil {
+		zo = zram.Observe
+	}
 	return &LinuxCollector{
 		procPath:                  procPath,
 		vms:                       deps.VMs,
@@ -203,6 +213,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		publishedListeners:        deps.PublishedListeners,
 		migration:                 deps.Migration,
 		qemu:                      deps.QEMU,
+		zramObserve:               zo,
 		agentVersion:              version.Current().Version,
 		architecture:              archFromGo(runtime.GOARCH),
 		hostName:                  host,
@@ -250,6 +261,16 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 
 	caps.KvmAvailable = c.kvmAvailable()
 	caps.NestedVirt = c.nestedVirtEnabled()
+	if c.zramObserve != nil {
+		if a := c.zramObserve(); a != nil {
+			caps.CompressedSwap = &CompressedSwapInfo{
+				Kind:        a.Kind,
+				SizeMib:     a.SizeMib,
+				MemLimitMib: a.MemLimitMib,
+				Algorithm:   a.Algorithm,
+			}
+		}
+	}
 
 	usedCores, usedMib := c.sumRunningVMs()
 	resources := NodeResources{

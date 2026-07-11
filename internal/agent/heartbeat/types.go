@@ -365,21 +365,33 @@ type MigrationCap struct {
 	PortRangeEnd   int32  `json:"port_range_end"`
 }
 
+// CompressedSwapInfo reports the node's active compressed-swap safety net
+// (memory-density slice 2). Observed from swapon --show + /sys/block/zramN, so a
+// nil pointer on NodeCapabilities means the net is off right now, regardless of
+// what agent.yaml configured.
+type CompressedSwapInfo struct {
+	Kind        string `json:"kind"`
+	SizeMib     int64  `json:"size_mib"`
+	MemLimitMib int64  `json:"mem_limit_mib"`
+	Algorithm   string `json:"algorithm"`
+}
+
 // NodeCapabilities is the slow-moving host inventory: CPU model,
 // kernel/qemu versions, NUMA topology.
 type NodeCapabilities struct {
-	CPUModel           string            `json:"cpu_model"`
-	CPUFlags           []string          `json:"cpu_flags"`
-	CPUCoresTotal      int32             `json:"cpu_cores_total"`
-	MemoryTotalMib     int64             `json:"memory_total_mib"`
-	Hugepages2MibTotal *int32            `json:"hugepages_2mib_total"`
-	Hugepages1GibTotal *int32            `json:"hugepages_1gib_total"`
-	KernelVersion      string            `json:"kernel_version"`
-	QEMUVersion        string            `json:"qemu_version"`
-	KvmAvailable       bool              `json:"kvm_available"`
-	NestedVirt         bool              `json:"nested_virt"`
-	QEMUBinaries       map[string]string `json:"qemu_binaries"`
-	NumaTopology       map[string]any    `json:"numa_topology,omitempty"`
+	CPUModel           string              `json:"cpu_model"`
+	CPUFlags           []string            `json:"cpu_flags"`
+	CPUCoresTotal      int32               `json:"cpu_cores_total"`
+	MemoryTotalMib     int64               `json:"memory_total_mib"`
+	Hugepages2MibTotal *int32              `json:"hugepages_2mib_total"`
+	Hugepages1GibTotal *int32              `json:"hugepages_1gib_total"`
+	KernelVersion      string              `json:"kernel_version"`
+	QEMUVersion        string              `json:"qemu_version"`
+	KvmAvailable       bool                `json:"kvm_available"`
+	NestedVirt         bool                `json:"nested_virt"`
+	QEMUBinaries       map[string]string   `json:"qemu_binaries"`
+	NumaTopology       map[string]any      `json:"numa_topology,omitempty"`
+	CompressedSwap     *CompressedSwapInfo `json:"compressed_swap,omitempty"`
 }
 
 // NodeResources is the per-tick free-resource snapshot. Free is
