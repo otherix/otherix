@@ -114,6 +114,18 @@ To upgrade a single component instead, re-run the install script for it - the sa
 curl -fsSL get.otherix.dev | OTHERIX_COMPONENT=api sudo -E sh
 ```
 
+### Ordering (multi-replica and mixed fleets)
+
+Upgrade the **control plane before the agents**, and never roll the control
+plane back below the version your agents are running. Agents report their
+capabilities to the control plane on every heartbeat, and newer agents may
+report fields an older control plane does not recognise. A control plane that
+predates a field its agents send rejects those heartbeats, and the affected
+nodes are marked unreachable even though their VMs keep running. Rolling the
+control plane forward (or restoring it to at least the agents' version) clears
+the condition on the next heartbeat. Upgrading all control-plane replicas first,
+then the agents, avoids it entirely.
+
 ## Filesystem layout
 
 Otherix follows a fixed convention:
