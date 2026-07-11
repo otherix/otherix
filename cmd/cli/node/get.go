@@ -135,11 +135,13 @@ func printNodeHardware(cmd *cobra.Command, n cpclient.Node) {
 }
 
 // compressedSwapLine renders the node's compressed-swap safety net from the raw
-// capabilities blob: "zram 768MiB (cap 256MiB) zstd" when active, else "off".
-// The "(cap NMiB)" segment is suppressed when mem_limit_mib is 0 (the
-// systemd-zram-generator default: no physical-RAM cap), rendering "zram 768MiB
-// zstd". A missing / empty / unparseable blob renders "off" — the Unmarshal
-// error is intentionally ignored (best-effort display, never panics).
+// capabilities blob: "zram 768MiB (cap 256MiB) zstd  swapped 100MiB (13%)  ram
+// 30MiB" when active, else "off". The "(cap NMiB)" segment is suppressed when
+// mem_limit_mib is 0 (the systemd-zram-generator default: no physical-RAM cap).
+// The trailing utilization (logical swapped-in + percent of size, physical RAM
+// footprint) always renders when on, showing 0MiB (0%) when idle. A missing /
+// empty / unparseable blob renders "off" — the Unmarshal error is intentionally
+// ignored (best-effort display, never panics).
 func compressedSwapLine(caps []byte) string {
 	var c struct {
 		CompressedSwap *struct {
@@ -147,6 +149,8 @@ func compressedSwapLine(caps []byte) string {
 			SizeMib     int64  `json:"size_mib"`
 			MemLimitMib int64  `json:"mem_limit_mib"`
 			Algorithm   string `json:"algorithm"`
+			SwappedMib  int64  `json:"swapped_mib"`
+			RAMUsedMib  int64  `json:"ram_used_mib"`
 		} `json:"compressed_swap"`
 	}
 	if len(caps) > 0 {
@@ -160,7 +164,12 @@ func compressedSwapLine(caps []byte) string {
 	if cs.MemLimitMib > 0 {
 		line += fmt.Sprintf(" (cap %dMiB)", cs.MemLimitMib)
 	}
-	return line + " " + cs.Algorithm
+	line += " " + cs.Algorithm
+	pct := int64(0)
+	if cs.SizeMib > 0 {
+		pct = cs.SwappedMib * 100 / cs.SizeMib
+	}
+	return fmt.Sprintf("%s  swapped %dMiB (%d%%)  ram %dMiB", line, cs.SwappedMib, pct, cs.RAMUsedMib)
 }
 
 // formatSystemDiskUsage renders "used N / M GiB" with the percentage

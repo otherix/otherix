@@ -34,11 +34,24 @@ func lineFor(out, key string) (string, bool) {
 func TestPrintNodeTextCompressedSwap(t *testing.T) {
 	n := cpclient.Node{
 		Name:         "node-1",
-		Capabilities: []byte(`{"kvm_available":true,"compressed_swap":{"kind":"zram","size_mib":768,"mem_limit_mib":256,"algorithm":"zstd"}}`),
+		Capabilities: []byte(`{"kvm_available":true,"compressed_swap":{"kind":"zram","size_mib":768,"mem_limit_mib":256,"algorithm":"zstd","swapped_mib":100,"ram_used_mib":30}}`),
 	}
 	out := renderNodeText(t, n)
-	if got, ok := lineFor(out, "compressed_swap"); !ok || got != "zram 768MiB (cap 256MiB) zstd" {
-		t.Errorf("compressed_swap line = %q (present=%v), want %q", got, ok, "zram 768MiB (cap 256MiB) zstd")
+	want := "zram 768MiB (cap 256MiB) zstd  swapped 100MiB (13%)  ram 30MiB"
+	if got, ok := lineFor(out, "compressed_swap"); !ok || got != want {
+		t.Errorf("compressed_swap line = %q (present=%v), want %q", got, ok, want)
+	}
+}
+
+func TestPrintNodeTextCompressedSwapInUse(t *testing.T) {
+	n := cpclient.Node{
+		Name:         "node-1",
+		Capabilities: []byte(`{"compressed_swap":{"kind":"zram","size_mib":1980,"mem_limit_mib":0,"algorithm":"zstd","swapped_mib":240,"ram_used_mib":60}}`),
+	}
+	out := renderNodeText(t, n)
+	want := "zram 1980MiB zstd  swapped 240MiB (12%)  ram 60MiB"
+	if got, ok := lineFor(out, "compressed_swap"); !ok || got != want {
+		t.Errorf("compressed_swap line = %q (present=%v), want %q", got, ok, want)
 	}
 }
 
@@ -48,9 +61,10 @@ func TestPrintNodeTextCompressedSwapNoCapWhenMemLimitZero(t *testing.T) {
 		Capabilities: []byte(`{"compressed_swap":{"kind":"zram","size_mib":768,"mem_limit_mib":0,"algorithm":"zstd"}}`),
 	}
 	out := renderNodeText(t, n)
+	want := "zram 768MiB zstd  swapped 0MiB (0%)  ram 0MiB"
 	got, ok := lineFor(out, "compressed_swap")
-	if !ok || got != "zram 768MiB zstd" {
-		t.Errorf("compressed_swap line = %q (present=%v), want %q", got, ok, "zram 768MiB zstd")
+	if !ok || got != want {
+		t.Errorf("compressed_swap line = %q (present=%v), want %q", got, ok, want)
 	}
 }
 

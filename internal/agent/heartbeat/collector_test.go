@@ -574,7 +574,7 @@ func TestCollectCompressedSwapFromObserver(t *testing.T) {
 		agentVersion: "test",
 		architecture: "amd64",
 		zramObserve: func() *zram.Active {
-			return &zram.Active{Kind: "zram", SizeMib: 768, MemLimitMib: 256, Algorithm: "zstd"}
+			return &zram.Active{Kind: "zram", SizeMib: 768, MemLimitMib: 256, Algorithm: "zstd", SwappedMib: 240, RAMUsedMib: 60}
 		},
 	}
 
@@ -585,6 +585,9 @@ func TestCollectCompressedSwapFromObserver(t *testing.T) {
 	got := rep.Capabilities.CompressedSwap
 	if got == nil || got.MemLimitMib != 256 || got.Algorithm != "zstd" {
 		t.Fatalf("CompressedSwap = %+v, want mem_limit 256 / zstd", got)
+	}
+	if got.SwappedMib != 240 || got.RAMUsedMib != 60 {
+		t.Errorf("CompressedSwap utilization = swapped %d / ram %d, want 240 / 60", got.SwappedMib, got.RAMUsedMib)
 	}
 }
 

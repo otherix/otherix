@@ -208,6 +208,12 @@ type compressedSwapReport struct {
 	SizeMib     int64  `json:"size_mib"`
 	MemLimitMib int64  `json:"mem_limit_mib"`
 	Algorithm   string `json:"algorithm"`
+	// SwappedMib (logical swapped-in) and RAMUsedMib (physical RAM footprint) are
+	// the agent's observed live utilization of the net. Accepted under
+	// DisallowUnknownFields and marshalled straight into the capabilities blob by
+	// buildCapabilitiesJSON, so node get surfaces them.
+	SwappedMib int64 `json:"swapped_mib"`
+	RAMUsedMib int64 `json:"ram_used_mib"`
 }
 
 type nodeResourcesReport struct {

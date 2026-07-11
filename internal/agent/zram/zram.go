@@ -24,6 +24,29 @@ type Active struct {
 	SizeMib     int64
 	MemLimitMib int64
 	Algorithm   string
+	// SwappedMib is the logical amount currently swapped in (uncompressed bytes
+	// of data zram holds, from mm_stat orig_data_size). RAMUsedMib is the physical
+	// RAM zram has allocated to store it (mm_stat mem_used_total, incl. allocator
+	// overhead). Both are 0 when mm_stat is unreadable/unparseable - observation
+	// never blocks the heartbeat.
+	SwappedMib int64
+	RAMUsedMib int64
+}
+
+// parseMemStat parses a /sys/block/zramN/mm_stat line and returns
+// (orig_data_size, mem_used_total) in bytes. ok is false when the line has
+// fewer than 3 fields or a field is non-numeric.
+func parseMemStat(line string) (orig, memUsed int64, ok bool) {
+	f := strings.Fields(line)
+	if len(f) < 3 {
+		return 0, 0, false
+	}
+	o, err1 := strconv.ParseInt(f[0], 10, 64)
+	m, err2 := strconv.ParseInt(f[2], 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return o, m, true
 }
 
 // parseZramSwapDevices parses /proc/swaps and returns the Filename-column
@@ -90,6 +113,12 @@ func observeLargest(devices []string, sysRoot string) *Active {
 		}
 		if b, err := os.ReadFile(filepath.Join(dev, "comp_algorithm")); err == nil { // #nosec G304
 			a.Algorithm = activeAlgorithm(string(b))
+		}
+		if b, err := os.ReadFile(filepath.Join(dev, "mm_stat")); err == nil { // #nosec G304
+			if orig, memUsed, ok := parseMemStat(string(b)); ok {
+				a.SwappedMib = orig / (1024 * 1024)
+				a.RAMUsedMib = memUsed / (1024 * 1024)
+			}
 		}
 		if best == nil || a.SizeMib > best.SizeMib {
 			best = a

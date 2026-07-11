@@ -13,7 +13,7 @@ func TestBuildCapabilitiesJSONIncludesCompressedSwap(t *testing.T) {
 	c := nodeCapabilitiesReport{
 		KvmAvailable: true,
 		CompressedSwap: &compressedSwapReport{
-			Kind: "zram", SizeMib: 768, MemLimitMib: 256, Algorithm: "zstd",
+			Kind: "zram", SizeMib: 768, MemLimitMib: 256, Algorithm: "zstd", SwappedMib: 240, RAMUsedMib: 60,
 		},
 	}
 	blob, err := buildCapabilitiesJSON(c)
@@ -30,6 +30,9 @@ func TestBuildCapabilitiesJSONIncludesCompressedSwap(t *testing.T) {
 	}
 	if cs["algorithm"] != "zstd" || cs["mem_limit_mib"].(float64) != 256 {
 		t.Errorf("compressed_swap = %v, want algorithm zstd / mem_limit_mib 256", cs)
+	}
+	if cs["swapped_mib"].(float64) != 240 || cs["ram_used_mib"].(float64) != 60 {
+		t.Errorf("compressed_swap utilization = %v, want swapped_mib 240 / ram_used_mib 60", cs)
 	}
 }
 

@@ -373,6 +373,11 @@ type CompressedSwapInfo struct {
 	SizeMib     int64  `json:"size_mib"`
 	MemLimitMib int64  `json:"mem_limit_mib"`
 	Algorithm   string `json:"algorithm"`
+	// SwappedMib (logical swapped-in) and RAMUsedMib (physical RAM footprint)
+	// are the live utilization of the net, observed from mm_stat. Zero when idle
+	// or unreadable.
+	SwappedMib int64 `json:"swapped_mib"`
+	RAMUsedMib int64 `json:"ram_used_mib"`
 }
 
 // NodeCapabilities is the slow-moving host inventory: CPU model,

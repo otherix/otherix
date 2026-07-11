@@ -268,6 +268,8 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 				SizeMib:     a.SizeMib,
 				MemLimitMib: a.MemLimitMib,
 				Algorithm:   a.Algorithm,
+				SwappedMib:  a.SwappedMib,
+				RAMUsedMib:  a.RAMUsedMib,
 			}
 		}
 	}
