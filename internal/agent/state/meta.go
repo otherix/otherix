@@ -33,20 +33,25 @@ const MetaFileName = "meta.json"
 // is a clean break, not a migration. Existing dev Lima environments
 // must `make clean-dev` after landing.
 type VMMeta struct {
-	VMID          uuid.UUID `json:"vm_id"`
-	Name          string    `json:"name"`
-	VCPUs         int       `json:"vcpus"`
-	MemoryMib     int       `json:"memory_mib"`
-	PoolName      string    `json:"pool_name"`
-	Architecture  string    `json:"architecture"`
-	DiskPath      string    `json:"disk_path"`
-	QMPSocket     string    `json:"qmp_socket"`
-	ConsoleSocket string    `json:"console_socket"`
-	PIDFile       string    `json:"pid_file"`
-	CidataPath    string    `json:"cidata_path,omitempty"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	VMID      uuid.UUID `json:"vm_id"`
+	Name      string    `json:"name"`
+	VCPUs     int       `json:"vcpus"`
+	MemoryMib int       `json:"memory_mib"`
+	// MemoryMbLegacy carries the pre-#242 `memory_mb` key so a meta.json
+	// written by an older agent still yields the right memory after an
+	// in-place upgrade. ReadMeta folds it into MemoryMib when the new key is
+	// absent, then clears it; omitempty keeps it out of every re-persisted file.
+	MemoryMbLegacy int       `json:"memory_mb,omitempty"`
+	PoolName       string    `json:"pool_name"`
+	Architecture   string    `json:"architecture"`
+	DiskPath       string    `json:"disk_path"`
+	QMPSocket      string    `json:"qmp_socket"`
+	ConsoleSocket  string    `json:"console_socket"`
+	PIDFile        string    `json:"pid_file"`
+	CidataPath     string    `json:"cidata_path,omitempty"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 	// NICs records the VM's materialised network interfaces so the agent
 	// can reconstruct them on startup replay and tear down the host taps
 	// on delete. Omitted entirely for legacy VMs with no declared NICs.
@@ -152,5 +157,14 @@ func ReadMeta(vmDir string) (*VMMeta, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("unmarshal meta in %s: %w", vmDir, err)
 	}
+	// Back-compat: a meta.json written before #242 carries `memory_mb` instead
+	// of `memory_mib`. Fold the legacy key in when the new one is absent so an
+	// in-place agent upgrade does not read a VM's memory as 0 (which would
+	// strand it on the next respawn/migration at the >=128 MiB spec check),
+	// then clear it so it is never re-persisted.
+	if m.MemoryMib == 0 && m.MemoryMbLegacy != 0 {
+		m.MemoryMib = m.MemoryMbLegacy
+	}
+	m.MemoryMbLegacy = 0
 	return &m, nil
 }
