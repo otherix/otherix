@@ -17,8 +17,54 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
+
+// seedRuntime writes a vm_runtime row on nodeID with the given phase and balloon
+// reading through the real UpsertVMRuntime projection seam, so the
+// index/vm_runtime/node/<nodeID>/<vmID> leaf is written the production way.
+func seedRuntime(t *testing.T, s *etcdstore.Store, nodeID uuid.UUID, phase store.VMPhase, reading *int64) {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: uuid.New(), CurrentNodeID: &nodeID, Phase: phase, MemoryUsedMib: reading,
+		})
+	}); err != nil {
+		t.Fatalf("seedRuntime: %v", err)
+	}
+}
+
+func TestNodeMemoryUsedMib(t *testing.T) {
+	ctx := context.Background()
+	s, _ := startStore(t)
+	nodeID := uuid.New()
+	mib := func(v int64) *int64 { return &v }
+
+	// Two running VMs report readings; one running reports nil; one stopped reports a reading.
+	seedRuntime(t, s, nodeID, store.VmPhaseRunning, mib(1000))
+	seedRuntime(t, s, nodeID, store.VmPhaseRunning, mib(1500))
+	seedRuntime(t, s, nodeID, store.VmPhaseRunning, nil)
+	seedRuntime(t, s, nodeID, store.VmPhaseStopped, mib(9999))
+
+	got, err := s.NodeMemoryUsedMib(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("NodeMemoryUsedMib: %v", err)
+	}
+	if got == nil || *got != 2500 {
+		t.Errorf("NodeMemoryUsedMib = %v, want 2500 (1000+1500; nil and stopped excluded)", got)
+	}
+
+	// A node with no readings returns nil.
+	empty, err := s.NodeMemoryUsedMib(ctx, uuid.New())
+	if err != nil {
+		t.Fatalf("NodeMemoryUsedMib(empty): %v", err)
+	}
+	if empty != nil {
+		t.Errorf("NodeMemoryUsedMib(empty) = %v, want nil", empty)
+	}
+}
 
 func nodeParams(name string) store.CreateNodeParams {
 	return store.CreateNodeParams{

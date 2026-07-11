@@ -59,6 +59,45 @@ func vmRuntimeNodeIndexPrefix(nodeID uuid.UUID) string {
 	return etcd.Key("index", "vm_runtime", "node", nodeID.String()) + "/"
 }
 
+// NodeMemoryUsedMib sums the guest-reported used memory (balloon
+// memory_used_mib) across the node's RUNNING VM runtime rows. It returns nil
+// when no running VM on the node has reported a reading yet, so the caller
+// renders "unset" rather than a misleading 0. Rows with a nil reading are
+// skipped, not counted as zero. It ranges the vm_runtime-by-node index the
+// heartbeat projection maintains.
+func (s *Store) NodeMemoryUsedMib(ctx context.Context, nodeID uuid.UUID) (*int64, error) {
+	items, err := s.c.Range(ctx, vmRuntimeNodeIndexPrefix(nodeID))
+	if err != nil {
+		return nil, err
+	}
+	var sum int64
+	var seen bool
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			continue
+		}
+		var rt store.VMRuntime
+		found, gerr := s.c.GetJSON(ctx, vmRuntimeKey(id), &rt)
+		if gerr != nil {
+			return nil, gerr
+		}
+		// Guard CurrentNodeID == nodeID as well: a stale by-node index leaf
+		// lingering after a live-migration cutover would otherwise count the
+		// VM's memory on the OLD node (double-count).
+		if !found || rt.CurrentNodeID == nil || *rt.CurrentNodeID != nodeID ||
+			rt.Phase != store.VmPhaseRunning || rt.MemoryUsedMib == nil {
+			continue
+		}
+		sum += *rt.MemoryUsedMib
+		seen = true
+	}
+	if !seen {
+		return nil, nil
+	}
+	return &sum, nil
+}
+
 // migrationsNodeIndexPrefix lists every migration touching a node as source or
 // target (maintained by the migrations slice) - consumed by DeleteNode's active
 // migration count + cancel, which filter to non-terminal phases by reading the
