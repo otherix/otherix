@@ -17,7 +17,7 @@ import (
 	"github.com/otherix/otherix/internal/auth"
 )
 
-// TestHeartbeatCompressedSwapReachesNodeView pins the slice-2 CP seam: an agent
+// TestHeartbeatCompressedSwapReachesNodeView pins the compressed-swap CP seam: an agent
 // heartbeat carrying capabilities.compressed_swap must survive the strict
 // (DisallowUnknownFields) decode AND the buildCapabilitiesJSON projection so it
 // reaches the node view's raw capabilities blob. This drives the REAL HTTP

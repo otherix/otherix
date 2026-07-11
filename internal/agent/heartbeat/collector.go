@@ -169,9 +169,9 @@ type CollectorDeps struct {
 	PublishedListeners PublishedListenerReporter
 	Migration          config.MigrationConfig
 	QEMU               config.QEMUConfig
-	// ZramObserve reports the node's active zram safety net (memory-density
-	// slice 2). Defaults to zram.Observe; injected in tests to avoid coupling
-	// the collector to the host's real swap state.
+	// ZramObserve reports the node's active zram safety net. Defaults to
+	// zram.Observe; injected in tests to avoid coupling the collector to the
+	// host's real swap state.
 	ZramObserve func() *zram.Active
 	// IngressAdvertisedEndpoint is the node's ingress splicer URL. Set only when
 	// the ingress plane is active (a co-located hypervisor or standalone gateway);

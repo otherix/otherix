@@ -201,8 +201,8 @@ type nodeCapabilitiesReport struct {
 	CompressedSwap     *compressedSwapReport `json:"compressed_swap,omitempty"`
 }
 
-// compressedSwapReport mirrors the agent's CompressedSwapInfo (slice 2). Nil
-// means the node's compressed-swap net is off.
+// compressedSwapReport mirrors the agent's CompressedSwapInfo. Nil means the
+// node's compressed-swap net is off.
 type compressedSwapReport struct {
 	Kind        string `json:"kind"`
 	SizeMib     int64  `json:"size_mib"`

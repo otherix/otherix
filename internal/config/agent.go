@@ -35,8 +35,8 @@ type AgentConfig struct {
 	Zram         ZramConfig         `koanf:"zram"`
 }
 
-// ZramConfig configures the node's zram compressed-swap safety net (memory-
-// density slice 2). Default off. MaxRAMPercent is the hard physical RAM cap
+// ZramConfig configures the node's zram compressed-swap safety net. Default
+// off. MaxRAMPercent is the hard physical RAM cap
 // (zram mem_limit) - the primary knob - NOT a disksize reservation. When
 // enabled the agent derives disksize = 3 x mem_limit from host RAM.
 type ZramConfig struct {

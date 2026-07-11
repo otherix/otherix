@@ -2,9 +2,9 @@
 // Copyright 2026 Andrei Taranik
 
 // Package zram provides the node's agent-owned zram compressed-swap safety
-// net (memory-density slice 2). It sets up an isolated zram swap device at
-// agent boot and observes the live swap state for the heartbeat. All state
-// lives in the kernel (pure RAM); nothing here touches disk.
+// net. It sets up an isolated zram swap device at agent boot and observes the
+// live swap state for the heartbeat. All state lives in the kernel (pure RAM);
+// nothing here touches disk.
 package zram
 
 import (
