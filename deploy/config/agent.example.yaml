@@ -30,11 +30,6 @@ wireguard:
   private_key_path: /var/lib/otherix/wg/private.key
   advertised_endpoint: ""   # host:port peers dial; empty for single-node fabric
 
-# zram compressed-swap safety net. Default off. When enabled, the agent
-# allocates an isolated zram swap device at boot. max_ram_percent is the HARD
-# cap on physical RAM zram may consume (mem_limit) - not a reservation; the VM
-# working set always keeps at least (100 - max_ram_percent)% of RAM.
-# zram:
-#   enabled: false
-#   max_ram_percent: 25     # 1..100
-#   algorithm: zstd          # zstd | lz4 | lzo-rle | lzo
+# Compressed-swap safety net: provisioned on the HOST (not by the agent) via
+# systemd-zram-generator. See deploy/config/zram-generator.conf.example. The
+# agent observes /proc/swaps and reports compressed_swap on the node view.

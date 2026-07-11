@@ -42,6 +42,18 @@ func TestPrintNodeTextCompressedSwap(t *testing.T) {
 	}
 }
 
+func TestPrintNodeTextCompressedSwapNoCapWhenMemLimitZero(t *testing.T) {
+	n := cpclient.Node{
+		Name:         "node-1",
+		Capabilities: []byte(`{"compressed_swap":{"kind":"zram","size_mib":768,"mem_limit_mib":0,"algorithm":"zstd"}}`),
+	}
+	out := renderNodeText(t, n)
+	got, ok := lineFor(out, "compressed_swap")
+	if !ok || got != "zram 768MiB zstd" {
+		t.Errorf("compressed_swap line = %q (present=%v), want %q", got, ok, "zram 768MiB zstd")
+	}
+}
+
 func TestPrintNodeTextCompressedSwapOff(t *testing.T) {
 	n := cpclient.Node{Name: "node-1", Capabilities: []byte(`{"kvm_available":true}`)}
 	out := renderNodeText(t, n)

@@ -128,6 +128,9 @@ nfpms:
       - qemu-system-x86
       - qemu-system-arm
       - qemu-utils
+      # Host-provisioned compressed-swap safety net; see
+      # deploy/config/zram-generator.conf.example.
+      - systemd-zram-generator
     contents:
       - src: deploy/packaging/systemd/otherix-agent.service
         dst: /lib/systemd/system/otherix-agent.service
