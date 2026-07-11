@@ -728,3 +728,49 @@ func TestUpdateNodeHeartbeatIngressEndpointPreserveOnEmpty(t *testing.T) {
 		t.Errorf("empty ingress report clobbered GatewayRole: HasRole(gateway) = false, want true")
 	}
 }
+
+// TestHeartbeatUpsertVMRuntime_PersistsMemoryUsedMib drives the REAL heartbeat
+// projection (not a direct Store call) and pins design-review B1: the per-tick
+// merge in heartbeatProjection.UpsertVMRuntime must write arg.MemoryUsedMib onto
+// the row. It bites if the field is added only to vmRuntimeFromUpsert (the
+// create path). A stats-less tick (nil) must overwrite to nil - the documented
+// self-heal, identical to how QEMUPID is set from arg unconditionally.
+func TestHeartbeatUpsertVMRuntime_PersistsMemoryUsedMib(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+
+	vm := vmRow(uniqueNodeName("memusedvm"))
+	seedVM(t, cli, vm)
+
+	used := int64(1536)
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: vm.ID, Phase: store.VmPhaseRunning, MemoryUsedMib: &used,
+		})
+	}); err != nil {
+		t.Fatalf("UpsertVMRuntime (with stats): %v", err)
+	}
+	rt, err := s.VMRuntimeByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMRuntimeByID: %v", err)
+	}
+	if rt.MemoryUsedMib == nil || *rt.MemoryUsedMib != 1536 {
+		t.Errorf("MemoryUsedMib = %v, want 1536", rt.MemoryUsedMib)
+	}
+
+	// Stats-less tick: the merge overwrites the prior value with nil.
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: vm.ID, Phase: store.VmPhaseRunning, MemoryUsedMib: nil,
+		})
+	}); err != nil {
+		t.Fatalf("UpsertVMRuntime (stats-less): %v", err)
+	}
+	rt, err = s.VMRuntimeByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMRuntimeByID (post stats-less): %v", err)
+	}
+	if rt.MemoryUsedMib != nil {
+		t.Errorf("MemoryUsedMib after stats-less tick = %v, want nil (self-heal)", *rt.MemoryUsedMib)
+	}
+}

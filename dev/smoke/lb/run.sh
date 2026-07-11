@@ -452,7 +452,7 @@ create_backend() {
   info "creating $name on $node (label $LABEL_KEY=$LABEL_VAL, server on :${PORT})"
   otx vm create "$name" \
     --image-url "$IMAGE_URL" --arch "$ARCH" --node "$node" --network "$NET" \
-    --vcpus 2 --memory-mb 2048 \
+    --vcpus 2 --memory-mib 2048 \
     --label "${LABEL_KEY}=${LABEL_VAL}" \
     --user-data "$ci" --network-config "$NC_FILE" \
     --wait --wait-timeout "${CREATE_WAIT}s" \

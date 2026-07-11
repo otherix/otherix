@@ -35,11 +35,11 @@ type createRequest struct {
 	// `pool` is the pool **name**. The agent's local registry is
 	// name-keyed; the cluster-wide UUID polymorphism stays an
 	// operator-edge concern.
-	UUID     string `json:"uuid,omitempty"`
-	Name     string `json:"name"`
-	VCPUs    int    `json:"vcpus"`
-	MemoryMB int    `json:"memory_mb"`
-	Pool     string `json:"pool"`
+	UUID      string `json:"uuid,omitempty"`
+	Name      string `json:"name"`
+	VCPUs     int    `json:"vcpus"`
+	MemoryMib int    `json:"memory_mib"`
+	Pool      string `json:"pool"`
 	// ImageURL is the HTTPS source the agent ensures locally (basename-keyed
 	// IfNotPresent cache). ExpectedSHA256, when non-empty, pins the content
 	// digest (verify mode). Format defaults to "qcow2" when empty. DiskGiB is
@@ -172,7 +172,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		UUID:                vmID,
 		Name:                req.Name,
 		VCPUs:               req.VCPUs,
-		MemoryMB:            req.MemoryMB,
+		MemoryMib:           req.MemoryMib,
 		PoolName:            req.Pool,
 		ImageURL:            req.ImageURL,
 		ExpectedSHA256:      req.ExpectedSHA256,

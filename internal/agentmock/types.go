@@ -64,7 +64,7 @@ type ErrorEnvelope struct {
 // AgentVM is the test API view of a VM the mock has materialised on
 // this node. The wire shape on the GET / LIST surface mirrors the
 // agent's hand-written `vmView` (id, name, vcpus,
-// memory_mb, pool_id, architecture, status, created_at, updated_at) —
+// memory_mib, pool_id, architecture, status, created_at, updated_at) —
 // the richer agentapi.VMSpec shape is a future design target and is
 // deliberately not surfaced through the wire.
 //
@@ -74,7 +74,7 @@ type AgentVM struct {
 	ID           uuid.UUID
 	Name         string
 	VCPUs        int
-	MemoryMB     int
+	MemoryMib    int
 	PoolName     string
 	Architecture string
 	Status       string

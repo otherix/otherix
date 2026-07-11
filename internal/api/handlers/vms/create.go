@@ -25,7 +25,7 @@ import (
 	"github.com/otherix/otherix/internal/store"
 )
 
-// vmCreateRequest is the body of POST /v1/vms. `vcpus` / `memory_mb`
+// vmCreateRequest is the body of POST /v1/vms. `vcpus` / `memory_mib`
 // translate to `cpu_cores` / `memory_mib` at the handler boundary;
 // the requested pool / network names are stashed in the VM's
 // SchedulingSpec and resolved later at bind.
@@ -75,9 +75,9 @@ type vmCreateRequest struct {
 	// When omitted the VM is created with no NIC (the agent falls back to
 	// legacy SLIRP user-mode networking). Other network types are rejected
 	// with 400.
-	Network  string `json:"network,omitempty"`
-	VCPUs    int    `json:"vcpus"`
-	MemoryMB int    `json:"memory_mb"`
+	Network   string `json:"network,omitempty"`
+	VCPUs     int    `json:"vcpus"`
+	MemoryMib int    `json:"memory_mib"`
 	// UserData is an optional VM-level cloud-init override.
 	// Stored verbatim in vms.user_data so the resolution
 	// stays a pure function of the VM row.
@@ -228,8 +228,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		ImageSHA256:       src.imageSHA,
 		ImageFormat:       src.format,
 		ImagePullPolicy:   mustPullPolicy(req.ImagePullPolicy),
-		CpuCores:          int32(req.VCPUs),    //nolint:gosec // bounded 1..128 by validateCreateRequest
-		MemoryMib:         int32(req.MemoryMB), //nolint:gosec // bounded 128..524288 by validateCreateRequest
+		CpuCores:          int32(req.VCPUs),     //nolint:gosec // bounded 1..128 by validateCreateRequest
+		MemoryMib:         int32(req.MemoryMib), //nolint:gosec // bounded 128..524288 by validateCreateRequest
 		CPUModel:          "host",
 		MachineType:       machineTypeFor(src.arch),
 		FirmwareID:        src.firmwareID,
@@ -371,9 +371,9 @@ func validateCreateRequest(w http.ResponseWriter, r *http.Request, req vmCreateR
 			response.CodeValidationFailed, "vcpus must be in [1, 128]", nil)
 		return false
 	}
-	if req.MemoryMB < 128 || req.MemoryMB > 524288 {
+	if req.MemoryMib < 128 || req.MemoryMib > 524288 {
 		response.WriteError(w, r, http.StatusBadRequest,
-			response.CodeValidationFailed, "memory_mb must be in [128, 524288]", nil)
+			response.CodeValidationFailed, "memory_mib must be in [128, 524288]", nil)
 		return false
 	}
 	// A node hint is a node name, never a uuid. Rejecting a uuid literal here

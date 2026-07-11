@@ -32,11 +32,11 @@ func syntheticImageSHA(imageURL string) string {
 // on the test bench today is the simplified set. Drift is documented
 // in the direct-qemu-agent sketch.
 type vmCreateRequestBody struct {
-	UUID     string `json:"uuid"`
-	Name     string `json:"name"`
-	VCPUs    int    `json:"vcpus"`
-	MemoryMB int    `json:"memory_mb"`
-	Pool     string `json:"pool"`
+	UUID      string `json:"uuid"`
+	Name      string `json:"name"`
+	VCPUs     int    `json:"vcpus"`
+	MemoryMib int    `json:"memory_mib"`
+	Pool      string `json:"pool"`
 	// Image-based create wire fields (agentclient.VMCreateRequest):
 	// ImageURL is the HTTPS source the agent ensures into the pool
 	// cache, ExpectedSHA256 the optional content pin, Format the
@@ -63,7 +63,7 @@ type vmView struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	VCPUs        int    `json:"vcpus"`
-	MemoryMB     int    `json:"memory_mb"`
+	MemoryMib    int    `json:"memory_mib"`
 	Pool         string `json:"pool"`
 	Architecture string `json:"architecture"`
 	Status       string `json:"status"`
@@ -76,7 +76,7 @@ func vmToView(v AgentVM) vmView {
 		ID:           v.ID.String(),
 		Name:         v.Name,
 		VCPUs:        v.VCPUs,
-		MemoryMB:     v.MemoryMB,
+		MemoryMib:    v.MemoryMib,
 		Pool:         v.PoolName,
 		Architecture: v.Architecture,
 		Status:       v.Status,
@@ -163,7 +163,7 @@ func (m *Mock) vmCreate(w http.ResponseWriter, r *http.Request, opID string) {
 		ID:           vmID,
 		Name:         body.Name,
 		VCPUs:        body.VCPUs,
-		MemoryMB:     body.MemoryMB,
+		MemoryMib:    body.MemoryMib,
 		PoolName:     body.Pool,
 		Architecture: m.architecture,
 		Status:       "running",

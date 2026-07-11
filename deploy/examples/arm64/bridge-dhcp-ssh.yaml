@@ -41,7 +41,7 @@ spec:
   arch: arm64
   network: ex-bridge-dhcp
   vcpus: 2
-  memoryMB: 2048
+  memoryMib: 2048
   # SSH ingress: otherix provisions the cluster SSH-CA trust via cloud-init and
   # routes `otherix ssh` to this VM. No network-config: the VM gets its address
   # via the managed-bridge DHCP responder, which is the address otherix reserved

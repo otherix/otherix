@@ -33,7 +33,7 @@ spec: { imageURL: https://x/u.qcow2, arch: arm64 }
 // projection by name, not a task.
 func vmCreatedBody(phase string) string {
 	return `{"id":"` + uuid.NewString() + `","name":"web-1","owner_id":"` + uuid.NewString() +
-		`","pool":"default","architecture":"arm64","vcpus":2,"memory_mb":2048,` +
+		`","pool":"default","architecture":"arm64","vcpus":2,"memory_mib":2048,` +
 		`"status":{"phase":"` + phase + `"},"desired_phase":"running","labels":{},` +
 		`"created_at":"2026-06-05T00:00:00Z","updated_at":"2026-06-05T00:00:00Z"}`
 }
@@ -272,7 +272,7 @@ func TestCreateWaitPoolRetriesTransient(t *testing.T) {
 // surfaces verbatim.
 func vmErrorBody(phase, reason, message string) string {
 	return `{"id":"` + uuid.NewString() + `","name":"web-1","owner_id":"` + uuid.NewString() +
-		`","pool":"default","architecture":"arm64","vcpus":2,"memory_mb":2048,` +
+		`","pool":"default","architecture":"arm64","vcpus":2,"memory_mib":2048,` +
 		`"status":{"phase":"` + phase + `","reason":"` + reason + `","message":"` + message + `"},` +
 		`"desired_phase":"running","labels":{},"created_at":"2026-06-05T00:00:00Z","updated_at":"2026-06-05T00:00:00Z"}`
 }

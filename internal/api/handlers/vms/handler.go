@@ -8,7 +8,7 @@
 // design (`VMCreate` / `VMSpec` shapes with multi-disk, network
 // policy, cloud-init metadata, etc.). The current implementation
 // ships the simplified `{name, image_url, image_sha256?, arch,
-// firmware?, format?, disk_gib?, pool, vcpus, memory_mb}` shape - same
+// firmware?, format?, disk_gib?, pool, vcpus, memory_mib}` shape - same
 // drift policy as the agent.yaml vs the initial agent's hand-written
 // wire shape. Reconciling the spec to the implementation is future
 // work; the current path is documented in code (this comment +
@@ -23,7 +23,7 @@
 // translation:
 //
 //   - vcpus    ↔ vms.cpu_cores
-//   - memory_mb ↔ vms.memory_mib
+//   - memory_mib ↔ vms.memory_mib
 //   - pool_id  ↔ vm_disks.storage_pool_id (pool tracking lives on
 //     vm_disks, not vms)
 //
@@ -213,7 +213,7 @@ type vmView struct {
 	Nics            []nicView       `json:"nics"`
 	Architecture    string          `json:"architecture"`
 	VCPUs           int             `json:"vcpus"`
-	MemoryMB        int             `json:"memory_mb"`
+	MemoryMib       int             `json:"memory_mib"`
 	Status          vmStatusView    `json:"status"`
 	DesiredPhase    string          `json:"desired_phase"`
 	Labels          json.RawMessage `json:"labels"`
@@ -259,6 +259,11 @@ type vmStatusView struct {
 	// the top-level `node` field) stays = source until cutover, so the
 	// summary's target_node_id is the only forward-looking signal here.
 	Migration *vmMigrationSummary `json:"migration,omitempty"`
+	// MemoryUsedMib is the guest-reported in-use memory (MiB) from
+	// virtio-balloon stats. Best-effort observability; null when the guest
+	// balloon driver is absent or has not yet reported. Does NOT affect
+	// scheduling - placement uses declared memory.
+	MemoryUsedMib *int64 `json:"memory_used_mib,omitempty"`
 }
 
 // vmMigrationSummary is the compact in-flight-migration view embedded under
@@ -339,6 +344,9 @@ type vmViewNames struct {
 // cutover); that override is enforced in resolveViewNames, not here.
 func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, includeSecrets bool, activeMig *store.Migration) vmView {
 	status := vmStatusView{Phase: projectStatus(vm, runtime, deleting, activeMig != nil), Migration: migrationSummary(activeMig)}
+	if runtime != nil {
+		status.MemoryUsedMib = runtime.MemoryUsedMib
+	}
 	pool := names.pool
 	nets := names.networks
 	if vm.SchedulingStatus == store.VMSchedulingUnscheduled {
@@ -378,7 +386,7 @@ func toView(vm store.VM, runtime *store.VMRuntime, names vmViewNames, deleting, 
 		Nics:             nicsOrEmpty(names.nics),
 		Architecture:     string(vm.Architecture),
 		VCPUs:            int(vm.CpuCores),
-		MemoryMB:         int(vm.MemoryMib),
+		MemoryMib:        int(vm.MemoryMib),
 		Status:           status,
 		DesiredPhase:     string(vm.DesiredPhase),
 		Labels:           rawJSONOrEmpty(vm.Labels),

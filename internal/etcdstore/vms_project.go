@@ -291,6 +291,7 @@ func vmRuntimeFromUpsert(p store.UpsertVMRuntimeParams, now time.Time) store.VMR
 		QEMUPID:            p.QEMUPID,
 		LastStartedAt:      p.LastStartedAt,
 		LastErrorMessage:   p.LastErrorMessage,
+		MemoryUsedMib:      p.MemoryUsedMib,
 		LastObservedAt:     &now,
 		UpdatedAt:          now,
 	}

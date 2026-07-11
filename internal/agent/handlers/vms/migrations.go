@@ -71,7 +71,7 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 		VMUUID:         req.VMSpec.VMUUID,
 		VMName:         req.VMSpec.Name,
 		VCPUs:          req.VMSpec.CPUCores,
-		MemoryMB:       int(req.VMSpec.MemoryMib),
+		MemoryMib:      int(req.VMSpec.MemoryMib),
 		PoolName:       poolName,
 		Architecture:   qemu.Architecture(req.VMSpec.Architecture),
 		Mode:           string(req.Mode),

@@ -60,7 +60,7 @@ type VM struct {
 	ID            uuid.UUID
 	Name          string
 	VCPUs         int
-	MemoryMB      int
+	MemoryMib     int
 	PoolName      string
 	Architecture  qemu.Architecture
 	Status        Status
@@ -97,11 +97,11 @@ type VM struct {
 // pre-minted vms.id through to the agent (unified UUID model: CP
 // mints, agent uses).
 type CreateSpec struct {
-	UUID     uuid.UUID
-	Name     string
-	VCPUs    int
-	MemoryMB int
-	PoolName string
+	UUID      uuid.UUID
+	Name      string
+	VCPUs     int
+	MemoryMib int
+	PoolName  string
 	// ImageURL is the HTTPS source the agent ensures locally (basename-keyed
 	// IfNotPresent cache). ExpectedSHA256, when non-empty, pins the content
 	// digest (verify mode). Format is "qcow2".

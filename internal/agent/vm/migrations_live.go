@@ -104,7 +104,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	}
 
 	v, err := m.AdoptForMigration(AdoptSpec{
-		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMB: s.MemoryMB,
+		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMib: s.MemoryMib,
 		PoolName: s.PoolName, Architecture: s.Architecture,
 		InitialStatus: StatusMigratingIncoming,
 		NICs:          s.NICs,
@@ -864,7 +864,7 @@ func (m *Manager) launchIncomingQemu(ctx context.Context, v *VM, ls qemu.LiveInc
 		Name:            v.Name,
 		UUID:            v.ID,
 		VCPUs:           v.VCPUs,
-		MemoryMB:        v.MemoryMB,
+		MemoryMib:       v.MemoryMib,
 		Architecture:    v.Architecture,
 		Accelerator:     m.accelerator,
 		DiskPath:        v.DiskPath,

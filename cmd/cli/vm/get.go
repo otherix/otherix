@@ -84,7 +84,8 @@ func printVMText(cmd *cobra.Command, vm cpclient.VM) {
 	printf(cmd, "node: %s\n", strOrUnset(vm.Node))
 	printf(cmd, "architecture: %s\n", vm.Architecture)
 	printf(cmd, "vcpus: %d\n", vm.VCPUs)
-	printf(cmd, "memory_mb: %d\n", vm.MemoryMB)
+	printf(cmd, "memory_mib: %d\n", vm.MemoryMib)
+	printf(cmd, "memory_used_mib: %s\n", formatMemoryUsed(vm.Status.MemoryUsedMib))
 	printf(cmd, "status: %s\n", formatVMStatus(vm.Status))
 	printf(cmd, "desired_phase: %s\n", vm.DesiredPhase)
 	if line, ok := cloudInitPresence(vm.UserData); ok {
@@ -114,6 +115,16 @@ func strOrUnset(s *string) string {
 		return "<unset>"
 	}
 	return *s
+}
+
+// formatMemoryUsed renders the observed guest memory-used value for the text
+// view. It is best-effort observed state (virtio-balloon stats), so it is
+// <unset> for a VM that is not running or whose guest has not reported yet.
+func formatMemoryUsed(mib *int64) string {
+	if mib == nil {
+		return "<unset>"
+	}
+	return fmt.Sprintf("%d", *mib)
 }
 
 // formatVMStatus renders the nested status object for the text output.

@@ -17,7 +17,7 @@ func TestVMGetOutputYAML(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"vm-dev","owner_id":"` + uuid.NewString() +
 			`","image_url":"https://img.example/noble.qcow2","format":"qcow2","pool":"default","node":null,` +
-			`"networks":["net-dev"],"architecture":"amd64","vcpus":2,"memory_mb":2048,"status":{"phase":"running"},` +
+			`"networks":["net-dev"],"architecture":"amd64","vcpus":2,"memory_mib":2048,"status":{"phase":"running"},` +
 			`"desired_phase":"running","created_at":"2026-06-01T10:00:00Z","updated_at":"2026-06-01T10:00:00Z"}`))
 	}))
 	defer srv.Close()
@@ -51,7 +51,7 @@ func TestVMGetOutputYAMLCloudInit(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"` + uuid.NewString() + `","name":"vm-ci","owner_id":"` + uuid.NewString() +
 			`","image_url":"https://img.example/noble.qcow2","format":"qcow2","pool":"default","node":null,` +
-			`"networks":[],"architecture":"amd64","vcpus":2,"memory_mb":2048,"status":{"phase":"running"},` +
+			`"networks":[],"architecture":"amd64","vcpus":2,"memory_mib":2048,"status":{"phase":"running"},` +
 			`"desired_phase":"running","user_data":"#cloud-config\nhostname: ci\n",` +
 			`"network_config":"version: 2\n","created_at":"2026-06-01T10:00:00Z","updated_at":"2026-06-01T10:00:00Z"}`))
 	}))

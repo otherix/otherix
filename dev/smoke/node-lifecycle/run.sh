@@ -297,7 +297,7 @@ echo "=== scenario 3: force-delete $VICTIM while it hosts $VM ==="
 info "creating $VM pinned to $VICTIM (1 vcpu)"
 otx vm create "$VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$VICTIM" \
-  --vcpus 1 --memory-mb 1024 \
+  --vcpus 1 --memory-mib 1024 \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM did not reach running within ${CREATE_WAIT}s"
 assert_vm_phase "$VM" running

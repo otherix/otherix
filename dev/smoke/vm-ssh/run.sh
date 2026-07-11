@@ -284,7 +284,7 @@ for vm in "$VM_A" "$VM_B"; do
   info "creating $vm (--ssh-ingress, $NET, node $NODE1)"
   otx vm create "$vm" \
     --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --network "$NET" \
-    --ssh-ingress --vcpus 2 --memory-mb 2048 \
+    --ssh-ingress --vcpus 2 --memory-mib 2048 \
     --network-config "$NC_FILE" \
     --wait --wait-timeout "${CREATE_WAIT}s" \
     || fail "vm create $vm did not reach running within ${CREATE_WAIT}s"

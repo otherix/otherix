@@ -237,7 +237,7 @@ pass "artifact-pool $POOL created (K=2)"
 
 printf '%s' "$CLOUD_INIT" | otx vm create "$SRC_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $SRC_VM did not reach running within ${CREATE_WAIT}s"
 assert_phase "$SRC_VM" running

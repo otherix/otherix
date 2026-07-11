@@ -235,7 +235,7 @@ wait_net_ready_both "$NET_DNS"
 echo "=== step 2: VM $VM_DNS on $NET_DNS (DHCP addressing) ==="
 otx vm create "$VM_DNS" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --network "$NET_DNS" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --user-data "$UD_FILE" --network-config "$NC_FILE" \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM_DNS did not reach running within ${CREATE_WAIT}s"
@@ -285,7 +285,7 @@ wait_net_ready_both "$NET_NODNS"
 echo "=== step 4: VM $VM_NODNS on $NET_NODNS (DHCP lease, but no resolver) ==="
 otx vm create "$VM_NODNS" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --network "$NET_NODNS" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --user-data "$UD_FILE" --network-config "$NC_FILE" \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM_NODNS did not reach running within ${CREATE_WAIT}s"

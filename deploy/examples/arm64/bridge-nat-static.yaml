@@ -31,7 +31,7 @@ spec:
   arch: arm64
   network: ex-bridge
   vcpus: 2
-  memoryMB: 2048
+  memoryMib: 2048
   # cloud-init user-data: a passwordful sudo user for serial-console login.
   # Dev/demo convenience only - do not reuse this credential anywhere real.
   userData: |

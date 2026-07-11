@@ -118,3 +118,50 @@ func (c *QMPClient) SystemReset() error {
 	}
 	return nil
 }
+
+// balloonQOMPath is the QOM path of the virtio-balloon device BuildArgs attaches
+// to every VM. It resolves ONLY because BuildArgs sets an explicit id=balloon0;
+// an id-less -device would be anonymous (/machine/peripheral-anon/device[N]).
+const balloonQOMPath = "/machine/peripheral/balloon0"
+
+// GuestMemUsedMiB reads the guest's in-use memory in MiB from the
+// virtio-balloon guest-stats (total - free). It is best-effort observability:
+// a guest whose balloon driver is absent, whose stats VQ has not yet reported
+// (the first seconds after boot), or that runs on a QEMU too old for the
+// property yields (nil, nil) - never an error that would fail a heartbeat. A
+// transport failure returns the error for the caller to log-and-drop.
+func (c *QMPClient) GuestMemUsedMiB() (*int64, error) {
+	cmd := []byte(`{"execute":"qom-get","arguments":{"path":"` + balloonQOMPath + `","property":"guest-stats"}}`)
+	raw, err := c.monitor.Run(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("qom-get guest-stats: %w", err)
+	}
+	return parseGuestStatsUsedMiB(raw), nil
+}
+
+// parseGuestStatsUsedMiB extracts used MiB from a qom-get guest-stats reply,
+// returning nil whenever the data is absent or self-inconsistent (fail-open).
+func parseGuestStatsUsedMiB(raw []byte) *int64 {
+	var resp struct {
+		Return struct {
+			LastUpdate int64 `json:"last-update"`
+			Stats      struct {
+				TotalMemory *int64 `json:"stat-total-memory"`
+				FreeMemory  *int64 `json:"stat-free-memory"`
+			} `json:"stats"`
+		} `json:"return"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil
+	}
+	r := resp.Return
+	if r.LastUpdate == 0 || r.Stats.TotalMemory == nil || r.Stats.FreeMemory == nil {
+		return nil
+	}
+	total, free := *r.Stats.TotalMemory, *r.Stats.FreeMemory
+	if total <= 0 || free < 0 || free > total {
+		return nil
+	}
+	used := (total - free) / (1024 * 1024)
+	return &used
+}

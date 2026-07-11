@@ -255,7 +255,7 @@ pass "$NODE2 pool under disk pressure; $NODE1 / $NODE3 pools clear"
 info "creating $AVOID_VM with no node hint (must avoid the pressured $NODE2)"
 otx vm create "$AVOID_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" \
-  --vcpus 1 --memory-mb 1024 \
+  --vcpus 1 --memory-mib 1024 \
   || fail "vm create $AVOID_VM was rejected at admission"
 wait_vm_running_off "$AVOID_VM" "$NODE2"
 
@@ -263,7 +263,7 @@ wait_vm_running_off "$AVOID_VM" "$NODE2"
 info "creating $PINNED_VM pinned to the pressured $NODE2 (must stay pending)"
 otx vm create "$PINNED_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE2" \
-  --vcpus 1 --memory-mb 1024 \
+  --vcpus 1 --memory-mib 1024 \
   || fail "vm create $PINNED_VM was rejected at admission"
 wait_vm_reason "$PINNED_VM" "pool_not_on_node"
 [[ "$(vm_node "$PINNED_VM")" != "$NODE2" ]] \
@@ -294,7 +294,7 @@ pass "all three pools under disk pressure"
 info "creating $CLUSTER_VM with no node hint (no eligible pool exists)"
 otx vm create "$CLUSTER_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" \
-  --vcpus 1 --memory-mb 1024 \
+  --vcpus 1 --memory-mib 1024 \
   || fail "vm create $CLUSTER_VM was rejected at admission"
 wait_vm_reason "$CLUSTER_VM" "node_pressure"
 [[ -z "$(vm_node "$CLUSTER_VM")" ]] \

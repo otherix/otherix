@@ -201,7 +201,7 @@ export OTHERIX_API_TOKEN="$TOKEN"
 ./bin/otherix vm create demo-vm \
   --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
   --arch arm64 \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --wait
 # created task=<task-uuid> status=pending
 # .....
@@ -489,7 +489,7 @@ literals are rejected by the server with 400 validation_failed.
 $ otherix vm create demo-vm \
     --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
     --arch arm64 \
-    --vcpus 2 --memory-mb 2048 \
+    --vcpus 2 --memory-mib 2048 \
     --wait
 
 # Create — explicit pool + node placement hint
@@ -498,7 +498,7 @@ $ otherix vm create pinned-vm \
     --arch arm64 \
     --pool fast-ssd \
     --node node-a \
-    --vcpus 4 --memory-mb 4096
+    --vcpus 4 --memory-mib 4096
 
 # Inspect by name
 $ otherix vm get demo-vm
@@ -549,7 +549,7 @@ spec:
   arch: arm64
   network: demo-net
   vcpus: 2
-  memoryMB: 2048
+  memoryMib: 2048
   # inline cloud-config is sent as user_data at create time:
   userData: |
     #cloud-config
@@ -788,7 +788,7 @@ pool on every ready node, so the command below works without `--pool`:
 ./bin/otherix vm create demo-vm \
     --image-url https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img \
     --arch arm64 \
-    --vcpus 2 --memory-mb 2048 --wait
+    --vcpus 2 --memory-mib 2048 --wait
 # created task=<task-uuid> status=pending
 # .....
 # vm running task=<task-uuid>
@@ -802,7 +802,7 @@ To target a specific node explicitly:
     --arch arm64 \
     --pool default \
     --node node-1 \
-    --vcpus 2 --memory-mb 2048 --wait
+    --vcpus 2 --memory-mib 2048 --wait
 ```
 
 The scheduler picks among ready, uncordoned nodes hosting the pool
@@ -834,7 +834,7 @@ phase=running.
 # node: node-1
 # architecture: arm64
 # vcpus: 2
-# memory_mb: 2048
+# memory_mib: 2048
 # status: running
 # desired_phase: running
 # created_at: ...

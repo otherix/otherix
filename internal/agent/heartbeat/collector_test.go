@@ -68,9 +68,9 @@ func TestLinuxCollector_FreeResourceSubtraction(t *testing.T) {
 		t.Fatalf("write meminfo: %v", err)
 	}
 	vms := []*vm.VM{
-		{ID: uuid.New(), Status: vm.StatusRunning, VCPUs: 2, MemoryMB: 2048},
-		{ID: uuid.New(), Status: vm.StatusRunning, VCPUs: 1, MemoryMB: 1024},
-		{ID: uuid.New(), Status: vm.StatusStopped, VCPUs: 99, MemoryMB: 99999}, // ignored
+		{ID: uuid.New(), Status: vm.StatusRunning, VCPUs: 2, MemoryMib: 2048},
+		{ID: uuid.New(), Status: vm.StatusRunning, VCPUs: 1, MemoryMib: 1024},
+		{ID: uuid.New(), Status: vm.StatusStopped, VCPUs: 99, MemoryMib: 99999}, // ignored
 	}
 	c := &LinuxCollector{
 		procPath:     dir,

@@ -646,7 +646,7 @@ SCHED_CORDONED=("$HV_NODE" "$CO_B_NODE")
 for n in "${SCHED_CORDONED[@]}"; do otx node cordon "$n" || fail "cordon $n failed"; done
 SCHED_LANDED=""
 if otx vm create "$SCHED_VM" --image-url "$IMAGE_URL" --arch "$ARCH" \
-     --vcpus 2 --memory-mb 2048 \
+     --vcpus 2 --memory-mib 2048 \
      --wait --wait-timeout "${CREATE_WAIT}s"; then
   SCHED_LANDED="$(vm_node "$SCHED_VM")"
 fi
@@ -668,7 +668,7 @@ wait_net_ready "$HV_NODE" "$NET_A" "$NET_WAIT" || fail "$NET_A did not reconcile
 info "creating $VM_A on $HV_NODE (a DIFFERENT node from the gateway; echo server on :${ECHO_PORT})"
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM_A" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$HV_NODE" --network "$NET_A" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --user-data - --network-config "$NC_FILE" \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM_A did not reach running within ${CREATE_WAIT}s"
@@ -713,7 +713,7 @@ wait_net_ready "$HV_NODE" "$NET_B" "$NET_WAIT" || fail "$NET_B did not reconcile
 info "creating $VM_B on $HV_NODE (second overlay $NET_B)"
 printf '%s' "$CLOUD_INIT" | otx vm create "$VM_B" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$HV_NODE" --network "$NET_B" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --user-data - --network-config "$NC_FILE" \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VM_B did not reach running within ${CREATE_WAIT}s"

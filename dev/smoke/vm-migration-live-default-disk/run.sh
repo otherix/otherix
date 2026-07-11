@@ -345,7 +345,7 @@ echo "=== step 2: create $VMB on $NODE2 ($IPB) -> running ==="
 # VM-B keeps --disk-gib 10 (only VM-A must exercise the SizeGib=0 default-disk path).
 gen_userdata "$IPB" "$IPA" | otx vm create "$VMB" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE2" --network "$NET" \
-  --vcpus 2 --memory-mb 2048 --disk-gib 10 --user-data - \
+  --vcpus 2 --memory-mib 2048 --disk-gib 10 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VMB did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VMB" running
@@ -363,7 +363,7 @@ echo "=== step 3: create $VMA on $NODE1 ($IPA, image-sized boot disk, NO --disk-
 # of the image-sized source). Every other flag matches the overlay smoke's create.
 gen_userdata "$IPA" "$IPB" | otx vm create "$VMA" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" --network "$NET" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $VMA did not reach running within ${CREATE_WAIT}s"
 assert_phase "$VMA" running

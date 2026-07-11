@@ -94,7 +94,7 @@ func TestManager_New_ReattachesMuxForRunningVM(t *testing.T) {
 			VMID:          id,
 			Name:          name,
 			VCPUs:         2,
-			MemoryMB:      1024,
+			MemoryMib:     1024,
 			PoolName:      "default",
 			Architecture:  string(qemu.HostArch()),
 			ConsoleSocket: sock,
@@ -191,13 +191,13 @@ func TestManager_Create_ValidationErrors(t *testing.T) {
 		name string
 		spec CreateSpec
 	}{
-		{"empty name", CreateSpec{Name: "", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, ImageURL: imageURL}},
-		{"low vcpus", CreateSpec{Name: "x", VCPUs: 0, MemoryMB: 1024, PoolName: poolName, ImageURL: imageURL}},
-		{"high vcpus", CreateSpec{Name: "x", VCPUs: 200, MemoryMB: 1024, PoolName: poolName, ImageURL: imageURL}},
-		{"low memory", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 64, PoolName: poolName, ImageURL: imageURL}},
-		{"empty image url", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, ImageURL: ""}},
-		{"short expected sha", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: poolName, ImageURL: imageURL, ExpectedSHA256: "deadbeef"}},
-		{"empty pool", CreateSpec{Name: "x", VCPUs: 2, MemoryMB: 1024, PoolName: "", ImageURL: imageURL}},
+		{"empty name", CreateSpec{Name: "", VCPUs: 2, MemoryMib: 1024, PoolName: poolName, ImageURL: imageURL}},
+		{"low vcpus", CreateSpec{Name: "x", VCPUs: 0, MemoryMib: 1024, PoolName: poolName, ImageURL: imageURL}},
+		{"high vcpus", CreateSpec{Name: "x", VCPUs: 200, MemoryMib: 1024, PoolName: poolName, ImageURL: imageURL}},
+		{"low memory", CreateSpec{Name: "x", VCPUs: 2, MemoryMib: 64, PoolName: poolName, ImageURL: imageURL}},
+		{"empty image url", CreateSpec{Name: "x", VCPUs: 2, MemoryMib: 1024, PoolName: poolName, ImageURL: ""}},
+		{"short expected sha", CreateSpec{Name: "x", VCPUs: 2, MemoryMib: 1024, PoolName: poolName, ImageURL: imageURL, ExpectedSHA256: "deadbeef"}},
+		{"empty pool", CreateSpec{Name: "x", VCPUs: 2, MemoryMib: 1024, PoolName: "", ImageURL: imageURL}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -222,11 +222,11 @@ func TestManager_Create_UnknownPool(t *testing.T) {
 		t.Fatalf("AddPool: %v", err)
 	}
 	_, err = m.Create(t.Context(), CreateSpec{
-		Name:     "x",
-		VCPUs:    2,
-		MemoryMB: 1024,
-		PoolName: "not-the-configured-pool",
-		ImageURL: "https://example.test/ubuntu.img",
+		Name:      "x",
+		VCPUs:     2,
+		MemoryMib: 1024,
+		PoolName:  "not-the-configured-pool",
+		ImageURL:  "https://example.test/ubuntu.img",
 	})
 	if !errors.Is(err, ErrPoolUnknown) {
 		t.Errorf("err = %v, want ErrPoolUnknown", err)
@@ -272,13 +272,13 @@ func TestManager_Create_DuplicateVMID_IsIdempotent(t *testing.T) {
 	m.mu.Unlock()
 
 	task, err := m.Create(t.Context(), CreateSpec{
-		UUID:     vmID,
-		Name:     "live-vm",
-		VCPUs:    2,
-		MemoryMB: 1024,
-		PoolName: poolName,
-		ImageURL: "https://example.test/ubuntu.img",
-		NICs:     []netfabric.NIC{nic},
+		UUID:      vmID,
+		Name:      "live-vm",
+		VCPUs:     2,
+		MemoryMib: 1024,
+		PoolName:  poolName,
+		ImageURL:  "https://example.test/ubuntu.img",
+		NICs:      []netfabric.NIC{nic},
 	})
 	if err != nil {
 		t.Fatalf("duplicate Create = %v, want idempotent re-accept", err)
@@ -338,12 +338,12 @@ func TestManager_Create_DuplicateRunningVM_NoCreateTask(t *testing.T) {
 	m.mu.Unlock()
 
 	task, err := m.Create(t.Context(), CreateSpec{
-		UUID:     vmID,
-		Name:     "vm-x",
-		VCPUs:    2,
-		MemoryMB: 1024,
-		PoolName: poolName,
-		ImageURL: "https://example.test/ubuntu.img",
+		UUID:      vmID,
+		Name:      "vm-x",
+		VCPUs:     2,
+		MemoryMib: 1024,
+		PoolName:  poolName,
+		ImageURL:  "https://example.test/ubuntu.img",
 	})
 	if err != nil {
 		t.Fatalf("Create(dup running) = %v, want nil", err)
@@ -392,12 +392,12 @@ func TestManager_Create_DuplicateFailedVM_NoCreateTask(t *testing.T) {
 	m.mu.Unlock()
 
 	task, err := m.Create(t.Context(), CreateSpec{
-		UUID:     vmID,
-		Name:     "vm-x",
-		VCPUs:    2,
-		MemoryMB: 1024,
-		PoolName: poolName,
-		ImageURL: "https://example.test/ubuntu.img",
+		UUID:      vmID,
+		Name:      "vm-x",
+		VCPUs:     2,
+		MemoryMib: 1024,
+		PoolName:  poolName,
+		ImageURL:  "https://example.test/ubuntu.img",
 	})
 	if err != nil {
 		t.Fatalf("Create(dup failed) = %v, want nil", err)
@@ -449,12 +449,12 @@ func TestManager_Create_DuplicateInterruptedVM_NoCreateTask(t *testing.T) {
 	m.mu.Unlock()
 
 	task, err := m.Create(t.Context(), CreateSpec{
-		UUID:     vmID,
-		Name:     "vm-x",
-		VCPUs:    2,
-		MemoryMB: 1024,
-		PoolName: poolName,
-		ImageURL: "https://example.test/ubuntu.img",
+		UUID:      vmID,
+		Name:      "vm-x",
+		VCPUs:     2,
+		MemoryMib: 1024,
+		PoolName:  poolName,
+		ImageURL:  "https://example.test/ubuntu.img",
 	})
 	if err != nil {
 		t.Fatalf("Create(dup interrupted) = %v, want nil", err)
@@ -529,13 +529,13 @@ func TestManager_Create_DiskTooSmall_Rejected(t *testing.T) {
 	url := serve(t, body)
 
 	task, err := m.Create(t.Context(), CreateSpec{
-		Name:     "too-small-vm",
-		VCPUs:    1,
-		MemoryMB: 256,
-		PoolName: poolName,
-		ImageURL: url,
-		Format:   "qcow2",
-		DiskGiB:  1, // 1 GiB < 2 GiB virtual size -> reject
+		Name:      "too-small-vm",
+		VCPUs:     1,
+		MemoryMib: 256,
+		PoolName:  poolName,
+		ImageURL:  url,
+		Format:    "qcow2",
+		DiskGiB:   1, // 1 GiB < 2 GiB virtual size -> reject
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -569,7 +569,7 @@ func TestManager_Create_EnsuresImageAndSizes(t *testing.T) {
 	task, err := m.Create(t.Context(), CreateSpec{
 		Name:           "sizing-vm",
 		VCPUs:          1,
-		MemoryMB:       256,
+		MemoryMib:      256,
 		PoolName:       poolName,
 		ImageURL:       url,
 		ExpectedSHA256: wantSHA,
@@ -608,7 +608,7 @@ func TestManager_Create_BadChecksum_FailsTask(t *testing.T) {
 	task, err := m.Create(t.Context(), CreateSpec{
 		Name:           "bad-sha-vm",
 		VCPUs:          1,
-		MemoryMB:       256,
+		MemoryMib:      256,
 		PoolName:       poolName,
 		ImageURL:       url,
 		ExpectedSHA256: wrongSHA,
@@ -634,6 +634,17 @@ func TestManager_Get_NotFound(t *testing.T) {
 	}
 	if _, err := m.Get(uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestManagerGuestMemUsedMiB_UnknownVM(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := m.GuestMemUsedMiB("does-not-exist"); got != nil {
+		t.Errorf("GuestMemUsedMiB(unknown) = %v, want nil", *got)
 	}
 }
 
@@ -845,12 +856,12 @@ func TestManager_Delete_RejectedWhileCreateInFlight(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	spec := CreateSpec{
-		Name:     "race-vm",
-		VCPUs:    2,
-		MemoryMB: 1024,
-		PoolName: poolName,
-		ImageURL: srv.URL + "/noble-minimal-cloudimg-arm64.img",
-		Format:   "qcow2",
+		Name:      "race-vm",
+		VCPUs:     2,
+		MemoryMib: 1024,
+		PoolName:  poolName,
+		ImageURL:  srv.URL + "/noble-minimal-cloudimg-arm64.img",
+		Format:    "qcow2",
 	}
 	task, err := m.Create(context.Background(), spec)
 	if err != nil {
@@ -1109,7 +1120,7 @@ func TestManager_New_SweepsOrphanTaps(t *testing.T) {
 		VMID:         vmID,
 		Name:         "kept-vm",
 		VCPUs:        2,
-		MemoryMB:     1024,
+		MemoryMib:    1024,
 		PoolName:     "default",
 		Architecture: string(qemu.HostArch()),
 		Status:       string(StatusStopped),
@@ -1193,7 +1204,7 @@ func TestManager_InFlightGuard_EmptyName_IsNoOp(t *testing.T) {
 // plane cannot request a multi-PiB qemu-img resize.
 func TestValidateCreateSpecDiskGiB(t *testing.T) {
 	base := func() CreateSpec {
-		return CreateSpec{Name: "web-01", VCPUs: 2, MemoryMB: 1024, PoolName: "default", ImageURL: "https://x/i.img"}
+		return CreateSpec{Name: "web-01", VCPUs: 2, MemoryMib: 1024, PoolName: "default", ImageURL: "https://x/i.img"}
 	}
 	cases := []struct {
 		name    string
@@ -1225,7 +1236,7 @@ func TestValidateCreateSpecDiskGiB(t *testing.T) {
 // snapshot-sourced create ("image_url is required") before reaching it.
 func TestValidateCreateSpec_ImageXorSnapshot(t *testing.T) {
 	base := func() CreateSpec {
-		return CreateSpec{Name: "web-01", VCPUs: 2, MemoryMB: 1024, PoolName: "default"}
+		return CreateSpec{Name: "web-01", VCPUs: 2, MemoryMib: 1024, PoolName: "default"}
 	}
 	snap := &SnapshotRef{Pool: "default", Disks: []SnapshotDiskRef{{Index: 0, Device: "virtio0", SHA256: "aa"}}}
 	cases := []struct {

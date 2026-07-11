@@ -17,7 +17,7 @@ import (
 )
 
 // CreateVMRequest mirrors the body the POST /v1/vms handler decodes.
-// Field tags are the wire shape (vcpus / memory_mb), not the schema
+// Field tags are the wire shape (vcpus / memory_mib), not the schema
 // columns (cpu_cores / memory_mib) — the handler boundary owns the
 // translation.
 //
@@ -63,7 +63,7 @@ type CreateVMRequest struct {
 	// the wire for the image-sourced path.
 	SourceSnapshotID string `json:"source_snapshot_id,omitempty"`
 	VCPUs            int    `json:"vcpus"`
-	MemoryMB         int    `json:"memory_mb"`
+	MemoryMib        int    `json:"memory_mib"`
 	// Network is the optional bridge network (name or uuid) to attach a
 	// single NIC to. Omitted leaves the VM with no NIC (the agent falls
 	// back to legacy SLIRP networking). The server rejects non-bridge
@@ -123,7 +123,7 @@ type VM struct {
 	Networks        []string `json:"networks"`
 	Architecture    string   `json:"architecture"`
 	VCPUs           int      `json:"vcpus"`
-	MemoryMB        int      `json:"memory_mb"`
+	MemoryMib       int      `json:"memory_mib"`
 	Status          VMStatus `json:"status"`
 	DesiredPhase    string   `json:"desired_phase"`
 	// SourceSnapshotID is the snapshot a VM was restored from, when it was
@@ -154,6 +154,10 @@ type VMStatus struct {
 	Phase   string `json:"phase"`
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
+	// MemoryUsedMib is the guest-reported in-use memory (MiB) from
+	// virtio-balloon stats. Best-effort observed state: nil when the VM is
+	// not running or the guest balloon driver has not reported yet.
+	MemoryUsedMib *int64 `json:"memory_used_mib,omitempty"`
 }
 
 // IsTerminalPhase reports whether the VM's scheduling/lifecycle phase has

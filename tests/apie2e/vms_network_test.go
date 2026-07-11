@@ -25,11 +25,11 @@ const imageURL = "https://example.test/img.qcow2"
 
 // vmCreateBody builds the image-model VM-create request body the create handler
 // expects: name + image_url + arch (no template field). Callers merge in pool /
-// network / vcpus / memory_mb as needed.
+// network / vcpus / memory_mib as needed.
 func vmCreateBody(extra map[string]any) map[string]any {
 	body := map[string]any{
 		"name": "vm-" + uuid.NewString()[:8], "image_url": imageURL, "arch": "amd64",
-		"vcpus": 2, "memory_mb": 2048,
+		"vcpus": 2, "memory_mib": 2048,
 	}
 	for k, v := range extra {
 		body[k] = v

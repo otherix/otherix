@@ -153,7 +153,7 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 		UUID:              args.VM.ID,
 		Name:              args.VM.Name,
 		VCPUs:             int(args.VM.CpuCores),
-		MemoryMB:          int(args.VM.MemoryMib),
+		MemoryMib:         int(args.VM.MemoryMib),
 		Pool:              args.Pool.Name,
 		ImageURL:          args.ImageURL,
 		ExpectedSHA256:    args.ImageSHA256,

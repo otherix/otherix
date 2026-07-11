@@ -18,7 +18,7 @@ func TestAdoptForMigrationCreatesStoppedMigratedVM(t *testing.T) {
 		UUID:         id,
 		Name:         "demo",
 		VCPUs:        1,
-		MemoryMB:     512,
+		MemoryMib:    512,
 		PoolName:     m.defaultTestPool(),
 		Architecture: "amd64",
 	})

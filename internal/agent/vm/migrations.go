@@ -28,7 +28,7 @@ type AdoptSpec struct {
 	UUID         uuid.UUID
 	Name         string
 	VCPUs        int
-	MemoryMB     int
+	MemoryMib    int
 	PoolName     string
 	Architecture qemu.Architecture
 	// InitialStatus is the status the adopted VM record starts in. The zero
@@ -64,7 +64,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		ID:            spec.UUID,
 		Name:          spec.Name,
 		VCPUs:         spec.VCPUs,
-		MemoryMB:      spec.MemoryMB,
+		MemoryMib:     spec.MemoryMib,
 		PoolName:      spec.PoolName,
 		Architecture:  spec.Architecture,
 		Status:        adoptStatus(spec.InitialStatus),
@@ -171,7 +171,7 @@ type IncomingSpec struct {
 	VMUUID         uuid.UUID
 	VMName         string
 	VCPUs          int
-	MemoryMB       int
+	MemoryMib      int
 	PoolName       string
 	Architecture   qemu.Architecture
 	Mode           string
@@ -248,7 +248,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	}
 
 	v, err := m.AdoptForMigration(AdoptSpec{
-		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMB: s.MemoryMB,
+		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMib: s.MemoryMib,
 		PoolName: s.PoolName, Architecture: s.Architecture,
 	})
 	if err != nil {

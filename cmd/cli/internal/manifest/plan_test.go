@@ -177,8 +177,8 @@ func TestBuildCreatePlanDedupesNodeList(t *testing.T) {
 }
 
 func TestBuildCreatePlanVMDefaultsVCPUsAndMemory(t *testing.T) {
-	// A minimal VM manifest omits vcpus/memoryMB. The wire fields have no
-	// omitempty and the server rejects 0 (vcpus must be [1,128], memory_mb
+	// A minimal VM manifest omits vcpus/memoryMib. The wire fields have no
+	// omitempty and the server rejects 0 (vcpus must be [1,128], memory_mib
 	// [128,524288]), so the manifest path must apply the same client-side
 	// defaults the `vm create` flags do, matching the doc promise that
 	// everything but imageURL/arch is "optional with server/CLI defaults".
@@ -194,27 +194,27 @@ func TestBuildCreatePlanVMDefaultsVCPUsAndMemory(t *testing.T) {
 	if plan[0].VM.VCPUs != 2 {
 		t.Errorf("VM.VCPUs = %d, want 2 (default)", plan[0].VM.VCPUs)
 	}
-	if plan[0].VM.MemoryMB != 2048 {
-		t.Errorf("VM.MemoryMB = %d, want 2048 (default)", plan[0].VM.MemoryMB)
+	if plan[0].VM.MemoryMib != 2048 {
+		t.Errorf("VM.MemoryMib = %d, want 2048 (default)", plan[0].VM.MemoryMib)
 	}
 }
 
 func TestBuildCreatePlanVMKeepsExplicitVCPUsAndMemory(t *testing.T) {
 	// Explicit values must survive: defaulting only fills a zero.
-	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, vcpus: 8, memoryMB: 16384 }\n"
+	src := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { imageURL: https://x/u.qcow2, arch: arm64, vcpus: 8, memoryMib: 16384 }\n"
 	docs, _ := manifest.Parse(strings.NewReader(src))
 	plan, err := manifest.BuildCreatePlan(docs)
 	if err != nil {
 		t.Fatalf("BuildCreatePlan() error = %v", err)
 	}
-	if plan[0].VM.VCPUs != 8 || plan[0].VM.MemoryMB != 16384 {
-		t.Errorf("VM vcpus/memory = %d/%d, want 8/16384", plan[0].VM.VCPUs, plan[0].VM.MemoryMB)
+	if plan[0].VM.VCPUs != 8 || plan[0].VM.MemoryMib != 16384 {
+		t.Errorf("VM vcpus/memory = %d/%d, want 8/16384", plan[0].VM.VCPUs, plan[0].VM.MemoryMib)
 	}
 }
 
 func TestVMCreateOp_SnapshotSourced(t *testing.T) {
 	// snapshot-sourced: SourceSnapshotID set, ImageURL/Arch empty.
-	snapSrc := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { sourceSnapshotID: snap-1, vcpus: 4, memoryMB: 4096, pool: fast }\n"
+	snapSrc := "apiVersion: otherix/v1\nkind: VM\nmetadata: { name: v }\nspec: { sourceSnapshotID: snap-1, vcpus: 4, memoryMib: 4096, pool: fast }\n"
 	docs, _ := manifest.Parse(strings.NewReader(snapSrc))
 	plan, err := manifest.BuildCreatePlan(docs)
 	if err != nil {
@@ -233,8 +233,8 @@ func TestVMCreateOp_SnapshotSourced(t *testing.T) {
 	if vm.Arch != "" {
 		t.Errorf("VM.Arch = %q, want empty (snapshot-sourced)", vm.Arch)
 	}
-	if vm.Pool != "fast" || vm.VCPUs != 4 || vm.MemoryMB != 4096 {
-		t.Errorf("VM placement/sizing = pool=%q vcpus=%d memory=%d, want fast/4/4096", vm.Pool, vm.VCPUs, vm.MemoryMB)
+	if vm.Pool != "fast" || vm.VCPUs != 4 || vm.MemoryMib != 4096 {
+		t.Errorf("VM placement/sizing = pool=%q vcpus=%d memory=%d, want fast/4/4096", vm.Pool, vm.VCPUs, vm.MemoryMib)
 	}
 
 	// round-trip: a `vm get -o yaml` dump carries arch alongside

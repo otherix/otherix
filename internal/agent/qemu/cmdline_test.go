@@ -17,7 +17,7 @@ func validSpec() VMSpec {
 		Name:            "test-vm",
 		UUID:            uuid.MustParse("11111111-2222-3333-4444-555555555555"),
 		VCPUs:           2,
-		MemoryMB:        2048,
+		MemoryMib:       2048,
 		Accelerator:     "tcg",
 		DiskPath:        "/var/lib/otherix/pools/default/vms/abc/disk.qcow2",
 		QMPSocket:       "/var/lib/otherix/vms/abc/qmp.sock",
@@ -117,7 +117,7 @@ func TestBuildArgs_ValidatesSpec(t *testing.T) {
 		{"empty name", func(s *VMSpec) { s.Name = "" }},
 		{"nil uuid", func(s *VMSpec) { s.UUID = uuid.Nil }},
 		{"zero vcpus", func(s *VMSpec) { s.VCPUs = 0 }},
-		{"low memory", func(s *VMSpec) { s.MemoryMB = 64 }},
+		{"low memory", func(s *VMSpec) { s.MemoryMib = 64 }},
 		{"empty disk", func(s *VMSpec) { s.DiskPath = "" }},
 		{"empty qmp socket", func(s *VMSpec) { s.QMPSocket = "" }},
 		{"empty accelerator", func(s *VMSpec) { s.Accelerator = "" }},
@@ -271,5 +271,32 @@ func TestBinary(t *testing.T) {
 
 	if _, err := Binary(Architecture("foo")); err == nil {
 		t.Fatalf("Binary(foo) = nil, want error")
+	}
+}
+
+func TestBuildArgs_BalloonDevicePresentBothArches(t *testing.T) {
+	base := VMSpec{
+		Name: "vm1", UUID: uuid.New(), VCPUs: 1, MemoryMib: 512,
+		Accelerator: "tcg", DiskPath: "/d.qcow2", QMPSocket: "/q.sock",
+		ConsoleSocket: "/c.sock", PIDFile: "/p.pid",
+	}
+	want := "-device virtio-balloon,id=balloon0,free-page-reporting=on,guest-stats-polling-interval=2"
+	for _, tc := range []struct {
+		name string
+		spec VMSpec
+	}{
+		{"amd64", func() VMSpec { s := base; s.Architecture = ArchAMD64; return s }()},
+		{"arm64", func() VMSpec { s := base; s.Architecture = ArchARM64; s.AArch64Firmware = "/fw.fd"; return s }()},
+		{"migration-target-omitbootdisk", func() VMSpec { s := base; s.Architecture = ArchAMD64; s.OmitBootDisk = true; return s }()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args, err := BuildArgs(tc.spec)
+			if err != nil {
+				t.Fatalf("BuildArgs(%s) error: %v", tc.name, err)
+			}
+			if got := strings.Join(args, " "); !strings.Contains(got, want) {
+				t.Errorf("BuildArgs(%s) missing balloon device.\n got: %s\nwant substring: %s", tc.name, got, want)
+			}
+		})
 	}
 }

@@ -28,7 +28,7 @@ spec:
   arch: amd64
   network: ex-overlay
   vcpus: 2
-  memoryMB: 2048
+  memoryMib: 2048
   # cloud-init user-data: a passwordful sudo user for serial-console login.
   # Dev/demo convenience only - do not reuse this credential anywhere real.
   # No network-config: the VM gets its address via the overlay DHCP responder.

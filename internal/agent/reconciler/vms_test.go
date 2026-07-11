@@ -30,6 +30,8 @@ type fakeVMManager struct {
 	startErr error
 	stopErr  error
 	delErr   error
+
+	memUsedMiB *int64
 }
 
 func newFakeVMManager(vms ...*vm.VM) *fakeVMManager {
@@ -71,6 +73,14 @@ func (f *fakeVMManager) DeleteByName(_ context.Context, name string) (*vm.AgentT
 	f.deletes = append(f.deletes, name)
 	return nil, f.delErr
 }
+
+func (f *fakeVMManager) GuestMemUsedMiB(_ string) *int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.memUsedMiB
+}
+
+func i64ptr(v int64) *int64 { return &v }
 
 func makeVM(name string, status vm.Status) *vm.VM {
 	return &vm.VM{ID: uuid.New(), Name: name, Status: status}
@@ -243,6 +253,29 @@ func TestVMs_VMReports_SortedAndSnapshotted(t *testing.T) {
 	}
 	if got := seen[v2.ID]; got != "stopped" {
 		t.Errorf("vm %s phase = %q, want stopped", v2.Name, got)
+	}
+}
+
+func TestReconcile_PopulatesMemoryUsedForRunningVMs(t *testing.T) {
+	running := makeVM("run-vm", vm.StatusRunning)
+	stopped := makeVM("stop-vm", vm.StatusStopped)
+	mgr := newFakeVMManager(running, stopped)
+	mgr.memUsedMiB = i64ptr(700)
+	r, err := NewVMs(mgr, discardLogger(), 0)
+	if err != nil {
+		t.Fatalf("NewVMs: %v", err)
+	}
+	r.reconcile(context.Background())
+
+	byUUID := map[uuid.UUID]heartbeat.VMReport{}
+	for _, rep := range r.VMReports() {
+		byUUID[rep.VMUUID] = rep
+	}
+	if got := byUUID[running.ID].MemoryUsedMib; got == nil || *got != 700 {
+		t.Errorf("running VM MemoryUsedMib = %v, want 700", got)
+	}
+	if got := byUUID[stopped.ID].MemoryUsedMib; got != nil {
+		t.Errorf("stopped VM MemoryUsedMib = %v, want nil", got)
 	}
 }
 

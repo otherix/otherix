@@ -535,7 +535,7 @@ func (c *LinuxCollector) sumRunningVMs() (int32, int64) {
 			continue
 		}
 		cores += clampToInt32(v.VCPUs)
-		mib += int64(v.MemoryMB)
+		mib += int64(v.MemoryMib)
 	}
 	return cores, mib
 }

@@ -36,7 +36,7 @@ type VMMeta struct {
 	VMID          uuid.UUID `json:"vm_id"`
 	Name          string    `json:"name"`
 	VCPUs         int       `json:"vcpus"`
-	MemoryMB      int       `json:"memory_mb"`
+	MemoryMib     int       `json:"memory_mib"`
 	PoolName      string    `json:"pool_name"`
 	Architecture  string    `json:"architecture"`
 	DiskPath      string    `json:"disk_path"`

@@ -60,7 +60,7 @@ func seedIncomingMeta(t *testing.T, stateDir, poolRoot string, nics []state.NICM
 		VMID:          id,
 		Name:          "incoming-" + id.String()[:8],
 		VCPUs:         1,
-		MemoryMB:      512,
+		MemoryMib:     512,
 		PoolName:      "default",
 		Architecture:  "amd64",
 		DiskPath:      disk,

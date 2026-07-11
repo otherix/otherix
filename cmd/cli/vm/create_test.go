@@ -49,7 +49,7 @@ func runVMCmd(t *testing.T, endpoint string, args []string) (stdout, stderr stri
 // request so the create summary line is deterministic.
 func createdVMJSON(name string) []byte {
 	return []byte(`{"id":"` + uuid.NewString() + `","name":"` + name + `","owner_id":"` + uuid.NewString() +
-		`","pool":"default","architecture":"amd64","vcpus":2,"memory_mb":2048,` +
+		`","pool":"default","architecture":"amd64","vcpus":2,"memory_mib":2048,` +
 		`"status":{"phase":"pending","reason":"pending_schedule"},"desired_phase":"running",` +
 		`"labels":{},"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`)
 }
@@ -86,7 +86,7 @@ func TestVMCreate_UserDataFile(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "2",
-		"--memory-mb", "512",
+		"--memory-mib", "512",
 		"--user-data", yamlPath,
 	})
 	if err != nil {
@@ -154,7 +154,7 @@ func TestVMCreate_SSHIngress(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "2",
-		"--memory-mb", "512",
+		"--memory-mib", "512",
 		"--ssh-ingress",
 	})
 	if err != nil {
@@ -182,7 +182,7 @@ func TestVMCreate_SSHIngressMutualExclusion(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "1",
-		"--memory-mb", "128",
+		"--memory-mib", "128",
 		"--ssh-ingress",
 		"--no-cloud-init",
 	})
@@ -218,7 +218,7 @@ func TestVMCreate_Labels(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "2",
-		"--memory-mb", "512",
+		"--memory-mib", "512",
 		"--label", "app=web",
 		"--label", "tier=frontend",
 	})
@@ -266,7 +266,7 @@ func TestVMCreate_NetworkConfigFile(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "2",
-		"--memory-mb", "512",
+		"--memory-mib", "512",
 		"--network-config", ncPath,
 	})
 	if err != nil {
@@ -302,7 +302,7 @@ func TestVMCreate_NetworkConfigMutualExclusion(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "1",
-		"--memory-mb", "128",
+		"--memory-mib", "128",
 		"--network-config", ncPath,
 		"--no-cloud-init",
 	})
@@ -350,7 +350,7 @@ func TestVMCreate_UserDataAndNetworkConfig(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "2",
-		"--memory-mb", "512",
+		"--memory-mib", "512",
 		"--user-data", udPath,
 		"--network-config", ncPath,
 	})
@@ -394,7 +394,7 @@ func TestVMCreate_ImageFields(t *testing.T) {
 		"--format", "qcow2",
 		"--disk-gib", "20",
 		"--vcpus", "2",
-		"--memory-mb", "2048",
+		"--memory-mib", "2048",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -475,7 +475,7 @@ func TestVMCreate_MissingImageURL(t *testing.T) {
 		"vm-no-image",
 		"--arch", "amd64",
 		"--vcpus", "1",
-		"--memory-mb", "128",
+		"--memory-mib", "128",
 	})
 	if err == nil {
 		t.Fatalf("expected error for missing --image-url")
@@ -499,7 +499,7 @@ func TestVMCreate_MissingArch(t *testing.T) {
 		"vm-no-arch",
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--vcpus", "1",
-		"--memory-mb", "128",
+		"--memory-mib", "128",
 	})
 	if err == nil {
 		t.Fatalf("expected error for missing --arch")
@@ -546,7 +546,7 @@ func TestVMCreate_CloudInitStdin_FlagAccepted(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "1",
-		"--memory-mb", "128",
+		"--memory-mib", "128",
 		"--user-data", "-",
 	})
 	if err != nil {
@@ -574,7 +574,7 @@ func TestVMCreate_NoCloudInit(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "2",
-		"--memory-mb", "512",
+		"--memory-mib", "512",
 		"--no-cloud-init",
 	})
 	if err != nil {
@@ -612,7 +612,7 @@ func TestVMCreate_CloudInitMutualExclusion(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "1",
-		"--memory-mb", "128",
+		"--memory-mib", "128",
 		"--user-data", yamlPath,
 		"--no-cloud-init",
 	})
@@ -646,7 +646,7 @@ func TestVMCreate_CloudInitMalformedYAML(t *testing.T) {
 		"--arch", "amd64",
 		"--pool", "pool-dev",
 		"--vcpus", "1",
-		"--memory-mb", "128",
+		"--memory-mib", "128",
 		"--user-data", yamlPath,
 	})
 	if err == nil {

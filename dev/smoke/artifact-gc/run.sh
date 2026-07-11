@@ -263,7 +263,7 @@ pass "artifact-pool $POOL created (K=2)"
 echo "=== step 2: create $SRC_VM on $NODE1 -> running, snapshot $SNAP_A -> durable ==="
 printf '%s' "$CLOUD_INIT" | otx vm create "$SRC_VM" \
   --image-url "$IMAGE_URL" --arch "$ARCH" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 --user-data - \
+  --vcpus 2 --memory-mib 2048 --user-data - \
   --wait --wait-timeout "${CREATE_WAIT}s" \
   || fail "vm create $SRC_VM did not reach running within ${CREATE_WAIT}s"
 assert_phase "$SRC_VM" running
@@ -314,7 +314,7 @@ pass "blob X held on BOTH holders across ${HOLD_WINDOW}s and $SNAP_A stayed dura
 # recreate from the still-referenced A and boot it -> proves X is intact + usable.
 echo "=== step 3b: recreate $DST_VM --from-snapshot $SNAP_A -> running (X still usable) ==="
 otx vm create "$DST_VM" --from-snapshot "$A_ID" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --wait --wait-timeout "${RECREATE_WAIT}s" \
   || fail "vm create --from-snapshot $SNAP_A did not reach running within ${RECREATE_WAIT}s"
 assert_phase "$DST_VM" running
@@ -383,7 +383,7 @@ pass "over-replication trimmed: blob Y reclaimed down to exactly 1 live holder (
 # --- step 6: a still-referenced snapshot recreates and boots (no false reclaim) ---
 echo "=== step 6: recreate $DST_VM --from-snapshot $SNAP_C -> running (referenced blob usable) ==="
 otx vm create "$DST_VM" --from-snapshot "$C_ID" --node "$NODE1" \
-  --vcpus 2 --memory-mb 2048 \
+  --vcpus 2 --memory-mib 2048 \
   --wait --wait-timeout "${RECREATE_WAIT}s" \
   || fail "vm create --from-snapshot $SNAP_C did not reach running within ${RECREATE_WAIT}s"
 assert_phase "$DST_VM" running

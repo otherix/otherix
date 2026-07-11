@@ -27,7 +27,7 @@ type vmCreateBody struct {
 	UUID           string `json:"uuid"`
 	Name           string `json:"name"`
 	VCPUs          int    `json:"vcpus"`
-	MemoryMB       int    `json:"memory_mb"`
+	MemoryMib      int    `json:"memory_mib"`
 	Pool           string `json:"pool"`
 	ImageURL       string `json:"image_url"`
 	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
@@ -48,7 +48,7 @@ func validNamedVMBody(vmID uuid.UUID, name, poolName string) vmCreateBody {
 		UUID:           vmID.String(),
 		Name:           name,
 		VCPUs:          2,
-		MemoryMB:       2048,
+		MemoryMib:      2048,
 		Pool:           poolName,
 		ImageURL:       "https://example.test/img.qcow2",
 		ExpectedSHA256: strings.Repeat("a", 64),
@@ -118,7 +118,7 @@ func TestVmsCreate_DefaultSuccessMaterialises(t *testing.T) {
 	if v.ID != vmID {
 		t.Errorf("stored vm.ID = %s, want %s", v.ID, vmID)
 	}
-	if v.Name != "demo" || v.VCPUs != 2 || v.MemoryMB != 2048 || v.PoolName != poolID {
+	if v.Name != "demo" || v.VCPUs != 2 || v.MemoryMib != 2048 || v.PoolName != poolID {
 		t.Errorf("stored vm = %+v, want name=demo vcpus=2 memory=2048 pool=%s", v, poolID)
 	}
 	if v.Architecture != "amd64" {
@@ -187,7 +187,7 @@ func TestVmsCreate_ValidationFailures(t *testing.T) {
 
 	// Missing uuid.
 	resp, err := http.Post(m.URL()+"/v1/vms", "application/json",
-		strings.NewReader(`{"name":"x","vcpus":1,"memory_mb":1024,"pool":"`+uuid.NewString()+`"}`))
+		strings.NewReader(`{"name":"x","vcpus":1,"memory_mib":1024,"pool":"`+uuid.NewString()+`"}`))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestVmsCreate_ValidationFailures(t *testing.T) {
 
 	// Invalid pool_id.
 	resp, err = http.Post(m.URL()+"/v1/vms", "application/json",
-		strings.NewReader(`{"uuid":"`+uuid.NewString()+`","name":"x","vcpus":1,"memory_mb":1024,"pool_id":"not-a-uuid"}`))
+		strings.NewReader(`{"uuid":"`+uuid.NewString()+`","name":"x","vcpus":1,"memory_mib":1024,"pool_id":"not-a-uuid"}`))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}

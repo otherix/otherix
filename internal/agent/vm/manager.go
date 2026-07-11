@@ -552,7 +552,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 			ID:            meta.VMID,
 			Name:          meta.Name,
 			VCPUs:         meta.VCPUs,
-			MemoryMB:      meta.MemoryMB,
+			MemoryMib:     meta.MemoryMib,
 			PoolName:      meta.PoolName,
 			Architecture:  qemu.Architecture(meta.Architecture),
 			Status:        Status(meta.Status),
@@ -747,6 +747,33 @@ func (m *Manager) ByName(name string) (*VM, error) {
 	return found, nil
 }
 
+// GuestMemUsedMiB returns the guest's in-use memory (MiB) read from its
+// virtio-balloon over QMP, or nil. Best-effort observability: an unknown VM, a
+// dial failure, or any QMP error all yield nil - the caller (the reconciler)
+// reports nil as "no observation this tick", never an error.
+func (m *Manager) GuestMemUsedMiB(name string) *int64 {
+	v, err := m.ByName(name)
+	if err != nil || v == nil || v.QMPSocket == "" {
+		return nil
+	}
+	conn, err := qemu.DialQMP(v.QMPSocket, 5*time.Second)
+	if err != nil {
+		return nil
+	}
+	// Watchdog: Run() has no read deadline, so a wedged qemu monitor would block
+	// forever and stall the single-goroutine reconciler. Closing the socket out
+	// of band unblocks Run() with an error; the deferred Close/Stop are harmless
+	// no-ops if the read already returned.
+	wd := time.AfterFunc(2*time.Second, func() { _ = conn.Close() })
+	defer wd.Stop()
+	defer func() { _ = conn.Close() }()
+	used, err := conn.GuestMemUsedMiB()
+	if err != nil {
+		return nil
+	}
+	return used
+}
+
 // List returns a snapshot of every VM, ordered by CreatedAt ascending.
 func (m *Manager) List() []*VM {
 	m.mu.Lock()
@@ -926,7 +953,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 		ID:            vmID,
 		Name:          spec.Name,
 		VCPUs:         spec.VCPUs,
-		MemoryMB:      spec.MemoryMB,
+		MemoryMib:     spec.MemoryMib,
 		PoolName:      spec.PoolName,
 		Architecture:  arch,
 		Status:        StatusPending,
@@ -1286,7 +1313,7 @@ func (m *Manager) spawnAndVerify(log *slog.Logger, v *VM) (string, error) {
 		Name:            v.Name,
 		UUID:            v.ID,
 		VCPUs:           v.VCPUs,
-		MemoryMB:        v.MemoryMB,
+		MemoryMib:       v.MemoryMib,
 		Architecture:    v.Architecture,
 		Accelerator:     m.accelerator,
 		DiskPath:        v.DiskPath,
@@ -2114,7 +2141,7 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 		VMID:          v.ID,
 		Name:          v.Name,
 		VCPUs:         v.VCPUs,
-		MemoryMB:      v.MemoryMB,
+		MemoryMib:     v.MemoryMib,
 		PoolName:      v.PoolName,
 		Architecture:  string(v.Architecture),
 		DiskPath:      v.DiskPath,
@@ -2175,8 +2202,8 @@ func validateCreateSpec(s CreateSpec) error {
 	if s.VCPUs < 1 || s.VCPUs > 128 {
 		return errors.New("vcpus must be in [1, 128]")
 	}
-	if s.MemoryMB < 128 || s.MemoryMB > 524288 {
-		return errors.New("memory_mb must be in [128, 524288]")
+	if s.MemoryMib < 128 || s.MemoryMib > 524288 {
+		return errors.New("memory_mib must be in [128, 524288]")
 	}
 	if s.PoolName == "" {
 		return errors.New("pool is required")

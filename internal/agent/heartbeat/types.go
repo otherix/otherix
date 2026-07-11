@@ -407,4 +407,5 @@ type VMReport struct {
 	QEMUPID            *int32    `json:"qemu_pid"`
 	LastStartedAt      *string   `json:"last_started_at"`
 	LastErrorMessage   *string   `json:"last_error_message"`
+	MemoryUsedMib      *int64    `json:"memory_used_mib,omitempty"`
 }

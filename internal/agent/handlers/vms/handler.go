@@ -104,7 +104,7 @@ type vmView struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	VCPUs        int    `json:"vcpus"`
-	MemoryMB     int    `json:"memory_mb"`
+	MemoryMib    int    `json:"memory_mib"`
 	Pool         string `json:"pool"`
 	Architecture string `json:"architecture"`
 	Status       string `json:"status"`
@@ -121,7 +121,7 @@ func toView(v *vm.VM, bootDiskVirtualSize int64) vmView {
 		ID:                       v.ID.String(),
 		Name:                     v.Name,
 		VCPUs:                    v.VCPUs,
-		MemoryMB:                 v.MemoryMB,
+		MemoryMib:                v.MemoryMib,
 		Pool:                     v.PoolName,
 		Architecture:             string(v.Architecture),
 		Status:                   string(v.Status),

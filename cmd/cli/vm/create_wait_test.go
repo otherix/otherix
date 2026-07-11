@@ -19,7 +19,7 @@ import (
 // create-summary line and the GET path stay deterministic.
 func waitVMBody(name, phase, reason, message string) []byte {
 	return []byte(`{"id":"` + uuid.NewString() + `","name":"` + name + `","owner_id":"` + uuid.NewString() +
-		`","pool":"default","architecture":"amd64","vcpus":2,"memory_mb":2048,` +
+		`","pool":"default","architecture":"amd64","vcpus":2,"memory_mib":2048,` +
 		`"status":{"phase":"` + phase + `","reason":"` + reason + `","message":"` + message + `"},` +
 		`"desired_phase":"running","labels":{},` +
 		`"created_at":"2026-05-10T10:00:00Z","updated_at":"2026-05-10T10:00:00Z"}`)
@@ -52,7 +52,7 @@ func waitCreateArgs(name, timeout string) []string {
 		"--image-url", "https://example.com/ubuntu.qcow2",
 		"--arch", "amd64",
 		"--vcpus", "2",
-		"--memory-mb", "2048",
+		"--memory-mib", "2048",
 		"--wait",
 		"--wait-timeout", timeout,
 	}
