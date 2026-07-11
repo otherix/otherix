@@ -698,3 +698,46 @@ func TestSetNodeGatewayRole(t *testing.T) {
 		t.Errorf("SetNodeGatewayRole(missing) = %v, want store.ErrNotFound", err)
 	}
 }
+
+// TestNodeMemoryUsedMib_HeartbeatRepairsCreateIndex pins the by-node index
+// self-heal. The vm-create projection (ProjectVMCreateSuccess) writes a
+// vm_runtime row with current_node_id already set but does NOT write the
+// index/vm_runtime/node leaf. If UpsertVMRuntime only wrote that leaf when
+// current_node_id CHANGES, the first heartbeat (unchanged node) would skip it
+// and the leaf would stay missing forever, so NodeMemoryUsedMib (and DeleteNode)
+// would never see the VM. The heartbeat must (re)write the leaf unconditionally.
+func TestNodeMemoryUsedMib_HeartbeatRepairsCreateIndex(t *testing.T) {
+	ctx := context.Background()
+	s, cli := startStore(t)
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	used := int64(500)
+
+	// Mimic the create projection: a running runtime row with a balloon reading
+	// and current_node_id set, but NO by-node index leaf.
+	rt := store.VMRuntime{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, MemoryUsedMib: &used}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_runtime", vmID.String()), rt); err != nil {
+		t.Fatalf("seed create-style runtime: %v", err)
+	}
+	// Premise: with no index leaf the aggregate cannot see the VM yet.
+	if got, err := s.NodeMemoryUsedMib(ctx, nodeID); err != nil || got != nil {
+		t.Fatalf("pre-heartbeat NodeMemoryUsedMib = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	// One heartbeat with an UNCHANGED current_node_id must repair the leaf.
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, MemoryUsedMib: &used,
+		})
+	}); err != nil {
+		t.Fatalf("heartbeat upsert: %v", err)
+	}
+
+	got, err := s.NodeMemoryUsedMib(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("NodeMemoryUsedMib: %v", err)
+	}
+	if got == nil || *got != 500 {
+		t.Errorf("NodeMemoryUsedMib after heartbeat = %v, want 500 (by-node index must self-heal on an unchanged-node heartbeat)", got)
+	}
+}

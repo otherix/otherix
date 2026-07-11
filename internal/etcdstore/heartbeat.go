@@ -221,7 +221,15 @@ func (h heartbeatProjection) UpsertVMRuntime(ctx context.Context, arg store.Upse
 	if oldNode != nil && (arg.CurrentNodeID == nil || *oldNode != *arg.CurrentNodeID) {
 		ops = append(ops, clientv3.OpDelete(vmRuntimeNodeIndexKey(*oldNode, arg.VmID)))
 	}
-	if arg.CurrentNodeID != nil && (oldNode == nil || *oldNode != *arg.CurrentNodeID) {
+	if arg.CurrentNodeID != nil {
+		// Always (re)write the by-node index leaf, not only when current_node_id
+		// changes. The vm-create projection (ProjectVMCreateSuccess) writes the
+		// runtime row with current_node_id already set but does NOT write this
+		// index, so a change-only Put would never fire on the first heartbeat of a
+		// freshly-created VM (oldNode already equals the current node) and the leaf
+		// would stay missing forever. OpPut is idempotent, so writing it every tick
+		// costs one op and self-heals rows left index-less by that seam. DeleteNode
+		// and the per-node runtime aggregates both range this index.
 		ops = append(ops, clientv3.OpPut(vmRuntimeNodeIndexKey(*arg.CurrentNodeID, arg.VmID), arg.VmID.String()))
 	}
 	// Guard the write on the vms row the heartbeat decided this claim against
