@@ -503,6 +503,21 @@ dev-zram-off: ## Disable host zram on a Lima dev node (NODE=otherix-dev-1)
 	@limactl shell $(NODE) swapon --show || true
 	@echo ">> zram off."
 
+dev-zram-stat: ## Show host zram utilization on a Lima dev node (NODE=otherix-dev-1)
+	@command -v limactl >/dev/null || { echo "limactl not found - dev-zram-* is for the macOS Lima dev stack"; exit 1; }
+	@limactl shell $(NODE) sudo sh -c '\
+	  d=/sys/block/zram0; \
+	  [ -e $$d/mm_stat ] || { echo "zram not active on $(NODE)"; exit 0; }; \
+	  set -- $$(cat $$d/mm_stat); orig=$$1; compr=$$2; memused=$$3; \
+	  disksize=$$(cat $$d/disksize); \
+	  echo "swap (logical):"; swapon --show=NAME,SIZE,USED,PRIO; \
+	  echo; \
+	  printf "disksize (ceiling):        %6s MiB\n" $$((disksize/1048576)); \
+	  printf "orig  (logical swapped):   %6s MiB  (%s%% of ceiling)\n" $$((orig/1048576)) $$((orig*100/disksize)); \
+	  printf "compr (physical RAM used): %6s MiB\n" $$((compr/1048576)); \
+	  printf "mem_used_total:            %6s MiB\n" $$((memused/1048576)); \
+	  [ $$compr -gt 0 ] && printf "compression ratio:         %s.%02sx\n" $$((orig/compr)) $$(((orig*100/compr)%100)) || true'
+
 # bootstrap-dev / deploy-dev / clean-dev / restart-agent are internal per-OS
 # dispatchers used by the local-dev-* family. They are intentionally NOT in
 # `make help` (no `##`) — the documented surface is local-dev-*.
