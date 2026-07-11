@@ -747,6 +747,33 @@ func (m *Manager) ByName(name string) (*VM, error) {
 	return found, nil
 }
 
+// GuestMemUsedMiB returns the guest's in-use memory (MiB) read from its
+// virtio-balloon over QMP, or nil. Best-effort observability: an unknown VM, a
+// dial failure, or any QMP error all yield nil - the caller (the reconciler)
+// reports nil as "no observation this tick", never an error.
+func (m *Manager) GuestMemUsedMiB(name string) *int64 {
+	v, err := m.ByName(name)
+	if err != nil || v == nil || v.QMPSocket == "" {
+		return nil
+	}
+	conn, err := qemu.DialQMP(v.QMPSocket, 5*time.Second)
+	if err != nil {
+		return nil
+	}
+	// Watchdog: Run() has no read deadline, so a wedged qemu monitor would block
+	// forever and stall the single-goroutine reconciler. Closing the socket out
+	// of band unblocks Run() with an error; the deferred Close/Stop are harmless
+	// no-ops if the read already returned.
+	wd := time.AfterFunc(2*time.Second, func() { _ = conn.Close() })
+	defer wd.Stop()
+	defer conn.Close()
+	used, err := conn.GuestMemUsedMiB()
+	if err != nil {
+		return nil
+	}
+	return used
+}
+
 // List returns a snapshot of every VM, ordered by CreatedAt ascending.
 func (m *Manager) List() []*VM {
 	m.mu.Lock()

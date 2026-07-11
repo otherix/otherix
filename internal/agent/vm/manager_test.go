@@ -637,6 +637,17 @@ func TestManager_Get_NotFound(t *testing.T) {
 	}
 }
 
+func TestManagerGuestMemUsedMiB_UnknownVM(t *testing.T) {
+	cfg, _, _ := newTestConfig(t)
+	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := m.GuestMemUsedMiB("does-not-exist"); got != nil {
+		t.Errorf("GuestMemUsedMiB(unknown) = %v, want nil", *got)
+	}
+}
+
 func TestManager_List_Empty(t *testing.T) {
 	cfg, _, _ := newTestConfig(t)
 	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
