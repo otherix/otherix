@@ -706,6 +706,11 @@ type HeartbeatWorkersConfig struct {
 	StaleThreshold time.Duration `koanf:"stale_threshold"`
 	RebalanceGrace time.Duration `koanf:"rebalance_grace"`
 	Interval       time.Duration `koanf:"interval"`
+	// DownPathStaleness bounds how recent a gateway's reported handshake with a
+	// NAT'd mesh node must be for placement to still treat that node as reachable.
+	// It gates the placement predicate only; it never touches node health. Zero
+	// falls back to the store's package default.
+	DownPathStaleness time.Duration `koanf:"down_path_staleness"`
 }
 
 // Validate enforces RebalanceGrace >= StaleThreshold. A shorter grace would make
@@ -714,6 +719,9 @@ type HeartbeatWorkersConfig struct {
 func (h HeartbeatWorkersConfig) Validate() error {
 	if h.RebalanceGrace > 0 && h.StaleThreshold > 0 && h.RebalanceGrace < h.StaleThreshold {
 		return fmt.Errorf("workers.heartbeat.rebalance_grace (%v) must be >= stale_threshold (%v)", h.RebalanceGrace, h.StaleThreshold)
+	}
+	if h.DownPathStaleness < 0 {
+		return fmt.Errorf("workers.heartbeat.down_path_staleness (%v) must not be negative", h.DownPathStaleness)
 	}
 	return nil
 }
@@ -794,9 +802,10 @@ func defaultAPIConfig() APIConfig {
 				},
 			},
 			Heartbeat: HeartbeatWorkersConfig{
-				StaleThreshold: 90 * time.Second,
-				RebalanceGrace: 5 * time.Minute,
-				Interval:       30 * time.Second,
+				StaleThreshold:    90 * time.Second,
+				RebalanceGrace:    5 * time.Minute,
+				Interval:          30 * time.Second,
+				DownPathStaleness: 90 * time.Second,
 			},
 			StoragePoolScan: StoragePoolScanConfig{
 				Enabled:  true,

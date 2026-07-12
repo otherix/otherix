@@ -35,10 +35,11 @@ import (
 // holds a KV client over the embedded member; one Store instance carries
 // every resource's methods.
 type Store struct {
-	c               *etcd.Client
-	log             *slog.Logger
-	placementLk     *placementLocker
-	refreshTokenTTL time.Duration
+	c                 *etcd.Client
+	log               *slog.Logger
+	placementLk       *placementLocker
+	refreshTokenTTL   time.Duration
+	downPathStaleness time.Duration
 }
 
 // defaultRefreshTokenTTL is the fallback lifetime the store assumes for refresh
@@ -47,6 +48,11 @@ type Store struct {
 // the <=30d common case. Production (cmd/api/serve.go) overrides it with the
 // operator-configured JWTRefreshTTL via WithRefreshTokenTTL.
 const defaultRefreshTokenTTL = 31 * 24 * time.Hour
+
+// defaultDownPathStaleness bounds how recent a gateway's reported handshake with
+// a NAT'd mesh node must be for placement to still treat that node as reachable.
+// Production overrides it from config via WithDownPathStaleness.
+const defaultDownPathStaleness = 90 * time.Second
 
 // Option configures a Store.
 type Option func(*Store)
@@ -66,9 +72,20 @@ func WithRefreshTokenTTL(d time.Duration) Option {
 	}
 }
 
+// WithDownPathStaleness sets the freshness window for a gateway-reported
+// handshake to keep a NAT'd mesh node schedulable. A non-positive value is
+// ignored (the default stands).
+func WithDownPathStaleness(d time.Duration) Option {
+	return func(s *Store) {
+		if d > 0 {
+			s.downPathStaleness = d
+		}
+	}
+}
+
 // New constructs a Store over the given KV client.
 func New(c *etcd.Client, opts ...Option) *Store {
-	s := &Store{c: c, log: slog.Default(), placementLk: newPlacementLocker(), refreshTokenTTL: defaultRefreshTokenTTL}
+	s := &Store{c: c, log: slog.Default(), placementLk: newPlacementLocker(), refreshTokenTTL: defaultRefreshTokenTTL, downPathStaleness: defaultDownPathStaleness}
 	for _, o := range opts {
 		o(s)
 	}

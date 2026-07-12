@@ -647,11 +647,20 @@ func TestHeartbeatWorkersConfigValidate(t *testing.T) {
 		{"grace exceeds threshold", HeartbeatWorkersConfig{StaleThreshold: 90 * time.Second, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second}, false},
 		{"grace equals threshold", HeartbeatWorkersConfig{StaleThreshold: 5 * time.Minute, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second}, false},
 		{"grace below threshold", HeartbeatWorkersConfig{StaleThreshold: 5 * time.Minute, RebalanceGrace: 90 * time.Second, Interval: 30 * time.Second}, true},
+		{"negative down-path staleness", HeartbeatWorkersConfig{StaleThreshold: 90 * time.Second, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second, DownPathStaleness: -time.Second}, true},
+		{"zero down-path staleness", HeartbeatWorkersConfig{StaleThreshold: 90 * time.Second, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second, DownPathStaleness: 0}, false},
 	}
 	for _, tt := range tests {
 		err := tt.cfg.Validate()
 		if (err != nil) != tt.wantErr {
 			t.Errorf("%s: Validate() error = %v, wantErr %v", tt.name, err, tt.wantErr)
 		}
+	}
+}
+
+func TestDefaultAPIConfig_DownPathStaleness(t *testing.T) {
+	got := defaultAPIConfig().Workers.Heartbeat.DownPathStaleness
+	if want := 90 * time.Second; got != want {
+		t.Errorf("default DownPathStaleness = %v, want %v", got, want)
 	}
 }

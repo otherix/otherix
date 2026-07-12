@@ -373,6 +373,11 @@ func (s *Store) poolNodePairs(ctx context.Context, name string, keep func(store.
 	if err != nil {
 		return nil, err
 	}
+	wgByNode, gatewayFreshestFor, err := s.downPathReachability(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
 	var out []poolNodePair
 	for _, p := range pools {
 		// LOW-1: skip a node with a live delete-intent - a bind onto it is guaranteed
@@ -401,11 +406,76 @@ func (s *Store) poolNodePairs(ctx context.Context, name string, keep func(store.
 		if err != nil {
 			return nil, err
 		}
-		if keep(poolEff, nodeEff) {
-			out = append(out, poolNodePair{pool: poolEff, node: nodeEff})
+		if !keep(poolEff, nodeEff) {
+			continue
 		}
+		rec, hasWG := wgByNode[node.ID]
+		natd := hasWG && rec.Endpoint == ""
+		if !downPathReachable(natd, node.ID, gatewayFreshestFor, now, s.downPathStaleness) {
+			continue
+		}
+		out = append(out, poolNodePair{pool: poolEff, node: nodeEff})
 	}
 	return out, nil
+}
+
+// downPathReachability builds the per-placement down-path reachability inputs:
+// wgByNode maps a node id to its agent-reported WireGuard record (used to detect
+// a NAT'd node via an empty Endpoint), and gatewayFreshestFor maps a peer node id
+// to the newest UpdatedAt among gateway records that report a live handshake with
+// it. A gateway's own report freshness IS its liveness: a dead gateway's
+// UpdatedAt goes stale and its relayed peers drop out of the placement gate.
+//
+// ponytail: one ListAgentWireguard range + one AllNodes enumeration per placement
+// call - O(nodes), acceptable at current cluster scale. Build an index only if a
+// placement hot path shows up here.
+func (s *Store) downPathReachability(ctx context.Context) (map[uuid.UUID]store.AgentWireguard, map[uuid.UUID]time.Time, error) {
+	wgs, err := s.ListAgentWireguard(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	nodes, err := s.AllNodes(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	isGateway := make(map[uuid.UUID]bool, len(nodes))
+	for _, n := range nodes {
+		if n.HasRole(store.NodeRoleGateway) {
+			isGateway[n.ID] = true
+		}
+	}
+	byNode := make(map[uuid.UUID]store.AgentWireguard, len(wgs))
+	gatewayFreshestFor := make(map[uuid.UUID]time.Time)
+	for _, rec := range wgs {
+		byNode[rec.NodeID] = rec
+		if !isGateway[rec.NodeID] {
+			continue
+		}
+		for _, peer := range rec.EstablishedPeers {
+			pid, perr := uuid.Parse(peer)
+			if perr != nil {
+				continue
+			}
+			if t, ok := gatewayFreshestFor[pid]; !ok || rec.UpdatedAt.After(t) {
+				gatewayFreshestFor[pid] = rec.UpdatedAt
+			}
+		}
+	}
+	return byNode, gatewayFreshestFor, nil
+}
+
+// downPathReachable reports whether the CP can currently drive a node's control
+// plane for the purpose of placement. A node the CP dials directly - not a NAT'd
+// mesh node - is always reachable. A NAT'd mesh node is reachable iff some gateway
+// currently holds a fresh handshake with it: the node's id is in a gateway's
+// reported established-peer set and that gateway's report is within staleness.
+// Confined to the placement predicate; it never writes NodeStatus.
+func downPathReachable(natd bool, nodeID uuid.UUID, gatewayFreshestFor map[uuid.UUID]time.Time, now time.Time, staleness time.Duration) bool {
+	if !natd {
+		return true
+	}
+	t, ok := gatewayFreshestFor[nodeID]
+	return ok && now.Sub(t) <= staleness
 }
 
 // nodeSchedulable is the single predicate deciding whether a node may receive
