@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agentapi"
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/handlers/migrations"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
@@ -122,16 +123,18 @@ func TestMigrationCancel_PropagatesToSourceAndTarget(t *testing.T) {
 	for _, c := range calls {
 		byEndpoint[c.endpoint] = c
 	}
-	src, ok := byEndpoint[srcEndpoint]
+	// The worker dials each agent by its identity URL (DialURL(node.Name)).
+	srcDial, tgtDial := agentclient.DialURL(nodeA.Name), agentclient.DialURL(nodeB.Name)
+	src, ok := byEndpoint[srcDial]
 	if !ok {
-		t.Fatalf("no cancel call to source %q (calls=%v)", srcEndpoint, calls)
+		t.Fatalf("no cancel call to source %q (calls=%v)", srcDial, calls)
 	}
 	if src.vmName != vm.Name || src.migID != m.ID.String() {
 		t.Errorf("source cancel = %+v, want vmName %q migID %q", src, vm.Name, m.ID)
 	}
-	tgt, ok := byEndpoint[tgtEndpoint]
+	tgt, ok := byEndpoint[tgtDial]
 	if !ok {
-		t.Fatalf("no cancel call to target %q (calls=%v)", tgtEndpoint, calls)
+		t.Fatalf("no cancel call to target %q (calls=%v)", tgtDial, calls)
 	}
 	if tgt.vmName != vm.Name || tgt.migID != m.ID.String() {
 		t.Errorf("target cancel = %+v, want vmName %q migID %q", tgt, vm.Name, m.ID)
@@ -165,8 +168,8 @@ func TestMigrationCancel_OfflineSkipsTargetPropagation(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("cancel calls = %v, want 1 (source only - offline target has no resume goroutine)", calls)
 	}
-	if calls[0].endpoint != srcEndpoint {
-		t.Errorf("cancel endpoint = %q, want source %q", calls[0].endpoint, srcEndpoint)
+	if want := agentclient.DialURL(nodeA.Name); calls[0].endpoint != want {
+		t.Errorf("cancel endpoint = %q, want source %q", calls[0].endpoint, want)
 	}
 }
 

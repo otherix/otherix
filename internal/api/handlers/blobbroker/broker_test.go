@@ -12,10 +12,16 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/store"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// dial is the identity URL the broker now dials a node by (DialURL(node.Name)):
+// the CP->agent transport pins TLS to the node identity and geo-routes NAT'd
+// nodes. The spies key serve/stop on this dial endpoint.
+func dial(nodeName string) string { return agentclient.DialURL(nodeName) }
 
 // storeStub satisfies the broker's Store seam. It records every phase the
 // broker drives so the test can assert the saga lifecycle alongside the agent
@@ -156,16 +162,16 @@ func TestBrokerPullSkipsUnreachableHolder(t *testing.T) {
 		},
 		token: "otx_pull_x",
 	}
-	spy := &fallbackSpy{serveEndp: map[string]string{"https://live:9443": "https://live:49252"}}
+	spy := &fallbackSpy{serveEndp: map[string]string{dial("node-live"): "https://live:49252"}}
 	b := New(st, spy, testLogger())
 
 	if err := b.BrokerPull(context.Background(), "abc", consumer, TierArtifact); err != nil {
 		t.Fatalf("BrokerPull: %v", err)
 	}
 	want := []string{
-		"serve:https://live:9443",
-		"pull:https://consumer:9443<-https://live:49252",
-		"stop:https://live:9443",
+		"serve:" + dial("node-live"),
+		"pull:" + dial("node-c") + "<-https://live:49252",
+		"stop:" + dial("node-live"),
 	}
 	if len(spy.calls) != len(want) {
 		t.Fatalf("calls = %v, want %v (the unreachable holder must be skipped, never served)", spy.calls, want)
@@ -195,8 +201,8 @@ func TestBrokerPullFallsBackOnServeFailure(t *testing.T) {
 		token: "otx_pull_x",
 	}
 	spy := &fallbackSpy{
-		serveEndp: map[string]string{"https://second:9443": "https://second:49252"},
-		serveFail: map[string]bool{"https://first:9443": true},
+		serveEndp: map[string]string{dial("node-2"): "https://second:49252"},
+		serveFail: map[string]bool{dial("node-1"): true},
 	}
 	b := New(st, spy, testLogger())
 
@@ -206,10 +212,10 @@ func TestBrokerPullFallsBackOnServeFailure(t *testing.T) {
 	// first serve fails -> no listener opened, nothing to tear down -> fall
 	// through to second, which serves, pulls, then tears its serve down.
 	want := []string{
-		"serve:https://first:9443",
-		"serve:https://second:9443",
-		"pull:https://consumer:9443<-https://second:49252",
-		"stop:https://second:9443",
+		"serve:" + dial("node-1"),
+		"serve:" + dial("node-2"),
+		"pull:" + dial("node-c") + "<-https://second:49252",
+		"stop:" + dial("node-2"),
 	}
 	if len(spy.calls) != len(want) {
 		t.Fatalf("calls = %v, want %v", spy.calls, want)
@@ -240,8 +246,8 @@ func TestBrokerPullFallsBackOnPullFailure(t *testing.T) {
 	}
 	spy := &fallbackSpy{
 		serveEndp: map[string]string{
-			"https://first:9443":  "https://first:49252",
-			"https://second:9443": "https://second:49252",
+			dial("node-1"): "https://first:49252",
+			dial("node-2"): "https://second:49252",
 		},
 		pullFail: map[string]bool{"https://first:49252": true},
 	}
@@ -251,12 +257,12 @@ func TestBrokerPullFallsBackOnPullFailure(t *testing.T) {
 		t.Fatalf("BrokerPull: %v", err)
 	}
 	want := []string{
-		"serve:https://first:9443",
-		"pull:https://consumer:9443<-https://first:49252",
-		"stop:https://first:9443",
-		"serve:https://second:9443",
-		"pull:https://consumer:9443<-https://second:49252",
-		"stop:https://second:9443",
+		"serve:" + dial("node-1"),
+		"pull:" + dial("node-c") + "<-https://first:49252",
+		"stop:" + dial("node-1"),
+		"serve:" + dial("node-2"),
+		"pull:" + dial("node-c") + "<-https://second:49252",
+		"stop:" + dial("node-2"),
 	}
 	if len(spy.calls) != len(want) {
 		t.Fatalf("calls = %v, want %v", spy.calls, want)
@@ -320,8 +326,8 @@ func TestBrokerPullAllLiveHoldersFailReturnsLastCause(t *testing.T) {
 	}
 	spy := &fallbackSpy{
 		serveEndp: map[string]string{
-			"https://first:9443":  "https://first:49252",
-			"https://second:9443": "https://second:49252",
+			dial("node-1"): "https://first:49252",
+			dial("node-2"): "https://second:49252",
 		},
 		pullFail: map[string]bool{
 			"https://first:49252":  true,
@@ -384,9 +390,9 @@ func TestBrokerPullSequencing(t *testing.T) {
 	}
 
 	want := []string{
-		"serve:https://holder:9443",
-		"pull:https://consumer:9443<-https://holder:49252",
-		"stop:https://holder:9443",
+		"serve:" + dial("node-1"),
+		"pull:" + dial("node-2") + "<-https://holder:49252",
+		"stop:" + dial("node-1"),
 	}
 	if len(spy.calls) != len(want) {
 		t.Fatalf("calls = %v, want %v", spy.calls, want)

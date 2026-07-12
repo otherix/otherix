@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -54,7 +55,11 @@ type Client struct {
 // cfg.Enabled must be true; the caller decides whether to construct
 // the client at all (HTTP-only smoke loops can skip with workers.enabled
 // = false).
-func New(cfg config.AgentClientConfig, cert tls.Certificate, clusterCA *x509.Certificate) (*Client, error) {
+//
+// res resolves a node identity to a route (direct for a public node, a gateway
+// CONNECT splice for a NAT'd one). A nil resolver defaults to DirectResolver,
+// which dials the address the URL already names (non-geo callers and tests).
+func New(cfg config.AgentClientConfig, cert tls.Certificate, clusterCA *x509.Certificate, res RouteResolver) (*Client, error) {
 	if !cfg.Enabled {
 		return nil, errors.New("agentclient: cfg.Enabled is false")
 	}
@@ -67,6 +72,9 @@ func New(cfg config.AgentClientConfig, cert tls.Certificate, clusterCA *x509.Cer
 	if clusterCA == nil {
 		return nil, errors.New("agentclient: clusterCA is nil")
 	}
+	if res == nil {
+		res = DirectResolver{}
+	}
 
 	pool := x509.NewCertPool()
 	pool.AddCert(clusterCA)
@@ -74,6 +82,17 @@ func New(cfg config.AgentClientConfig, cert tls.Certificate, clusterCA *x509.Cer
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      pool,
 		MinVersion:   tls.VersionTLS13,
+	}
+
+	// The geo dialer resolves each identity host to a route and returns the conn
+	// the transport runs the (inner) agent TLS over: a raw TCP conn for a direct
+	// node, or the OUTER-TLS conn post-CONNECT for a via-gateway splice. It holds
+	// the CP client material only for that OUTER gateway dial.
+	geo := &geoDialer{
+		resolver: res,
+		dialer:   &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second},
+		tlsCerts: []tls.Certificate{cert},
+		rootCAs:  pool,
 	}
 
 	// Per-request safety net: each underlying HTTP call is bounded by
@@ -84,6 +103,7 @@ func New(cfg config.AgentClientConfig, cert tls.Certificate, clusterCA *x509.Cer
 		Timeout: cfg.PollMaxInterval,
 		Transport: &http.Transport{
 			TLSClientConfig:       tlsCfg,
+			DialContext:           geo.DialContext,
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   4,
 			IdleConnTimeout:       90 * time.Second,

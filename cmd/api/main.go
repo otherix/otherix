@@ -21,6 +21,7 @@ import (
 	"github.com/otherix/otherix/internal/agentapi"
 	"github.com/otherix/otherix/internal/api"
 	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/api/agentroute"
 	"github.com/otherix/otherix/internal/api/handlers/blobbroker"
 	clustermembers "github.com/otherix/otherix/internal/api/handlers/clustermembers"
 	gatewayshandlers "github.com/otherix/otherix/internal/api/handlers/gateways"
@@ -348,7 +349,7 @@ func runServe(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, a
 		return fmt.Errorf("cp cert: %v", err)
 	}
 
-	agentClient, err := buildAgentClient(cfg, material, log)
+	agentClient, err := buildAgentClient(cfg, st, material, log)
 	if err != nil {
 		return fmt.Errorf("agent client: %v", err)
 	}
@@ -737,7 +738,7 @@ func etcdConfigFromAPI(c config.EtcdConfig) *etcd.Config {
 // this stage (config validation, empty material when AgentClient.Enabled=true)
 // are boot-time fatal: the api binary must not start with a half-configured
 // agent client.
-func buildAgentClient(cfg *config.APIConfig, material api.TLSMaterial, log *slog.Logger) (*agentclient.Client, error) {
+func buildAgentClient(cfg *config.APIConfig, st *etcdstore.Store, material api.TLSMaterial, log *slog.Logger) (*agentclient.Client, error) {
 	if !cfg.AgentClient.Enabled {
 		log.Info("agent client disabled; scan workers will surface degraded responses")
 		return nil, nil
@@ -745,7 +746,10 @@ func buildAgentClient(cfg *config.APIConfig, material api.TLSMaterial, log *slog
 	if material.Skipped() || len(material.Cert.Certificate) == 0 || material.ClusterCA == nil {
 		return nil, errors.New("agent_client.enabled=true requires valid CP cert material (LoadOrGenerateCPCert produced a skipped/empty result - check agent_server / agent_client config consistency)")
 	}
-	client, err := agentclient.New(cfg.AgentClient, material.Cert, material.ClusterCA)
+	// The geo resolver maps each node identity to a dial route (direct for a
+	// public node, a gateway CONNECT splice for a NAT'd one) off the live node
+	// rows + WireGuard state.
+	client, err := agentclient.New(cfg.AgentClient, material.Cert, material.ClusterCA, agentroute.New(st))
 	if err != nil {
 		return nil, err
 	}

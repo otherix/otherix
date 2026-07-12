@@ -20,6 +20,7 @@ import (
 
 	"github.com/otherix/otherix/internal/agentmock"
 	"github.com/otherix/otherix/internal/api/agentclient"
+	"github.com/otherix/otherix/internal/api/agentroute"
 	"github.com/otherix/otherix/internal/api/handlers/snapshots"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
@@ -628,7 +629,7 @@ func (fakeJobArgs) Kind() string { return "vm.snapshot.create" }
 // material (CP-side leaf cert + cluster CA), so the snapshot worker drives the
 // SAME production agent_executor.go decode path against the mock that it would
 // against a real agent. Fast poll intervals keep the end-to-end loop sub-second.
-func newMockAgentClient(t *testing.T) *agentclient.Client {
+func newMockAgentClient(t *testing.T, s *etcdstore.Store) *agentclient.Client {
 	t.Helper()
 	dir := t.TempDir()
 	caPEM, err := agentmock.CACertPEM()
@@ -663,12 +664,15 @@ func newMockAgentClient(t *testing.T) *agentclient.Client {
 	if err != nil {
 		t.Fatalf("LoadMaterialFromFiles: %v", err)
 	}
+	// The geo resolver maps the node identity URL (DialURL(node.Name)) back to the
+	// mock agent's address; the mock's node leaf carries the node-mock-1 identity
+	// SAN, so the snapshot node is named "mock-1" for the ServerName pin to verify.
 	cli, err := agentclient.New(config.AgentClientConfig{
 		Enabled:         true,
 		Timeout:         5 * time.Second,
 		PollInterval:    10 * time.Millisecond,
 		PollMaxInterval: 200 * time.Millisecond,
-	}, cert, ca)
+	}, cert, ca, agentroute.New(s))
 	if err != nil {
 		t.Fatalf("agentclient.New: %v", err)
 	}
@@ -683,8 +687,11 @@ func seedRunningVMOnNode(t *testing.T, s *etcdstore.Store, ownerID uuid.UUID, ag
 	t.Helper()
 	ctx := context.Background()
 	node, err := s.CreateNode(ctx, store.CreateNodeParams{
-		ID:                      uuid.New(),
-		Name:                    "snap-node-" + uuid.NewString()[:8],
+		ID: uuid.New(),
+		// Named to match the agentmock node leaf's fixed identity SAN
+		// (node-mock-1.agents.otherix.local), so the CP's identity-pinned TLS
+		// ServerName == DialURL("mock-1") verifies against the mock cert.
+		Name:                    "mock-1",
 		Architecture:            store.CpuArchAmd64,
 		AdvertisedEndpoint:      agentURL,
 		MigrationHost:           "10.0.0.7",
@@ -764,7 +771,7 @@ func TestSnapshotCreate_EndToEnd_ReachesReady(t *testing.T) {
 	// Drive the snapshot worker against the mock agent through the production
 	// agent_executor.go: PostSnapshot -> PollTask -> decodeSnapshotResult ->
 	// SnapshotManifestApplied -> finalize task success.
-	exec := snapshots.NewAgentSnapshotExecutor(newMockAgentClient(t))
+	exec := snapshots.NewAgentSnapshotExecutor(newMockAgentClient(t, h.store))
 	handler := snapshots.CreateHandler(h.store, exec, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	rawArgs, err := json.Marshal(snapshots.SnapshotCreateArgs{TaskID: taskID, SnapshotID: sid})
 	if err != nil {

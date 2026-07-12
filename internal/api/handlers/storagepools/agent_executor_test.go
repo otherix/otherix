@@ -480,7 +480,7 @@ func TestAgentScanExecutor_RealClientHappyPath(t *testing.T) {
 		Timeout:         3 * time.Second,
 		PollInterval:    10 * time.Millisecond,
 		PollMaxInterval: 100 * time.Millisecond,
-	}, cert, ca)
+	}, cert, ca, agentclient.DirectResolver{})
 	if err != nil {
 		t.Fatalf("agentclient.New: %v", err)
 	}
