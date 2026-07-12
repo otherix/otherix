@@ -145,6 +145,34 @@ func (r *WireGuard) establishedPeers() []string {
 	return out
 }
 
+// IsKnownNodeOverlayIP reports whether ip is the overlay address of a node the
+// CP currently declares as this agent's WireGuard peer. The gateway
+// /v1/connect-node splice validates a CP-supplied dial target against this set,
+// so it can only ever be steered to a meshed node's overlay IP - never a guest
+// VM address or the anycast service IP (the anti-SSRF gate). Reads the latest
+// applied desired snapshot; safe for concurrent use, and returns false until the
+// first heartbeat populates the peer set (fail closed).
+func (r *WireGuard) IsKnownNodeOverlayIP(ip netip.Addr) bool {
+	d := r.desired.Load()
+	if d == nil {
+		return false
+	}
+	want := ip.Unmap()
+	for _, p := range d.peers {
+		if p.OverlayIP == "" {
+			continue
+		}
+		peerIP, err := netip.ParseAddr(p.OverlayIP)
+		if err != nil {
+			continue
+		}
+		if peerIP.Unmap() == want {
+			return true
+		}
+	}
+	return false
+}
+
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. Copies the
 // declared intent and nudges the trigger.
 func (r *WireGuard) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Response) {

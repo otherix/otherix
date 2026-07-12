@@ -6,6 +6,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -29,6 +30,36 @@ func TestNewWireGuard_RejectsNilFabric(t *testing.T) {
 	_, err := NewWireGuard(nil, mustKey(t), config.WireGuardConfig{}, discardLogger(), 0)
 	if !errors.Is(err, ErrNilFabric) {
 		t.Errorf("err = %v, want ErrNilFabric", err)
+	}
+}
+
+func TestIsKnownNodeOverlayIP(t *testing.T) {
+	r, err := NewWireGuard(&netfabric.FakeFabric{}, mustKey(t), config.WireGuardConfig{}, discardLogger(), 0)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+
+	// Fail closed before any heartbeat populates the peer set.
+	if r.IsKnownNodeOverlayIP(netip.MustParseAddr("10.0.0.9")) {
+		t.Error("IsKnownNodeOverlayIP before first heartbeat = true, want false (fail closed)")
+	}
+
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredWireGuardPeers: []heartbeat.DeclaredWireGuardPeer{
+			{NodeID: "n9", PublicKey: "p9", OverlayIP: "10.0.0.9"},
+			{NodeID: "n-empty", PublicKey: "pe", OverlayIP: ""}, // skipped
+		},
+	})
+
+	if !r.IsKnownNodeOverlayIP(netip.MustParseAddr("10.0.0.9")) {
+		t.Error("declared peer overlay IP = false, want true")
+	}
+	// A guest/unknown IP and the anycast service IP must not be known.
+	if r.IsKnownNodeOverlayIP(netip.MustParseAddr("10.0.0.50")) {
+		t.Error("unknown IP = true, want false")
+	}
+	if r.IsKnownNodeOverlayIP(netip.MustParseAddr("169.254.1.1")) {
+		t.Error("anycast IP = true, want false")
 	}
 }
 

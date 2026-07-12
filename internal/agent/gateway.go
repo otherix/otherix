@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -100,9 +102,19 @@ func RunGateway(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) 
 
 	sender := buildGatewaySender(heartbeatCtx, cfg, nodeName, networks, wireGuard, plane.CAStore, log)
 
+	// The CP-only node-connect splice. Its anti-SSRF gate validates a CP-supplied
+	// target against the gateway's known-node overlay set (the WG reconciler's
+	// declared peers) on the agent control port, so it can only ever splice to a
+	// meshed node's overlay IP, never a guest VM or the anycast service IP.
+	nodeConnect := ingress.NewNodeConnectHandler(ingress.NodeConnectDeps{
+		IsKnownNodeOverlayIP: wireGuard.IsKnownNodeOverlayIP,
+		ControlPort:          controlListenPort(cfg.Server.Listen),
+		Log:                  log,
+	})
+
 	controlSrv := &http.Server{
 		Addr:         cfg.Server.Listen,
-		Handler:      buildGatewayControlRouter(cfg, nodeName, log, nudgerFor(sender)),
+		Handler:      buildGatewayControlRouter(cfg, nodeName, log, nudgerFor(sender), nodeConnect),
 		TLSConfig:    controlTLS,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
@@ -242,7 +254,7 @@ func buildGatewaySender(ctx context.Context, cfg *config.AgentConfig, nodeName s
 // group on a shared listener), RequireCPIdentity is applied at the top level:
 // this listener is dedicated to the control plane and has no certificate-less
 // route to accommodate, so a global gate leaves no route certless-reachable.
-func buildGatewayControlRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, heartbeatNudger heartbeatHandlers.Nudger) http.Handler {
+func buildGatewayControlRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, heartbeatNudger heartbeatHandlers.Nudger, nodeConnect *ingress.NodeConnectHandler) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -263,14 +275,37 @@ func buildGatewayControlRouter(cfg *config.AgentConfig, nodeName string, log *sl
 		r.Use(middleware.Timeout(cfg.Server.ReadTimeout))
 
 		r.Get("/health", healthHandler(nodeName, log))
-
-		r.Route("/v1", func(r chi.Router) {
-			r.Post("/heartbeat/nudge", heartbeatHandlers.New(heartbeatNudger).Nudge)
-		})
+		r.Post("/v1/heartbeat/nudge", heartbeatHandlers.New(heartbeatNudger).Nudge)
 	})
+
+	// Mounted OUTSIDE the Timeout group: it hijacks and splices a long-lived
+	// tunnel, which a per-request deadline would tear. Still under the router-root
+	// RequireCPIdentity gate, so only the control plane can reach it.
+	ingress.MountNodeConnectRoute(r, nodeConnect)
 
 	return r
 }
+
+// controlListenPort extracts the port from the control listener address so the
+// node-connect splice validates a CP-supplied target against the agent control
+// port (a cluster convention: every node's control listener shares this port).
+// A malformed address falls back to the default control port rather than failing
+// the gateway.
+func controlListenPort(listen string) int {
+	_, portStr, err := net.SplitHostPort(listen)
+	if err != nil {
+		return defaultControlPort
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 {
+		return defaultControlPort
+	}
+	return port
+}
+
+// defaultControlPort mirrors the agent config default (config/agent.go
+// "0.0.0.0:9443"): the port a node's mTLS control listener binds by convention.
+const defaultControlPort = 9443
 
 // loadControlTLS builds the control listener's TLS config: it presents the
 // gateway's own leaf and requires and verifies a client cert signed by the
