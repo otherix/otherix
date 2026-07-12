@@ -204,6 +204,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// /v1/connect-node splice to the overlay-IP listener started below, and locally
 	// over loopback. A public node keeps its configured bind byte-for-byte.
 	primaryBind, controlPort := resolveControlListen(cfg)
+	warnIfLoopbackForced(cfg, log)
 
 	srv := &http.Server{
 		Addr:         primaryBind,
@@ -376,12 +377,25 @@ func startAgentListeners(srv *http.Server, plane *ingress.Plane, log *slog.Logge
 	return errc
 }
 
+// warnIfLoopbackForced logs a startup warning when the node has no advertised
+// WireGuard endpoint: it is treated as NAT'd (the same signal primaryControlBind
+// keys on) and its primary control listener is bound to loopback, reachable by
+// the CP only through the gateway /v1/connect-node splice. A genuinely public
+// node that forgot the flag is otherwise silently CP-unreachable, so this turns
+// the footgun into a diagnosable startup signal.
+func warnIfLoopbackForced(cfg *config.AgentConfig, log *slog.Logger) {
+	if cfg.WireGuard.AdvertisedEndpoint == "" {
+		log.Warn("no advertised WireGuard endpoint; treating node as NAT'd - primary control bound to loopback, reachable only via gateway splice")
+	}
+}
+
 // resolveControlListen returns the primary control listener bind and the control
 // port derived from cfg.Server.Listen. A NAT'd node's primary bind is forced to
 // loopback (primaryControlBind); the control port feeds the overlay-IP listener.
-// cfg.Server.Listen is validated at config load, so a parse failure here is not
-// expected: the bind then falls back to the configured value (the listener
-// surfaces the malformed address at bind time) and the port to empty.
+// cfg.Server.Listen is only checked non-empty at config load (ServerConfig.Validate),
+// not for host:port validity, so a parse failure here is possible: the bind then
+// falls back to the configured value (the listener surfaces the malformed address
+// at bind time) and the port to empty, which makes startOverlayControlListener skip.
 func resolveControlListen(cfg *config.AgentConfig) (bind, port string) {
 	bind, err := primaryControlBind(cfg.Server.Listen, cfg.WireGuard.AdvertisedEndpoint)
 	if err != nil {
@@ -435,10 +449,31 @@ func listenOverlayControl(overlayIP netip.Addr, port string) (net.Listener, erro
 // address not yet applied to otwg0) is logged and retried on the next tick and
 // never crashes the agent. Returns a channel closed when the goroutine exits.
 //
+// A public node keeps its configured (wildcard) primary bind, so it is reached
+// directly by the CP and is never spliced; starting the overlay listener there
+// would race the wildcard socket for the same port (a specific-address bind on a
+// port already held by a listening wildcard returns EADDRINUSE and would retry
+// forever). It is therefore skipped for a public node - the SAME NAT'd signal
+// primaryControlBind keys on (empty advertised WireGuard endpoint) - and skipped
+// when the control port could not be derived. Both paths return an already-
+// closed channel so the shutdown drain never blocks on them.
+//
 // ponytail: rebinds once, then holds the address for the process lifetime; a
 // mid-run overlay-IP change (re-IPAM) is not handled - it is stable per node in
 // V1, and an operator restart re-binds.
 func startOverlayControlListener(ctx context.Context, overlayIP func() (netip.Addr, bool), port string, tlsCfg *tls.Config, router http.Handler, cfg *config.AgentConfig, log *slog.Logger) <-chan struct{} {
+	if cfg.WireGuard.AdvertisedEndpoint != "" {
+		log.Info("overlay control listener skipped; node is public", "advertised_endpoint", cfg.WireGuard.AdvertisedEndpoint)
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	if port == "" {
+		log.Warn("overlay control listener skipped; control port could not be derived from listen address")
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
 	done := make(chan struct{})
 	go func() { //nolint:gosec // G118: the graceful shutdown below needs a fresh deadline because ctx is already cancelled at that point (the same idiom as stopAgentServers).
 		defer close(done)

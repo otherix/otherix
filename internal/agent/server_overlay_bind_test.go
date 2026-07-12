@@ -4,11 +4,21 @@
 package agent
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/otherix/otherix/internal/config"
 )
+
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 func TestPrimaryControlBind(t *testing.T) {
 	tests := []struct {
@@ -26,6 +36,12 @@ func TestPrimaryControlBind(t *testing.T) {
 		{
 			name:               "natd node empty-host listen forced to loopback",
 			listen:             ":9443",
+			advertisedEndpoint: "",
+			want:               "127.0.0.1:9443",
+		},
+		{
+			name:               "natd node ipv6 wildcard forced to loopback",
+			listen:             "[::]:9443",
 			advertisedEndpoint: "",
 			want:               "127.0.0.1:9443",
 		},
@@ -90,5 +106,69 @@ func TestListenOverlayControl_UnbindableIPRetries(t *testing.T) {
 	// supervisor treats as retryable (fail toward inaction, never crash).
 	if _, err := listenOverlayControl(netip.MustParseAddr("192.0.2.1"), "0"); err == nil {
 		t.Error("listenOverlayControl(non-local IP) error = nil, want bind error")
+	}
+}
+
+// TestStartOverlayControlListener_NatdBindsAndDrains drives the supervisor for a
+// NAT'd node: it must enter the loop, consult the overlay-IP source, keep its
+// done channel open while serving, and close it once the context is cancelled.
+func TestStartOverlayControlListener_NatdBindsAndDrains(t *testing.T) {
+	var calls atomic.Int32
+	overlayIP := func() (netip.Addr, bool) {
+		calls.Add(1)
+		return netip.MustParseAddr("127.0.0.1"), true
+	}
+	cfg := &config.AgentConfig{}
+	cfg.Server.ShutdownGrace = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startOverlayControlListener(ctx, overlayIP, "0", nil, nil, cfg, quietLogger())
+
+	// The supervisor blocks serving/waiting: done must not close until we cancel.
+	select {
+	case <-done:
+		t.Fatal("NAT'd node: done closed before cancel; supervisor exited early")
+	default:
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("NAT'd node: done not closed after cancel")
+	}
+
+	// Reading calls after done is safe: close(done) happens-after the loop body.
+	if calls.Load() == 0 {
+		t.Error("NAT'd node: overlayIP never consulted; supervisor skipped the bind loop")
+	}
+}
+
+// TestStartOverlayControlListener_PublicSkips is the seam guard: a public node
+// (non-empty advertised WireGuard endpoint) must never start the overlay
+// listener - it returns an already-closed channel and never consults the
+// overlay-IP source. Reverting the public-node guard makes this fail (the
+// supervisor would enter the loop, call overlayIP, and block until cancel).
+func TestStartOverlayControlListener_PublicSkips(t *testing.T) {
+	var calls atomic.Int32
+	overlayIP := func() (netip.Addr, bool) {
+		calls.Add(1)
+		return netip.MustParseAddr("127.0.0.1"), true
+	}
+	cfg := &config.AgentConfig{}
+	cfg.WireGuard.AdvertisedEndpoint = "203.0.113.5:51820"
+	cfg.Server.ShutdownGrace = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := startOverlayControlListener(ctx, overlayIP, "9443", nil, nil, cfg, quietLogger())
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("public node: done not closed promptly; overlay listener was not skipped")
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("public node: overlayIP consulted %d times, want 0 (listener must be skipped)", n)
 	}
 }
