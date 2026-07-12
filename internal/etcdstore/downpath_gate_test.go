@@ -9,16 +9,20 @@ package etcdstore_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
 
 // seedWG records an agent WireGuard identity for a node. An empty endpoint marks
 // the node NAT'd (no directly-dialable WG endpoint), matching the agent-reported
-// signal the routing producer and agentclient resolver key on.
+// signal the routing producer and agentclient resolver key on. peers is the
+// node's own reported established-handshake set - the same set agentroute's
+// selectGateway reads to pick a route.
 func seedWG(t *testing.T, s *etcdstore.Store, nodeID uuid.UUID, endpoint string, peers []string) {
 	t.Helper()
 	err := s.UpsertAgentWireguard(context.Background(), store.UpsertAgentWireguardParams{
@@ -29,6 +33,25 @@ func seedWG(t *testing.T, s *etcdstore.Store, nodeID uuid.UUID, endpoint string,
 	})
 	if err != nil {
 		t.Fatalf("UpsertAgentWireguard(%v): %v", nodeID, err)
+	}
+}
+
+// seedWGStaleGateway seeds a NAT'd node whose own established peers list gateway
+// but whose report is backdated by age, so the down-path freshness bound can be
+// exercised. It writes through the normal upsert (to allocate the overlay index),
+// then rewrites the primary record with the backdated UpdatedAt via the raw
+// client, since UpsertAgentWireguard always stamps the report at now.
+func seedWGStaleGateway(t *testing.T, s *etcdstore.Store, c *etcd.Client, nodeID, gateway uuid.UUID, age time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	seedWG(t, s, nodeID, "", []string{gateway.String()})
+	rec, err := s.AgentWireguardByNodeID(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("AgentWireguardByNodeID(%v): %v", nodeID, err)
+	}
+	rec.UpdatedAt = time.Now().UTC().Add(-age)
+	if err := c.PutJSON(ctx, etcd.Key("agent_wireguard", nodeID.String()), rec); err != nil {
+		t.Fatalf("backdate agent_wireguard(%v): %v", nodeID, err)
 	}
 }
 
@@ -47,38 +70,55 @@ func eligibleIDs(t *testing.T, s *etcdstore.Store, poolName string) map[uuid.UUI
 	return got
 }
 
-// TestDownPathGate_TeethNATdNodeWithNoLiveGateway is the load-bearing teeth: a
-// NAT'd mesh node that no live gateway lists in its established peers is NOT a
-// placement candidate, even though it is ready and owns a pool.
-// Revert-to-confirm: delete the downPathReachable AND in poolNodePairs and the
-// NAT'd node IS a candidate (it passes every other predicate).
-func TestDownPathGate_TeethNATdNodeWithNoLiveGateway(t *testing.T) {
+// TestDownPathGate_TeethNATdNodeListsNoGateway is the load-bearing teeth: a NAT'd
+// mesh node whose own reported handshake set lists no public gateway is NOT a
+// placement candidate, even though it is ready and owns a pool - the CP has no
+// wired route to drive it. This mirrors agentroute selectGateway, which routes
+// off the NAT'd node's OWN established peers.
+// Revert-to-confirm: forcing natd=false in poolNodePairs makes it a candidate (it
+// passes every other predicate).
+func TestDownPathGate_TeethNATdNodeListsNoGateway(t *testing.T) {
 	s, _ := startStore(t)
 	poolName := uniquePoolName("downpath-teeth")
 	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
-	seedWG(t, s, natd, "", nil) // NAT'd: empty endpoint
-	// A live gateway exists but lists no peers, so it relays no one.
-	gw := mkGatewayNodeNoPool(t, s, "gw")
-	seedWG(t, s, gw, "gw.example:51820", nil)
+	seedWG(t, s, natd, "", nil) // NAT'd, own peers list no gateway
+	// A public gateway exists, but the NAT'd node does not list it in its own
+	// established peers, so the CP resolver would find no route.
+	_ = mkGatewayNodeNoPool(t, s, "gw")
 
 	if eligibleIDs(t, s, poolName)[natd] {
-		t.Errorf("NAT'd node %v with no live gateway relaying it must not be a placement candidate", natd)
+		t.Errorf("NAT'd node %v that lists no public gateway must not be a placement candidate", natd)
 	}
 }
 
-// TestDownPathGate_ReachableNATdNode is the same NAT'd node, now relayed: a
-// gateway reports it in EstablishedPeers with a fresh UpdatedAt, so it IS a
-// candidate.
+// TestDownPathGate_ReachableNATdNode is the same NAT'd node, now routable: its own
+// established peers list a public gateway (gateway role + advertised endpoint), so
+// the CP can drive it and it IS a candidate.
 func TestDownPathGate_ReachableNATdNode(t *testing.T) {
 	s, _ := startStore(t)
 	poolName := uniquePoolName("downpath-reach")
 	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
-	seedWG(t, s, natd, "", nil)
 	gw := mkGatewayNodeNoPool(t, s, "gw")
-	seedWG(t, s, gw, "gw.example:51820", []string{natd.String()}) // fresh handshake
+	seedWG(t, s, natd, "", []string{gw.String()}) // own peers list the public gateway
 
 	if !eligibleIDs(t, s, poolName)[natd] {
-		t.Errorf("NAT'd node %v with a fresh gateway handshake must be a placement candidate", natd)
+		t.Errorf("NAT'd node %v that lists a public gateway must be a placement candidate", natd)
+	}
+}
+
+// TestDownPathGate_StaleOwnReport confirms the freshness bound has teeth: a NAT'd
+// node that DOES list a public gateway but whose own report is older than
+// DownPathStaleness is NOT a candidate.
+func TestDownPathGate_StaleOwnReport(t *testing.T) {
+	s, c := startStore(t)
+	poolName := uniquePoolName("downpath-stale")
+	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
+	gw := mkGatewayNodeNoPool(t, s, "gw")
+	// Default DownPathStaleness is 90s; backdate the node's own report well past it.
+	seedWGStaleGateway(t, s, c, natd, gw, 2*time.Minute)
+
+	if eligibleIDs(t, s, poolName)[natd] {
+		t.Errorf("NAT'd node %v with a stale own report must not be a placement candidate", natd)
 	}
 }
 
@@ -90,7 +130,7 @@ func TestDownPathGate_DoesNotFlipNodeHealth(t *testing.T) {
 	ctx := context.Background()
 	poolName := uniquePoolName("downpath-orth")
 	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
-	seedWG(t, s, natd, "", nil) // NAT'd, no gateway relays it -> down-path dead
+	seedWG(t, s, natd, "", nil) // NAT'd, lists no gateway -> down-path dead
 
 	_ = eligibleIDs(t, s, poolName) // exercise the gate
 
@@ -121,7 +161,7 @@ func TestDownPathGate_FailOpenNoRecord(t *testing.T) {
 }
 
 // TestDownPathGate_PublicNodeReachable confirms a node the CP dials directly (WG
-// record with a non-empty endpoint) is a candidate regardless of any gateway.
+// record with a non-empty endpoint) is a candidate regardless of its peer set.
 func TestDownPathGate_PublicNodeReachable(t *testing.T) {
 	s, _ := startStore(t)
 	poolName := uniquePoolName("downpath-public")
