@@ -54,6 +54,11 @@ func TestIsKnownNodeOverlayIP(t *testing.T) {
 	if !r.IsKnownNodeOverlayIP(netip.MustParseAddr("10.0.0.9")) {
 		t.Error("declared peer overlay IP = false, want true")
 	}
+	// An empty/zero target must never match: it exercises the empty-peer skip
+	// (the "n-empty" fixture above) and the empty-target no-match path.
+	if r.IsKnownNodeOverlayIP(netip.Addr{}) {
+		t.Error("empty target = true, want false")
+	}
 	// A guest/unknown IP and the anycast service IP must not be known.
 	if r.IsKnownNodeOverlayIP(netip.MustParseAddr("10.0.0.50")) {
 		t.Error("unknown IP = true, want false")

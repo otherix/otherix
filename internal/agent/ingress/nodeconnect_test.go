@@ -26,7 +26,7 @@ func failNodeDial(t *testing.T) func(context.Context, string, string) (net.Conn,
 	}
 }
 
-// knownNodeConnectDeps builds deps whose only known-node overlay IP is 10.0.0.9
+// rejectingNodeConnectDeps builds deps whose only known-node overlay IP is 10.0.0.9
 // and whose sole spliceable port is 9443, with a dial that must never fire.
 func rejectingNodeConnectDeps(t *testing.T) NodeConnectDeps {
 	return NodeConnectDeps{
@@ -77,8 +77,10 @@ func TestNodeConnect_RejectsMalformedBody(t *testing.T) {
 
 // TestNodeConnect_SplicesToKnownNode is the happy path: a known-node overlay IP
 // on the control port yields 200 and pipes bytes through to the target. It also
-// asserts the dial target is rebuilt from the validated (ip, port), never any
-// other request input.
+// asserts the dial target is rebuilt from the VALIDATED (ip, port), never the raw
+// request input: the body carries the IPv4-mapped form "::ffff:10.0.0.9", so a
+// regression that dialed body.OverlayIP would produce "[::ffff:10.0.0.9]:9443"
+// and fail this test, while the handler's Unmap-normalized target is "10.0.0.9:9443".
 func TestNodeConnect_SplicesToKnownNode(t *testing.T) {
 	echoAddr, _ := startEcho(t)
 
@@ -99,7 +101,7 @@ func TestNodeConnect_SplicesToKnownNode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(h.Connect))
 	t.Cleanup(srv.Close)
 
-	c, br, status := rawNodeConnect(t, srv.Listener.Addr().String(), `{"overlay_ip":"10.0.0.9","port":9443}`)
+	c, br, status := rawNodeConnect(t, srv.Listener.Addr().String(), `{"overlay_ip":"::ffff:10.0.0.9","port":9443}`)
 	defer func() { _ = c.Close() }()
 	if !strings.Contains(status, "200") {
 		t.Fatalf("status = %q, want 200", strings.TrimSpace(status))
@@ -108,7 +110,7 @@ func TestNodeConnect_SplicesToKnownNode(t *testing.T) {
 	select {
 	case got := <-dialedAddr:
 		if got != "10.0.0.9:9443" {
-			t.Errorf("dial target = %q, want 10.0.0.9:9443 (built from the validated ip+port)", got)
+			t.Errorf("dial target = %q, want 10.0.0.9:9443 (Unmap-normalized from the validated ip+port, not the raw ::ffff: input)", got)
 		}
 	default:
 		t.Fatal("dial never happened")
