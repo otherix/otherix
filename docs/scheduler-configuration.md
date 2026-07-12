@@ -47,7 +47,11 @@ placement:
   differently: the ratio is a *ceiling*, and the actual overcommit a
   node receives is bounded per-node by that node's zram compressed-swap
   safety net (see "Memory overcommit" below). A memory ratio above 1.0
-  never overcommits a node that has no qualifying zram device.
+  never overcommits a node that has no qualifying zram device. Because the
+  zram-bounded model only adds headroom and cannot deflate capacity, a
+  memory `overcommit_ratio` below 1.0 is rejected at startup (the `< 1.0`
+  reserve-headroom form above applies to CPU and disk only); reserve memory
+  slack with the memory pressure threshold instead.
 
   Validation rejects `overcommit_ratio <= 0` at startup. Validation
   warnings — not errors — are logged at startup for any `> 1.0`

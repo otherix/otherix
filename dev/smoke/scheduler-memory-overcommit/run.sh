@@ -6,7 +6,7 @@
 # scheduler grants that node additive headroom bounded by the zram size); a node
 # without the net stays strict and rejects the same request.
 #
-# Assumes the slice is already deployed (run `make local-dev-deploy` first).
+# Assumes memory overcommit is already deployed (run `make local-dev-deploy` first).
 # Mutates the dev control-plane config (overcommit_ratio) and node-1 zram at
 # runtime and restores both at teardown.
 set -uo pipefail

@@ -34,9 +34,18 @@ func TestResourcesConfig_Validate(t *testing.T) {
 			name: "mixed overcommit ratios",
 			cfg: ResourcesConfig{
 				CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 2.0},
+				Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.5, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
+				Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+			},
+		},
+		{
+			name: "memory ratio below one rejected",
+			cfg: ResourcesConfig{
+				CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 0.8},
 				Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 0.8, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
 				Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 			},
+			wantErr: "placement.resources.memory.overcommit_ratio must be >= 1.0",
 		},
 		{
 			name: "cpu zero ratio (disabled)",
@@ -54,7 +63,7 @@ func TestResourcesConfig_Validate(t *testing.T) {
 				Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: -1.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
 				Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 			},
-			wantErr: "placement.resources.memory.overcommit_ratio must be > 0",
+			wantErr: "placement.resources.memory.overcommit_ratio must be >= 1.0",
 		},
 		{
 			name: "disk zero ratio (enabled)",

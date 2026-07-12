@@ -450,8 +450,11 @@ func (r ResourceConfig) validate(name string) error {
 // non-negative; confidence must lie in (0, 1.0] - it is the physically safe
 // fraction of the zram disksize, never a multiplier above 1.0.
 func (c MemoryResourceConfig) validate(name string) error {
-	if c.OvercommitRatio <= 0 {
-		return fmt.Errorf("placement.resources.%s.overcommit_ratio must be > 0, got %.2f", name, c.OvercommitRatio)
+	if c.OvercommitRatio < 1.0 {
+		// The zram-bounded additive model can only grant headroom (overcommit),
+		// never deflate capacity, so a ratio below 1.0 would silently act as 1.0.
+		// Reject it rather than mislead: use a memory pressure reservation for slack.
+		return fmt.Errorf("placement.resources.%s.overcommit_ratio must be >= 1.0 (the zram-bounded memory model cannot reserve headroom by deflation), got %.2f", name, c.OvercommitRatio)
 	}
 	if c.OvercommitZramFloorMib < 0 {
 		return fmt.Errorf("placement.resources.%s.overcommit_zram_floor_mib must be >= 0, got %d", name, c.OvercommitZramFloorMib)
