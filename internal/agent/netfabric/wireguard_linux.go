@@ -154,9 +154,18 @@ func ipNetToPrefix(n net.IPNet) (netip.Prefix, bool) {
 	return netip.PrefixFrom(a.Unmap(), ones), true
 }
 
-// SetWireGuardPeers atomically replaces the full peer set on the named
-// interface via wgctrl ReplacePeers. PersistentKeepalive and AllowedIPs are
-// applied per peer.
+// SetWireGuardPeers reconciles the named interface's peer set to peers: it
+// updates every desired peer in place and removes only the peers no longer
+// desired. It deliberately does NOT use wgctrl ReplacePeers, which deletes and
+// re-adds every peer on each pass - that drops the roaming-learned Endpoint of a
+// NAT'd peer (one declared with a nil Endpoint, whose address the kernel learns
+// from its inbound handshake). A gateway relays for such peers, and the
+// reconciler re-applies on every tick, so ReplacePeers would wipe the NAT'd
+// nodes' endpoints faster than their keepalives re-teach them and the relay
+// would forward nowhere. Updating in place with a nil Endpoint leaves the
+// kernel's roaming endpoint untouched; a declared (public) Endpoint is still
+// re-set each pass (drift-heal). PersistentKeepalive and AllowedIPs are applied
+// per peer.
 func (f *linuxFabric) SetWireGuardPeers(name string, peers []WGPeer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -167,15 +176,24 @@ func (f *linuxFabric) SetWireGuardPeers(name string, peers []WGPeer) error {
 	}
 	defer func() { _ = c.Close() }()
 
-	cfgs := make([]wgtypes.PeerConfig, 0, len(peers))
+	// Read the currently-configured peers so we can remove exactly the ones no
+	// longer desired without a full ReplacePeers.
+	dev, err := c.Device(name)
+	if err != nil {
+		return fmt.Errorf("netfabric: set wireguard peers %s: read current: %v", name, err)
+	}
+	desired := make(map[wgtypes.Key]struct{}, len(peers))
+
+	cfgs := make([]wgtypes.PeerConfig, 0, len(peers)+len(dev.Peers))
 	for _, p := range peers {
+		desired[p.PublicKey] = struct{}{}
 		allowed := make([]net.IPNet, 0, len(p.AllowedIPs))
 		for _, a := range p.AllowedIPs {
 			allowed = append(allowed, prefixToIPNet(a))
 		}
 		pc := wgtypes.PeerConfig{
 			PublicKey:         p.PublicKey,
-			Endpoint:          p.Endpoint,
+			Endpoint:          p.Endpoint, // nil for a NAT'd peer: the kernel keeps the roaming endpoint
 			ReplaceAllowedIPs: true,
 			AllowedIPs:        allowed,
 		}
@@ -185,7 +203,16 @@ func (f *linuxFabric) SetWireGuardPeers(name string, peers []WGPeer) error {
 		}
 		cfgs = append(cfgs, pc)
 	}
-	if err := c.ConfigureDevice(name, wgtypes.Config{ReplacePeers: true, Peers: cfgs}); err != nil {
+	// Remove peers present on the interface but no longer desired.
+	for i := range dev.Peers {
+		pk := dev.Peers[i].PublicKey
+		if _, ok := desired[pk]; !ok {
+			cfgs = append(cfgs, wgtypes.PeerConfig{PublicKey: pk, Remove: true})
+		}
+	}
+	// No ReplacePeers: an in-place update with a nil Endpoint preserves the
+	// kernel's roaming endpoint for a NAT'd peer.
+	if err := c.ConfigureDevice(name, wgtypes.Config{Peers: cfgs}); err != nil {
 		return fmt.Errorf("netfabric: set wireguard peers %s: configure: %v", name, err)
 	}
 	return nil
