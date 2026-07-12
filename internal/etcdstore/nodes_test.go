@@ -17,8 +17,70 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/etcd"
+	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
 )
+
+// seedRuntime writes a vm_runtime row on nodeID with the given phase and balloon
+// reading through the real UpsertVMRuntime projection seam, so the
+// index/vm_runtime/node/<nodeID>/<vmID> leaf is written the production way.
+func seedRuntime(t *testing.T, s *etcdstore.Store, nodeID uuid.UUID, phase store.VMPhase, reading *int64) {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: uuid.New(), CurrentNodeID: &nodeID, Phase: phase, MemoryUsedMib: reading,
+		})
+	}); err != nil {
+		t.Fatalf("seedRuntime: %v", err)
+	}
+}
+
+func TestNodeMemoryUsedMib(t *testing.T) {
+	ctx := context.Background()
+	s, cli := startStore(t)
+	nodeID := uuid.New()
+	mib := func(v int64) *int64 { return &v }
+
+	// Two running VMs report readings; one running reports nil; one stopped reports a reading.
+	seedRuntime(t, s, nodeID, store.VmPhaseRunning, mib(1000))
+	seedRuntime(t, s, nodeID, store.VmPhaseRunning, mib(1500))
+	seedRuntime(t, s, nodeID, store.VmPhaseRunning, nil)
+	seedRuntime(t, s, nodeID, store.VmPhaseStopped, mib(9999))
+
+	// A stale by-node index leaf left under nodeID after a live-migration cutover:
+	// a running VM now on otherNode, still pointed at by a leaf under nodeID. The
+	// real UpsertVMRuntime seam moves the leaf in one txn so this never happens
+	// through the projection; plant it raw to give the CurrentNodeID guard teeth.
+	// It must NOT be counted (its memory lives on otherNode), so the sum stays 2500.
+	staleVM := uuid.New()
+	otherNode := uuid.New()
+	now := time.Now().UTC()
+	staleRT := store.VMRuntime{VmID: staleVM, CurrentNodeID: &otherNode, Phase: store.VmPhaseRunning, MemoryUsedMib: mib(4000), LastObservedAt: &now, UpdatedAt: now}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_runtime", staleVM.String()), staleRT); err != nil {
+		t.Fatalf("seed stale runtime: %v", err)
+	}
+	if err := cli.Put(ctx, etcd.Key("index", "vm_runtime", "node", nodeID.String(), staleVM.String()), []byte(staleVM.String())); err != nil {
+		t.Fatalf("seed stale runtime-node index: %v", err)
+	}
+
+	got, err := s.NodeMemoryUsedMib(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("NodeMemoryUsedMib: %v", err)
+	}
+	if got == nil || *got != 2500 {
+		t.Errorf("NodeMemoryUsedMib = %v, want 2500 (1000+1500; nil, stopped, and stale-leaf excluded)", got)
+	}
+
+	// A node with no readings returns nil.
+	empty, err := s.NodeMemoryUsedMib(ctx, uuid.New())
+	if err != nil {
+		t.Fatalf("NodeMemoryUsedMib(empty): %v", err)
+	}
+	if empty != nil {
+		t.Errorf("NodeMemoryUsedMib(empty) = %v, want nil", empty)
+	}
+}
 
 func nodeParams(name string) store.CreateNodeParams {
 	return store.CreateNodeParams{
@@ -634,5 +696,48 @@ func TestSetNodeGatewayRole(t *testing.T) {
 	// A missing node resolves to store.ErrNotFound.
 	if _, err := s.SetNodeGatewayRole(ctx, uuid.New(), true); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("SetNodeGatewayRole(missing) = %v, want store.ErrNotFound", err)
+	}
+}
+
+// TestNodeMemoryUsedMib_HeartbeatRepairsCreateIndex pins the by-node index
+// self-heal. The vm-create projection (ProjectVMCreateSuccess) writes a
+// vm_runtime row with current_node_id already set but does NOT write the
+// index/vm_runtime/node leaf. If UpsertVMRuntime only wrote that leaf when
+// current_node_id CHANGES, the first heartbeat (unchanged node) would skip it
+// and the leaf would stay missing forever, so NodeMemoryUsedMib (and DeleteNode)
+// would never see the VM. The heartbeat must (re)write the leaf unconditionally.
+func TestNodeMemoryUsedMib_HeartbeatRepairsCreateIndex(t *testing.T) {
+	ctx := context.Background()
+	s, cli := startStore(t)
+	nodeID := uuid.New()
+	vmID := uuid.New()
+	used := int64(500)
+
+	// Mimic the create projection: a running runtime row with a balloon reading
+	// and current_node_id set, but NO by-node index leaf.
+	rt := store.VMRuntime{VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, MemoryUsedMib: &used}
+	if err := cli.PutJSON(ctx, etcd.Key("vm_runtime", vmID.String()), rt); err != nil {
+		t.Fatalf("seed create-style runtime: %v", err)
+	}
+	// Premise: with no index leaf the aggregate cannot see the VM yet.
+	if got, err := s.NodeMemoryUsedMib(ctx, nodeID); err != nil || got != nil {
+		t.Fatalf("pre-heartbeat NodeMemoryUsedMib = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	// One heartbeat with an UNCHANGED current_node_id must repair the leaf.
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpsertVMRuntime(ctx, store.UpsertVMRuntimeParams{
+			VmID: vmID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, MemoryUsedMib: &used,
+		})
+	}); err != nil {
+		t.Fatalf("heartbeat upsert: %v", err)
+	}
+
+	got, err := s.NodeMemoryUsedMib(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("NodeMemoryUsedMib: %v", err)
+	}
+	if got == nil || *got != 500 {
+		t.Errorf("NodeMemoryUsedMib after heartbeat = %v, want 500 (by-node index must self-heal on an unchanged-node heartbeat)", got)
 	}
 }

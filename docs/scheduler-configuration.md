@@ -25,6 +25,8 @@ placement:
     memory:
       enabled: true
       overcommit_ratio: 1.0
+      overcommit_zram_floor_mib: 256    # min zram size for a node to be overcommit-eligible
+      overcommit_zram_confidence: 0.5   # safe physical fraction of the zram size
     disk:
       enabled: true
       overcommit_ratio: 1.0
@@ -35,11 +37,21 @@ placement:
   LeastAllocated denominator floats with the count of enabled
   dimensions, so disabling one does not bias the score scale.
 
-- **`overcommit_ratio`** (default `1.0`) — multiplier on the per-
-  resource effective availability:
+- **`overcommit_ratio`** (default `1.0`):
   - `1.0` — strict, no overcommit (production-safe default).
   - `> 1.0` — overcommit, capacity inflated.
   - `< 1.0` — reserve headroom, capacity deflated.
+
+  For **CPU** and **disk** the ratio is a plain multiplier on the
+  per-resource effective availability. For **memory** it behaves
+  differently: the ratio is a *ceiling*, and the actual overcommit a
+  node receives is bounded per-node by that node's zram compressed-swap
+  safety net (see "Memory overcommit" below). A memory ratio above 1.0
+  never overcommits a node that has no qualifying zram device. Because the
+  zram-bounded model only adds headroom and cannot deflate capacity, a
+  memory `overcommit_ratio` below 1.0 is rejected at startup (the `< 1.0`
+  reserve-headroom form above applies to CPU and disk only); reserve memory
+  slack with the memory pressure threshold instead.
 
   Validation rejects `overcommit_ratio <= 0` at startup. Validation
   warnings — not errors — are logged at startup for any `> 1.0`
@@ -64,28 +76,82 @@ Default config (every resource enabled at ratio 1.0) emits zero
 warnings — the absence on subsequent restarts confirms the cluster is
 running with strict accounting.
 
-## Memory overcommit safety
+## Memory overcommit
 
-`memory.overcommit_ratio > 1.0` enables placement decisions that pack
-VMs whose combined memory **requests** exceed physical host RAM. This
-is dangerous:
+`memory.overcommit_ratio > 1.0` lets the scheduler place VMs whose
+combined memory **requests** exceed a node's physical RAM. Unbounded,
+that is dangerous: when cumulative actual usage exceeds physical RAM,
+the Linux OOM killer reaps a process - typically QEMU - and the
+affected VM crashes abruptly, with no notice to its guest.
 
-- VMs allocate memory lazily. Actual usage trails allocation, so
-  combined working sets often fit even during aggressive overcommit.
-- BUT when cumulative actual usage exceeds (physical RAM + swap), the
-  Linux OOM killer reaps a process — typically QEMU — to recover
-  memory. Affected VMs crash abruptly.
-- No graceful degradation. The VM's guest OS does not get notified;
-  qemu just disappears.
+Otherix bounds this per-node against the zram compressed-swap safety
+net, so overcommit can never exceed what the node can actually absorb:
+
+- **Overcommit is per-node and requires a qualifying zram device.** A
+  node is overcommit-eligible only when it reports a zram
+  compressed-swap device of at least `overcommit_zram_floor_mib`
+  (default 256). A node without one, or with a zram below the floor, is
+  fit-checked **strictly** regardless of the cluster ratio. Provision
+  the zram device on the host first - see
+  `deploy/config/zram-generator.conf.example` (copy to
+  `/etc/systemd/zram-generator.conf`); the agent observes `/proc/swaps`
+  and reports the active device, which the scheduler reads.
+
+- **The ratio is a ceiling; the zram size is the lever.** The extra
+  memory headroom the scheduler grants an eligible node is:
+
+  ```
+  headroom = min( total_ram × (overcommit_ratio - 1),   operator ceiling
+                  zram_size × overcommit_zram_confidence ) physical ceiling
+  ```
+
+  The smaller term wins, so a large ratio never overcommits a node
+  beyond what its zram can absorb - a ratio of 10.0 on a node with a
+  1 GiB zram still yields only ~`1 GiB × confidence` of headroom. To
+  raise density, **grow the node's zram device**, not the ratio.
+
+- **`overcommit_zram_confidence`** (default `0.5`) is the physically
+  safe fraction of the zram size to grant as headroom. It is **not** a
+  compression multiplier. zram stores swapped pages *compressed*, but
+  those compressed bytes still occupy physical RAM: holding a full
+  disksize `D` of logical pages at compression ratio `r` costs `D/r`
+  physical RAM out of the same total, so the physically safe extra
+  headroom is `D × (r-1)/r`, never the full disksize. Keep
+  `confidence ≤ (r-1)/r` (zstd ~0.67, lz4 ~0.5); the default `0.5` is
+  safe for any `r ≥ 2`. Granting the full disksize (`confidence = 1.0`)
+  would OOM a node under simultaneous full residency.
+
+- **`overcommit_zram_floor_mib`** (default `256`) is the minimum zram
+  size that makes a node overcommit-eligible. Below it, the node is
+  strict.
+
+Effective overcommit at `confidence 0.5`, sizing the zram as a fraction
+of node RAM (the `overcommit_ratio` ceiling must be at or above the
+listed figure for the zram term to bind):
+
+| zram size | headroom | effective overcommit |
+|-----------|----------|----------------------|
+| `ram / 4` | `ram / 8` | ~1.125x |
+| `ram / 2` | `ram / 4` | ~1.25x  |
+| `ram`     | `ram / 2` | ~1.5x   |
+
+At `overcommit_ratio: 1.0` (the default) the headroom is zero on every
+node: memory placement is byte-identical to strict accounting.
+Overcommit activates only when the operator raises the ratio **and**
+the node carries a qualifying zram device.
 
 ### Host configuration before enabling memory overcommit
 
-1. **Provision adequate swap.** Rule of thumb:
+1. **Provision the zram compressed-swap device** on each agent host you
+   want to overcommit (see above). This is the safety net the
+   per-node bound reads; without it a node is never overcommitted.
+
+2. **Provision adequate swap** as a secondary backstop. Rule of thumb:
    `swap ≥ (overcommit_ratio - 1) × RAM`. Example: 16 GiB RAM with ratio
    1.5 → at least 8 GiB swap recommended. Swap I/O is far slower than
    RAM, so this is a safety net, not a performance feature.
 
-2. **Review the `vm.overcommit_memory` sysctl** on each agent host:
+3. **Review the `vm.overcommit_memory` sysctl** on each agent host:
    - `0` (default, heuristic) — kernel decides per allocation. Usually
      fine for moderate ratios (≤ 1.5) on well-provisioned hosts.
    - `1` (always allow) — kernel never refuses an allocation. Risky;
@@ -100,7 +166,7 @@ is dangerous:
    either `0` or `2` with the kernel sysctl deliberately tuned. Do not
    set `1`.
 
-3. **Monitor swap usage** continuously. Frequent swap activity is a
+4. **Monitor swap usage** continuously. Frequent swap activity is a
    leading indicator of memory pressure approaching kernel-OOM
    thresholds. Plumb host swap into your metrics pipeline before
    enabling overcommit.
@@ -117,9 +183,12 @@ CPU overcommit at typical ratios (≤ 4.0) is benign — Linux schedulers
 handle vCPU oversubscription gracefully. The performance trade-off
 (context-switch overhead, noisy neighbour) is recoverable.
 
-Memory overcommit above 1.5 is **not recommended** outside throwaway
-test fleets. Disk overcommit above 1.5 is risky for any VM whose disks
-may grow toward their allocated capacity.
+The Memory column is a *ceiling*, not the realised density: the actual
+overcommit each node receives is bounded by its zram net (see "Memory
+overcommit" above), so raising the ratio alone does nothing until the
+node has a large enough zram device. Size the node's zram to the
+density you want; the ratio just caps it. Disk overcommit above 1.5 is
+risky for any VM whose disks may grow toward their allocated capacity.
 
 ## Disk overcommit considerations
 
@@ -361,10 +430,19 @@ later.
    effective free CPU / memory; `otherix pool list` shows raw vs
    effective free disk. The "(effective N free)" suffix renders when
    pending placements have not yet been observed by a heartbeat / scan.
-4. Trigger a test VM create. The scheduler's decision should respect
-   the new ratios. `vm create` against a saturated pool returns 409
-   `no_eligible_nodes` with a structured `details.node_utilization`
-   payload listing each candidate by name + per-resource usage.
+4. Trigger a test VM create. `vm create` is async: it returns 202 with
+   a task, and placement runs later in the background scheduling loop,
+   not synchronously at the request. When no node fits, the reject is
+   recorded as the VM's scheduling reason - `vm get` surfaces
+   `status.reason` (`insufficient_resources` / `no_eligible_nodes`) plus
+   a human `status.message`. The structured per-candidate detail is
+   persisted on the VM (its `SchedulingDetails`), listing each rejected
+   candidate by name + per-resource usage, and now also
+   `overcommit_eligible` (true when the node has a qualifying zram net)
+   and `mem_overcommit_headroom_mib` (the extra memory that net would
+   grant), so a strict fit-reject shows where adding or enlarging a zram
+   device could let the request fit. This structured detail is persisted
+   only; it is not currently rendered into any API response.
 
 There is currently no API or CLI endpoint to read or change the
 placement config at runtime — it's a deploy-time decision. Restart

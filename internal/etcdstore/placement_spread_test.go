@@ -108,7 +108,7 @@ func TestPlacementSpreadsAcrossNodes(t *testing.T) {
 	// and degrades to count-based, which the test must not rely on.
 	res := scheduler.ResourcesConfig{
 		CPU:    scheduler.ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-		Memory: scheduler.ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+		Memory: scheduler.MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 		Disk:   scheduler.ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

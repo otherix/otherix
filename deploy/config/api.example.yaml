@@ -125,6 +125,13 @@ placement:
     memory:
       enabled: true
       overcommit_ratio: 1.0      # >1.0 enables overcommit (OOM kill risk)
+      # Memory overcommit is gated on the node's zram compressed-swap safety
+      # net. A node is overcommit-eligible only when it reports a zram device
+      # of at least overcommit_zram_floor_mib; granted headroom is capped at
+      # the zram size times overcommit_zram_confidence, so overcommit can never
+      # exceed what the net can absorb. Grow the node's zram to raise density.
+      overcommit_zram_floor_mib: 256
+      overcommit_zram_confidence: 0.5   # safe physical fraction of zram size, 0 < c <= (r-1)/r; 0.5 is safe for r >= 2
     disk:
       enabled: true
       overcommit_ratio: 1.0      # >1.0 enables overcommit (disk-full risk)

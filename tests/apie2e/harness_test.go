@@ -155,6 +155,10 @@ type e2eOptions struct {
 	// maxConcurrentDrains overrides the drain-admission cap. 0 leaves the router
 	// at its default (config.DefaultMaxConcurrentDrains).
 	maxConcurrentDrains int
+	// placementResources overrides the placement per-resource config the nodes
+	// handler reads to surface memory-overcommit status on node get. Zero value
+	// leaves overcommit disabled.
+	placementResources config.ResourcesConfig
 }
 
 // e2eOption mutates e2eOptions. Functional-option form keeps newE2E's default
@@ -165,6 +169,13 @@ type e2eOption func(*e2eOptions)
 // test can exercise the cap with a small limit (e.g. 1).
 func withMaxConcurrentDrains(n int) e2eOption {
 	return func(o *e2eOptions) { o.maxConcurrentDrains = n }
+}
+
+// withPlacementResources sets the placement per-resource config on the test
+// router so a test can exercise the memory-overcommit status the node get view
+// derives from it.
+func withPlacementResources(r config.ResourcesConfig) e2eOption {
+	return func(o *e2eOptions) { o.placementResources = r }
 }
 
 // newE2E wipes the keyspace and builds a fresh router over the shared member.
@@ -218,6 +229,7 @@ func newE2E(t *testing.T, opts ...e2eOption) *harness {
 		HealthCheckName:     "etcd",
 		ClusterMembership:   membership,
 		MaxConcurrentDrains: o.maxConcurrentDrains,
+		PlacementResources:  o.placementResources,
 	})
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)

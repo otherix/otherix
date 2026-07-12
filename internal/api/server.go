@@ -39,9 +39,14 @@ func SchedulerResourcesFromConfig(c config.ResourcesConfig) scheduler.ResourcesC
 		}
 	}
 	return scheduler.ResourcesConfig{
-		CPU:    convert(c.CPU),
-		Memory: convert(c.Memory),
-		Disk:   convert(c.Disk),
+		CPU: convert(c.CPU),
+		Memory: scheduler.MemoryResourceConfig{
+			Enabled:                  c.Memory.Enabled,
+			OvercommitRatio:          c.Memory.OvercommitRatio,
+			OvercommitZramFloorMib:   c.Memory.OvercommitZramFloorMib,
+			OvercommitZramConfidence: c.Memory.OvercommitZramConfidence,
+		},
+		Disk: convert(c.Disk),
 	}
 }
 
@@ -111,6 +116,7 @@ func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.Life
 		VMConsole:           vmConsole,
 		ClusterMembership:   membership,
 		MaxConcurrentDrains: cfg.Workers.MaxConcurrentDrains,
+		PlacementResources:  cfg.Placement.Resources,
 	})
 
 	srv := &Server{
@@ -146,6 +152,7 @@ func NewServer(cfg config.APIConfig, s RouterStore, vmLifecycle vmshandlers.Life
 			PressureSystemDisk: cfg.Placement.Pressure.SystemDisk,
 			PressureDisk:       cfg.Placement.Pressure.Disk,
 			ClusterMembership:  membership,
+			PlacementResources: cfg.Placement.Resources,
 		})
 		srv.agentServer = &http.Server{
 			Addr:              cfg.AgentServer.Listen,

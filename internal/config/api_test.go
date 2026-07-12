@@ -26,7 +26,7 @@ func TestResourcesConfig_Validate(t *testing.T) {
 			name: "all disabled, ratios still positive",
 			cfg: ResourcesConfig{
 				CPU:    ResourceConfig{Enabled: false, OvercommitRatio: 1.0},
-				Memory: ResourceConfig{Enabled: false, OvercommitRatio: 1.0},
+				Memory: MemoryResourceConfig{Enabled: false, OvercommitRatio: 1.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
 				Disk:   ResourceConfig{Enabled: false, OvercommitRatio: 1.0},
 			},
 		},
@@ -34,15 +34,24 @@ func TestResourcesConfig_Validate(t *testing.T) {
 			name: "mixed overcommit ratios",
 			cfg: ResourcesConfig{
 				CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 2.0},
-				Memory: ResourceConfig{Enabled: true, OvercommitRatio: 0.8},
+				Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.5, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
 				Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 			},
+		},
+		{
+			name: "memory ratio below one rejected",
+			cfg: ResourcesConfig{
+				CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 0.8},
+				Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 0.8, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
+				Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+			},
+			wantErr: "placement.resources.memory.overcommit_ratio must be >= 1.0",
 		},
 		{
 			name: "cpu zero ratio (disabled)",
 			cfg: ResourcesConfig{
 				CPU:    ResourceConfig{Enabled: false, OvercommitRatio: 0.0},
-				Memory: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+				Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
 				Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 			},
 			wantErr: "placement.resources.cpu.overcommit_ratio must be > 0",
@@ -51,16 +60,16 @@ func TestResourcesConfig_Validate(t *testing.T) {
 			name: "memory negative ratio",
 			cfg: ResourcesConfig{
 				CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-				Memory: ResourceConfig{Enabled: true, OvercommitRatio: -1.0},
+				Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: -1.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
 				Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 			},
-			wantErr: "placement.resources.memory.overcommit_ratio must be > 0",
+			wantErr: "placement.resources.memory.overcommit_ratio must be >= 1.0",
 		},
 		{
 			name: "disk zero ratio (enabled)",
 			cfg: ResourcesConfig{
 				CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-				Memory: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+				Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.0, OvercommitZramFloorMib: 256, OvercommitZramConfidence: 0.5},
 				Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 0.0},
 			},
 			wantErr: "placement.resources.disk.overcommit_ratio must be > 0",
@@ -162,13 +171,41 @@ func TestPlacementConfig_Validate_ResourcesPropagated(t *testing.T) {
 		Algorithm: "resource_aware",
 		Resources: ResourcesConfig{
 			CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-			Memory: ResourceConfig{Enabled: true, OvercommitRatio: -1.0},
+			Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: -1.0},
 			Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 		},
 	}
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "memory.overcommit_ratio") {
 		t.Errorf("Validate() = %v, want memory.overcommit_ratio error", err)
+	}
+}
+
+func TestPlacementMemoryOvercommitValidation(t *testing.T) {
+	base := defaultAPIConfig().Placement // valid baseline
+	tests := []struct {
+		name    string
+		floor   int64
+		conf    float64
+		wantErr bool
+	}{
+		{name: "defaults ok", floor: 256, conf: 1.0, wantErr: false},
+		{name: "zero floor ok", floor: 0, conf: 1.0, wantErr: false},
+		{name: "negative floor rejected", floor: -1, conf: 1.0, wantErr: true},
+		{name: "confidence zero rejected", floor: 256, conf: 0, wantErr: true},
+		{name: "confidence over one rejected", floor: 256, conf: 1.5, wantErr: true},
+		{name: "confidence 0.9 ok", floor: 256, conf: 0.9, wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.Resources.Memory.OvercommitZramFloorMib = tt.floor
+			cfg.Resources.Memory.OvercommitZramConfidence = tt.conf
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() err = %v, wantErr = %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -193,7 +230,7 @@ func TestPlacementConfig_Warnings(t *testing.T) {
 				Algorithm: "resource_aware",
 				Resources: ResourcesConfig{
 					CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.5},
-					Memory: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+					Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 					Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 				},
 			},
@@ -206,7 +243,7 @@ func TestPlacementConfig_Warnings(t *testing.T) {
 				Algorithm: "resource_aware",
 				Resources: ResourcesConfig{
 					CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-					Memory: ResourceConfig{Enabled: true, OvercommitRatio: 1.2},
+					Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.2},
 					Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 				},
 			},
@@ -219,7 +256,7 @@ func TestPlacementConfig_Warnings(t *testing.T) {
 				Algorithm: "resource_aware",
 				Resources: ResourcesConfig{
 					CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-					Memory: ResourceConfig{Enabled: true, OvercommitRatio: 2.5},
+					Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 2.5},
 					Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 				},
 			},
@@ -232,7 +269,7 @@ func TestPlacementConfig_Warnings(t *testing.T) {
 				Algorithm: "resource_aware",
 				Resources: ResourcesConfig{
 					CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-					Memory: ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
+					Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 					Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.3},
 				},
 			},
@@ -245,7 +282,7 @@ func TestPlacementConfig_Warnings(t *testing.T) {
 				Algorithm: "resource_aware",
 				Resources: ResourcesConfig{
 					CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
-					Memory: ResourceConfig{Enabled: false, OvercommitRatio: 3.0},
+					Memory: MemoryResourceConfig{Enabled: false, OvercommitRatio: 3.0},
 					Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 				},
 			},
@@ -257,7 +294,7 @@ func TestPlacementConfig_Warnings(t *testing.T) {
 				Algorithm: "resource_aware",
 				Resources: ResourcesConfig{
 					CPU:    ResourceConfig{Enabled: false, OvercommitRatio: 1.0},
-					Memory: ResourceConfig{Enabled: false, OvercommitRatio: 1.0},
+					Memory: MemoryResourceConfig{Enabled: false, OvercommitRatio: 1.0},
 					Disk:   ResourceConfig{Enabled: false, OvercommitRatio: 1.0},
 				},
 			},
@@ -270,7 +307,7 @@ func TestPlacementConfig_Warnings(t *testing.T) {
 				Algorithm: "resource_aware",
 				Resources: ResourcesConfig{
 					CPU:    ResourceConfig{Enabled: true, OvercommitRatio: 1.5},
-					Memory: ResourceConfig{Enabled: true, OvercommitRatio: 2.5},
+					Memory: MemoryResourceConfig{Enabled: true, OvercommitRatio: 2.5},
 					Disk:   ResourceConfig{Enabled: true, OvercommitRatio: 1.0},
 				},
 			},
