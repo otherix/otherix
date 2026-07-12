@@ -903,42 +903,69 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 	return nil
 }
 
-// loadDeclaredWireGuardPeers returns every OTHER agent's WG fabric identity for
-// this node's mesh, sorted by node_id. allowed_ips is the peer's overlay /32.
+// loadDeclaredWireGuardPeers returns this node's declared WireGuard peer set for
+// the fabric down-channel. It reads every agent's WG fabric identity and node
+// row, builds the routing inputs (Endpoint = the advertised WG endpoint, "" when
+// NAT'd; IsGateway from the node's gateway role; the reachable-peer set from
+// EstablishedPeers) and delegates the policy to ComputeWireGuardRouting: a
+// reachable peer gets a direct entry, a NAT'd<->NAT'd pair is relayed through a
+// deterministic gateway. self is looked up in the same pass; a zero-value self
+// (first heartbeat, before this node's own WG upsert lands) still yields direct
+// entries for reachable peers and simply wires no relays.
 func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredWireGuardPeer, error) {
 	recs, err := hp.ListAgentWireguard(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list agent_wireguard: %v", err)
 	}
-	out := make([]declaredWireGuardPeer, 0, len(recs))
+	var self RoutingNode
+	peers := make([]RoutingNode, 0, len(recs))
 	for _, r := range recs {
-		if r.NodeID == selfNodeID {
-			continue
-		}
 		// Skip a peer whose node row is deleted (soft-deleted -> ErrNotFound), so a
 		// stale WG record never bleeds into a live agent's mesh. DeleteNode purges
 		// the record at the source; this is the sole prune. An unreachable-but-alive
-		// node keeps its peer entry so it rejoins the mesh cleanly on return.
-		if _, err := hp.NodeByID(ctx, r.NodeID); err != nil {
+		// node keeps its peer entry so it rejoins the mesh cleanly on return. The
+		// same read supplies the node's gateway role.
+		node, err := hp.NodeByID(ctx, r.NodeID)
+		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("load node %s for wireguard peer: %v", r.NodeID, err)
 		}
-		peerNet := netip.PrefixFrom(r.OverlayIP, 32) // single VTEP host route
-		out = append(out, declaredWireGuardPeer{
-			NodeID:     r.NodeID.String(),
-			PublicKey:  r.PublicKey,
-			Endpoint:   r.Endpoint,
-			OverlayIP:  r.OverlayIP.String(),
-			AllowedIPs: []string{peerNet.String()},
-		})
+		rn := RoutingNode{
+			NodeID:           r.NodeID,
+			PublicKey:        r.PublicKey,
+			OverlayIP:        r.OverlayIP,
+			Endpoint:         r.Endpoint,
+			IsGateway:        node.GatewayRole,
+			EstablishedPeers: establishedPeerSet(r.EstablishedPeers),
+		}
+		if r.NodeID == selfNodeID {
+			self = rn
+			continue
+		}
+		peers = append(peers, rn)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	out := ComputeWireGuardRouting(self, peers)
 	if len(out) == 0 {
 		return nil, nil
 	}
 	return out, nil
+}
+
+// establishedPeerSet converts the persisted node-id strings into the set
+// ComputeWireGuardRouting keys reachability on; an unparseable id is dropped.
+func establishedPeerSet(ids []string) map[uuid.UUID]bool {
+	if len(ids) == 0 {
+		return nil
+	}
+	set := make(map[uuid.UUID]bool, len(ids))
+	for _, s := range ids {
+		if id, err := uuid.Parse(s); err == nil {
+			set[id] = true
+		}
+	}
+	return set
 }
 
 // loadDeclaredFDB computes the controller-authoritative VXLAN FDB this node must
