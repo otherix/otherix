@@ -69,6 +69,12 @@ func (r *Resolver) Resolve(nodeName string) (agentclient.AgentRoute, error) {
 	}
 
 	wg, wgErr := r.reader.AgentWireguardByNodeID(ctx, node.ID)
+	if wgErr != nil && !errors.Is(wgErr, store.ErrNotFound) {
+		// A transient store error is NOT "no WG state": fail closed with a
+		// retryable error rather than mis-route a NAT'd node to a broken Direct
+		// dial (a wrong route would swallow the fault and hit the wrong host).
+		return agentclient.AgentRoute{}, fmt.Errorf("agentroute: wireguard state for node %q: %w", nodeName, wgErr)
+	}
 	natd := wgErr == nil && wg.Endpoint == ""
 	if !natd {
 		// Public node (WG endpoint set, or no WG state yet): dial its control
@@ -118,15 +124,17 @@ func (r *Resolver) selectGateway(ctx context.Context, wg store.AgentWireguard) (
 }
 
 // endpointHostPort extracts host:port from an https endpoint URL, defaulting the
-// port to 443 when absent. A URL that will not parse is returned unchanged so the
-// dial surfaces the real error rather than a rewritten one.
+// port to the agent control-listener default (defaultControlPort) when absent -
+// matching controlPort, so a port-less endpoint dials the same port both helpers
+// assume. A URL that will not parse is returned unchanged so the dial surfaces
+// the real error rather than a rewritten one.
 func endpointHostPort(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
 		return rawURL
 	}
 	if u.Port() == "" {
-		return net.JoinHostPort(u.Hostname(), "443")
+		return net.JoinHostPort(u.Hostname(), defaultControlPort)
 	}
 	return u.Host
 }

@@ -5,6 +5,7 @@ package agentroute_test
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"testing"
 
@@ -20,6 +21,7 @@ type fakeReader struct {
 	nodes map[string]store.Node    // by name
 	byID  map[uuid.UUID]store.Node // by id
 	wg    map[uuid.UUID]store.AgentWireguard
+	wgErr error // when non-nil, AgentWireguardByNodeID returns it (fault injection)
 }
 
 func (f *fakeReader) NodeByName(_ context.Context, name string) (store.Node, error) {
@@ -31,6 +33,9 @@ func (f *fakeReader) NodeByName(_ context.Context, name string) (store.Node, err
 }
 
 func (f *fakeReader) AgentWireguardByNodeID(_ context.Context, id uuid.UUID) (store.AgentWireguard, error) {
+	if f.wgErr != nil {
+		return store.AgentWireguard{}, f.wgErr
+	}
 	w, ok := f.wg[id]
 	if !ok {
 		return store.AgentWireguard{}, store.ErrNotFound
@@ -83,6 +88,37 @@ func TestResolve_NoWGRow_TreatedPublic(t *testing.T) {
 	}
 	if got.Direct != "1.2.3.4:9443" || got.GatewayDial != "" {
 		t.Errorf("Resolve(fresh) = %+v, want Direct=1.2.3.4:9443", got)
+	}
+}
+
+func TestResolve_WGStoreError_FailsClosed(t *testing.T) {
+	// A non-NotFound store error reading WG state must fail closed: return the
+	// error, never fold into the "public node -> Direct dial" branch (which would
+	// mis-route a possibly-NAT'd node and swallow the fault).
+	node := store.Node{ID: uuid.New(), Name: "n", AdvertisedEndpoint: "https://1.2.3.4:9443"}
+	f := newReader(node)
+	f.wgErr = errors.New("etcd unavailable")
+
+	got, err := agentroute.New(f).Resolve("n")
+	if err == nil {
+		t.Fatalf("Resolve = %+v, nil error; want a fail-closed error on a transient WG store error", got)
+	}
+	if (got != agentclient.AgentRoute{}) {
+		t.Errorf("Resolve returned route %+v alongside the error, want the zero route", got)
+	}
+}
+
+func TestResolve_PortlessEndpoint_DefaultsControlPort(t *testing.T) {
+	// A public node whose advertised endpoint carries no explicit port must dial
+	// the agent control-listener default (9443), not 443.
+	pub := store.Node{ID: uuid.New(), Name: "noport", AdvertisedEndpoint: "https://5.5.5.5"}
+
+	got, err := agentroute.New(newReader(pub)).Resolve("noport")
+	if err != nil {
+		t.Fatalf("Resolve(noport) error: %v", err)
+	}
+	if got.Direct != "5.5.5.5:9443" {
+		t.Errorf("Resolve(noport).Direct = %q, want 5.5.5.5:9443", got.Direct)
 	}
 }
 

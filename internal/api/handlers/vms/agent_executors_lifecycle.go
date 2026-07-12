@@ -49,7 +49,7 @@ func (e *agentVMLifecycleExecutor) Execute(ctx context.Context, op string, args 
 	if err != nil {
 		return LifecycleResult{}, err
 	}
-	terminal, err := e.client.PollTask(ctx, args.Node.AdvertisedEndpoint, agentTaskID)
+	terminal, err := e.client.PollTask(ctx, agentclient.DialURL(args.Node.Name), agentTaskID)
 	if err != nil {
 		return LifecycleResult{}, fmt.Errorf("poll task: %w", err)
 	}
@@ -75,7 +75,7 @@ func (e *agentVMLifecycleExecutor) postOrResume(ctx context.Context, op string, 
 		return *args.AgentTaskID, nil
 	}
 	idemKey := args.TaskID.String()
-	agentTaskID, err := e.dispatch(ctx, op, args.Node.AdvertisedEndpoint, args.VM.Name, idemKey)
+	agentTaskID, err := e.dispatch(ctx, op, agentclient.DialURL(args.Node.Name), args.VM.Name, idemKey)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("post vm.%s: %w", op, err)
 	}

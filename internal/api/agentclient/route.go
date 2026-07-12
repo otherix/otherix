@@ -11,13 +11,27 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/textproto"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/otherix/otherix/internal/auth"
+)
+
+const (
+	// connectTimeout bounds the whole /v1/connect-node exchange on the OUTER conn.
+	// The transport does not yet track this conn, so http.Client.Timeout cannot
+	// interrupt a gateway that completes the outer handshake then stalls; this
+	// deadline is the only backstop against a wedged dial goroutine + leaked fd.
+	connectTimeout = 30 * time.Second
+	// maxConnectHeaderBytes caps the CONNECT response head so a malicious gateway
+	// streaming unbounded headers cannot OOM the CP. connectTimeout bounds time on
+	// the exchange; this bounds bytes.
+	maxConnectHeaderBytes = 64 << 10
 )
 
 // DialURL returns the identity URL the CP dials to reach node nodeName: an https
@@ -170,14 +184,26 @@ func connectNode(ctx context.Context, conn net.Conn, route AgentRoute) error {
 		return fmt.Errorf("agentclient: build connect-node: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+
+	// Bound the exchange in time before any I/O: a gateway that completes the
+	// outer handshake but never answers must not wedge this goroutine. Prefer a
+	// sooner caller deadline when the ctx carries one.
+	deadline := time.Now().Add(connectTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return fmt.Errorf("agentclient: set connect-node deadline: %v", err)
+	}
 	if err := req.Write(conn); err != nil {
 		return fmt.Errorf("agentclient: write connect-node: %w", err)
 	}
 
-	// Read the status line + headers only. The gateway must not send any inner
-	// bytes before the CP's ClientHello, so nothing may be buffered past the
-	// header terminator; fail closed if it is, rather than lose tunnel bytes.
-	br := bufio.NewReader(conn)
+	// Read the status line + headers only, bounded in bytes so an unbounded header
+	// stream cannot OOM. The gateway must not send any inner bytes before the CP's
+	// ClientHello, so nothing may be buffered past the header terminator; fail
+	// closed if it is, rather than lose tunnel bytes.
+	br := bufio.NewReader(io.LimitReader(conn, maxConnectHeaderBytes))
 	tp := textproto.NewReader(br)
 	statusLine, err := tp.ReadLine()
 	if err != nil {
@@ -191,6 +217,12 @@ func connectNode(ctx context.Context, conn net.Conn, route AgentRoute) error {
 	}
 	if n := br.Buffered(); n != 0 {
 		return fmt.Errorf("agentclient: gateway sent %d unexpected bytes after connect-node 200", n)
+	}
+	// Success: clear the deadline so the INNER agent TLS handshake and all later
+	// I/O on this conn are unaffected. Load-bearing - a stale deadline here would
+	// break the inner handshake or a subsequent pooled reuse of the conn.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("agentclient: clear connect-node deadline: %v", err)
 	}
 	return nil
 }

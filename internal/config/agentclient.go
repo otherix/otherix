@@ -18,7 +18,7 @@ import (
 // Cert lifecycle is owned by a DB-backed LoadOrGenerateCPCert boot
 // hook on the api side: each replica auto-generates its own cert
 // from the cluster CA in DB and passes the material to
-// agentclient.New(cfg, cert, ca). CLI tools (ping-agent, integration
+// agentclient.New(cfg, cert, clusterCA, res). CLI tools (ping-agent, integration
 // tests) that don't have DB access use agentclient.LoadMaterialFromFiles
 // instead.
 //

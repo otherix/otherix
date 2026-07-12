@@ -144,6 +144,52 @@ func TestGeoDial_ViaGatewayTwoTLS(t *testing.T) {
 	}
 }
 
+// TestGeoDial_GatewayErrorClosesConn proves the close-on-error seam: when the
+// connect-node exchange fails (here a non-200 from the gateway), the CP closes
+// the outer conn rather than leaking it. The gateway observes that close as EOF,
+// so there is no fd/goroutine leak on the failure path. (The time bound on a
+// stalling gateway is proven at the connectNode level in route_internal_test.go,
+// where the ctx deadline is not stripped by the transport.)
+func TestGeoDial_GatewayErrorClosesConn(t *testing.T) {
+	t.Parallel()
+	ca := newTestCA(t)
+
+	connClosed := make(chan struct{})
+	gwMux := http.NewServeMux()
+	gwMux.HandleFunc("/v1/connect-node", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body) // consume the CONNECT body
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		// Reject the splice: a non-200 status fails connectNode. The CP must then
+		// close the outer conn, observed here as EOF once io.Copy returns.
+		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\n\r\n")
+		_, _ = io.Copy(io.Discard, conn)
+		_ = conn.Close()
+		close(connClosed)
+	})
+	gwSrv := startTLSMux(t, ca, "node-gw.agents.otherix.local", gwMux)
+
+	cli := routedClient(t, ca, stubResolver{route: agentclient.AgentRoute{
+		GatewayDial:   hostPort(gwSrv.URL),
+		GatewaySAN:    "node-gw.agents.otherix.local",
+		TargetOverlay: "10.0.0.5:9443",
+	}})
+
+	resp, err := cli.HTTPClient().Get(agentclient.DialURL("agent") + "/probe")
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("Get via rejecting gateway = nil error, want a dial failure on non-200 connect-node")
+	}
+
+	select {
+	case <-connClosed:
+	case <-time.After(3 * time.Second):
+		t.Error("gateway conn was never closed after connect-node failed - fd/goroutine leak")
+	}
+}
+
 // --- test scaffolding: a throwaway CA + leaves and TLS servers -------------
 
 type testCA struct {
