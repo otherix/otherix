@@ -723,6 +723,9 @@ func (h HeartbeatWorkersConfig) Validate() error {
 	if h.DownPathStaleness < 0 {
 		return fmt.Errorf("workers.heartbeat.down_path_staleness (%v) must not be negative", h.DownPathStaleness)
 	}
+	if h.DownPathStaleness > 0 && h.Interval > 0 && h.DownPathStaleness < h.Interval {
+		return fmt.Errorf("workers.heartbeat.down_path_staleness (%v) must be >= interval (%v): a shorter window stale-excludes a live NAT'd node between heartbeats", h.DownPathStaleness, h.Interval)
+	}
 	return nil
 }
 

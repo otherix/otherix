@@ -609,14 +609,15 @@ type reclaimAdapter struct {
 	agentClient *agentclient.Client
 }
 
-// Reclaim resolves targetNodeID to its advertised endpoint and calls the agent
-// blob-reclaim endpoint. A reclaim of an absent blob is a no-op success agent-side.
+// Reclaim resolves targetNodeID to its identity dial URL and calls the agent
+// blob-reclaim endpoint (DialURL routes via a gateway splice for a NAT'd holder,
+// direct otherwise). A reclaim of an absent blob is a no-op success agent-side.
 func (a reclaimAdapter) Reclaim(ctx context.Context, targetNodeID uuid.UUID, digest string) error {
 	node, err := a.st.NodeByID(ctx, targetNodeID)
 	if err != nil {
 		return fmt.Errorf("resolve reclaim target node %s: %v", targetNodeID, err)
 	}
-	return a.agentClient.ReclaimBlob(ctx, node.AdvertisedEndpoint, agentapi.BlobReclaimRequest{Digest: digest})
+	return a.agentClient.ReclaimBlob(ctx, agentclient.DialURL(node.Name), agentapi.BlobReclaimRequest{Digest: digest})
 }
 
 // buildScheduler registers the periodic maintenance functions on a scheduler.

@@ -649,6 +649,8 @@ func TestHeartbeatWorkersConfigValidate(t *testing.T) {
 		{"grace below threshold", HeartbeatWorkersConfig{StaleThreshold: 5 * time.Minute, RebalanceGrace: 90 * time.Second, Interval: 30 * time.Second}, true},
 		{"negative down-path staleness", HeartbeatWorkersConfig{StaleThreshold: 90 * time.Second, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second, DownPathStaleness: -time.Second}, true},
 		{"zero down-path staleness", HeartbeatWorkersConfig{StaleThreshold: 90 * time.Second, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second, DownPathStaleness: 0}, false},
+		{"down-path staleness below interval", HeartbeatWorkersConfig{StaleThreshold: 90 * time.Second, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second, DownPathStaleness: 10 * time.Second}, true},
+		{"down-path staleness equals interval", HeartbeatWorkersConfig{StaleThreshold: 90 * time.Second, RebalanceGrace: 5 * time.Minute, Interval: 30 * time.Second, DownPathStaleness: 30 * time.Second}, false},
 	}
 	for _, tt := range tests {
 		err := tt.cfg.Validate()
