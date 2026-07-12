@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -198,8 +199,14 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 
 	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, dhcpResponder, nudgerFor(sender), blobsHandler)
 
+	// A NAT'd node (no advertised WireGuard endpoint) must not expose its control
+	// listener on a WAN/0.0.0.0 address: the CP reaches it only through the gateway
+	// /v1/connect-node splice to the overlay-IP listener started below, and locally
+	// over loopback. A public node keeps its configured bind byte-for-byte.
+	primaryBind, controlPort := resolveControlListen(cfg)
+
 	srv := &http.Server{
-		Addr:         cfg.Server.Listen,
+		Addr:         primaryBind,
 		Handler:      router,
 		TLSConfig:    tlsCfg,
 		ReadTimeout:  cfg.Server.ReadTimeout,
@@ -228,7 +235,14 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 
 	imageEvictDone := startImageCacheEviction(heartbeatCtx, cfg, manager, log)
 
-	errc := startAgentListeners(cfg, srv, ingressPlane, log)
+	errc := startAgentListeners(srv, ingressPlane, log)
+
+	// Also serve the mTLS control surface on this node's overlay IP once a
+	// heartbeat delivers it, so the gateway /v1/connect-node splice reaches a NAT'd
+	// agent over otwg0 (its primary listener is loopback-only). Best-effort: a bind
+	// failure before otwg0 has the address is retried, never crashes the agent, and
+	// is tracked in the drain set below rather than fed into errc.
+	overlayCtrlDone := startOverlayControlListener(heartbeatCtx, wgReconciler.SelfOverlayIP, controlPort, tlsCfg, router, cfg, log)
 
 	// Drain set waited on at shutdown. The heartbeat sender respects
 	// ctx and returns promptly; the reconcilers' Run loops only return
@@ -249,6 +263,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "artifact sweeper", done: artifactSweeperDone},
 		{name: "snapshot staging sweeper", done: snapStagingSweeperDone},
 		{name: "blob scrubber", done: blobScrubberDone},
+		{name: "overlay control listener", done: overlayCtrlDone},
 	}
 	if imageEvictDone != nil {
 		dones = append(dones, namedDone{name: "image cache eviction", done: imageEvictDone})
@@ -334,14 +349,14 @@ func ingressCAStoreOf(plane *ingress.Plane) *ingress.SessionCAStore {
 // shutdown (each returns http.ErrServerClosed and sends) never blocks a sender: a
 // cap-1 channel would wedge the second sender forever. A pure hypervisor runs a
 // single listener on the cap-1 channel, unchanged.
-func startAgentListeners(cfg *config.AgentConfig, srv *http.Server, plane *ingress.Plane, log *slog.Logger) chan error {
+func startAgentListeners(srv *http.Server, plane *ingress.Plane, log *slog.Logger) chan error {
 	n := 1
 	if plane != nil {
 		n = 2
 	}
 	errc := make(chan error, n)
 	go func() {
-		log.Info("listening", "addr", cfg.Server.Listen)
+		log.Info("listening", "addr", srv.Addr)
 		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 			return
@@ -359,6 +374,116 @@ func startAgentListeners(cfg *config.AgentConfig, srv *http.Server, plane *ingre
 		}()
 	}
 	return errc
+}
+
+// resolveControlListen returns the primary control listener bind and the control
+// port derived from cfg.Server.Listen. A NAT'd node's primary bind is forced to
+// loopback (primaryControlBind); the control port feeds the overlay-IP listener.
+// cfg.Server.Listen is validated at config load, so a parse failure here is not
+// expected: the bind then falls back to the configured value (the listener
+// surfaces the malformed address at bind time) and the port to empty.
+func resolveControlListen(cfg *config.AgentConfig) (bind, port string) {
+	bind, err := primaryControlBind(cfg.Server.Listen, cfg.WireGuard.AdvertisedEndpoint)
+	if err != nil {
+		bind = cfg.Server.Listen
+	}
+	if _, p, err := net.SplitHostPort(cfg.Server.Listen); err == nil {
+		port = p
+	}
+	return bind, port
+}
+
+// primaryControlBind resolves the address the primary mTLS control listener
+// binds. A NAT'd node - one with no advertised WireGuard endpoint (the same
+// NAT'd signal the routing producer keys on) - must never expose its control
+// listener on a WAN/0.0.0.0 address: the CP reaches it only through the gateway
+// /v1/connect-node splice to its overlay-IP listener and locally over loopback,
+// so the primary bind is forced to loopback on the configured port. A public
+// node (non-empty advertisedEndpoint), including a gateway, keeps its configured
+// bind byte-for-byte.
+func primaryControlBind(listen, advertisedEndpoint string) (string, error) {
+	if advertisedEndpoint != "" {
+		return listen, nil
+	}
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", fmt.Errorf("parse listen address %q: %v", listen, err)
+	}
+	return net.JoinHostPort("127.0.0.1", port), nil
+}
+
+// overlayBindRetryInterval bounds how often the agent retries binding the
+// overlay-IP control listener while the overlay IP is unknown or otwg0 has not
+// yet been assigned it (the bind fails until the WG reconciler applies the
+// address to the interface).
+const overlayBindRetryInterval = 5 * time.Second
+
+// listenOverlayControl binds a TCP listener on overlayIP:port. Extracted as the
+// single fallible step the overlay-control supervisor retries: the bind fails
+// until the WG reconciler applies the overlay address to otwg0, so the caller
+// treats an error as retryable rather than fatal.
+func listenOverlayControl(overlayIP netip.Addr, port string) (net.Listener, error) {
+	return net.Listen("tcp", net.JoinHostPort(overlayIP.String(), port))
+}
+
+// startOverlayControlListener waits for the node's overlay IP to become known
+// (delivered by heartbeat, surfaced by the WG reconciler) and then binds a
+// SECOND mTLS control listener on <overlay-ip>:port, serving the same router and
+// TLS as the primary. This is the datapath the gateway /v1/connect-node splice
+// uses to reach a NAT'd agent over otwg0, whose primary listener is loopback-
+// only. Best-effort and fail-toward-inaction: a bind failure (the overlay
+// address not yet applied to otwg0) is logged and retried on the next tick and
+// never crashes the agent. Returns a channel closed when the goroutine exits.
+//
+// ponytail: rebinds once, then holds the address for the process lifetime; a
+// mid-run overlay-IP change (re-IPAM) is not handled - it is stable per node in
+// V1, and an operator restart re-binds.
+func startOverlayControlListener(ctx context.Context, overlayIP func() (netip.Addr, bool), port string, tlsCfg *tls.Config, router http.Handler, cfg *config.AgentConfig, log *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	go func() { //nolint:gosec // G118: the graceful shutdown below needs a fresh deadline because ctx is already cancelled at that point (the same idiom as stopAgentServers).
+		defer close(done)
+		ticker := time.NewTicker(overlayBindRetryInterval)
+		defer ticker.Stop()
+
+		var srv *http.Server
+		for {
+			if ip, ok := overlayIP(); ok {
+				ln, err := listenOverlayControl(ip, port)
+				if err != nil {
+					log.Warn("overlay control listener bind failed; will retry",
+						"addr", net.JoinHostPort(ip.String(), port), "error", err.Error())
+				} else {
+					srv = &http.Server{
+						Addr:         ln.Addr().String(),
+						Handler:      router,
+						TLSConfig:    tlsCfg,
+						ReadTimeout:  cfg.Server.ReadTimeout,
+						WriteTimeout: cfg.Server.WriteTimeout,
+					}
+					go func() {
+						log.Info("listening", "plane", "control-overlay", "addr", srv.Addr)
+						if serr := srv.ServeTLS(ln, "", ""); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+							log.Error("overlay control listener stopped with error", "addr", srv.Addr, "error", serr.Error())
+						}
+					}()
+					break
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("overlay control listener shutdown failed", "addr", srv.Addr, "error", err.Error())
+		}
+	}()
+	return done
 }
 
 // stopAgentServers gracefully shuts the ingress server (when the plane is active)

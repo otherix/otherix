@@ -63,6 +63,36 @@ func TestIsKnownNodeOverlayIP(t *testing.T) {
 	}
 }
 
+func TestSelfOverlayIP(t *testing.T) {
+	r, err := NewWireGuard(&netfabric.FakeFabric{}, mustKey(t), config.WireGuardConfig{}, discardLogger(), 0)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+
+	// Fail closed before any heartbeat delivers self_overlay_ip.
+	if ip, ok := r.SelfOverlayIP(); ok {
+		t.Errorf("SelfOverlayIP before first heartbeat = (%v, true), want (_, false)", ip)
+	}
+
+	cidr := "10.42.0.7/16"
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &cidr})
+
+	got, ok := r.SelfOverlayIP()
+	if !ok {
+		t.Fatal("SelfOverlayIP after heartbeat: ok = false, want true")
+	}
+	if got != netip.MustParseAddr("10.42.0.7") {
+		t.Errorf("SelfOverlayIP() = %v, want 10.42.0.7", got)
+	}
+
+	// A malformed delivered value fails closed (mirrors the reconcile skip).
+	bad := "not-a-prefix"
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &bad})
+	if ip, ok := r.SelfOverlayIP(); ok {
+		t.Errorf("SelfOverlayIP with malformed value = (%v, true), want (_, false)", ip)
+	}
+}
+
 func TestWireGuardReport_IndependentOfInterface(t *testing.T) {
 	key := mustKey(t)
 	cfg := config.WireGuardConfig{ListenPort: 51820, AdvertisedEndpoint: "1.2.3.4:51820"}

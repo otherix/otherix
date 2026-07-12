@@ -173,6 +173,24 @@ func (r *WireGuard) IsKnownNodeOverlayIP(ip netip.Addr) bool {
 	return false
 }
 
+// SelfOverlayIP returns this node's CP-assigned overlay address and true once a
+// heartbeat has delivered self_overlay_ip, or the zero Addr and false before
+// then (or if the delivered value does not parse). The agent control server
+// binds a second mTLS listener on this address so the gateway /v1/connect-node
+// splice can reach a NAT'd node over otwg0. Reads the same atomic desired
+// snapshot the reconcile goroutine applies; safe for concurrent use.
+func (r *WireGuard) SelfOverlayIP() (netip.Addr, bool) {
+	d := r.desired.Load()
+	if d == nil || d.selfOverlayIP == "" {
+		return netip.Addr{}, false
+	}
+	pfx, err := netip.ParsePrefix(d.selfOverlayIP)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return pfx.Addr().Unmap(), true
+}
+
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. Copies the
 // declared intent and nudges the trigger.
 func (r *WireGuard) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Response) {
