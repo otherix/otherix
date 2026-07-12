@@ -1,0 +1,114 @@
+# Rendered by run.sh: ONLY @@IMAGE_URL@@ / @@ARCH@@ are substituted (the one
+# host-varying input). Names, nodes, and overlay IPs are fixed; the cloud-config
+# shell variables ($IF, $SC, $i, $(seq ...)) are literal and untouched.
+#
+# VM-A (node-1, 10.72.0.10) TCP-probes VM-B's sshd over the overlay and emits
+# OVERLAY_PING_OK to its serial console; VM-B (node-2, 10.72.0.11) is passive.
+# node-1 and node-2 are both NAT'd (no direct WireGuard tunnel), so a successful
+# probe proves the guest VXLAN was RELAYED through the gateway. Both attach one
+# NIC to geonat-smoke and resolve to the cluster default pool.
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: geonat-smoke-a
+spec:
+  node: node-1
+  network: geonat-smoke
+  imageURL: "@@IMAGE_URL@@"
+  arch: "@@ARCH@@"
+  vcpus: 2
+  memoryMib: 2048
+  userData: |
+    #cloud-config
+    users:
+      - name: otherix
+        plain_text_passwd: otherix
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: [sudo]
+        shell: /bin/bash
+    chpasswd:
+      expire: false
+    ssh_pwauth: true
+    write_files:
+      - path: /etc/netplan/50-cloud-init.yaml
+        permissions: '0600'
+        content: |
+          network:
+            version: 2
+            ethernets:
+              overlay-nic:
+                match:
+                  name: "en*"
+                dhcp4: false
+                dhcp6: false
+                optional: true
+                addresses: [10.72.0.10/24]
+    runcmd:
+      - netplan apply || true
+      - sleep 2
+      - |
+        SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
+        IF=$(ls /sys/class/net | grep -E '^en' | head -1)
+        ip addr replace 10.72.0.10/24 dev "$IF" 2>/dev/null || true
+        ip link set "$IF" up 2>/dev/null || true
+        sleep 2
+        { echo "SMOKE_NET if=$IF serial=$SC"; ip -br addr show; } > "$SC" 2>&1 || true
+      - |
+        SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
+        for i in $(seq 1 150); do
+          if timeout 3 bash -c "echo > /dev/tcp/10.72.0.11/22" 2>/dev/null; then
+            echo "OVERLAY_PING_OK 10.72.0.10->10.72.0.11" > "$SC"
+            break
+          fi
+          echo "SMOKE_PROBE 10.72.0.10->10.72.0.11:22 attempt $i failed" > "$SC"
+          sleep 2
+        done
+---
+apiVersion: otherix/v1
+kind: VM
+metadata:
+  name: geonat-smoke-b
+spec:
+  node: node-2
+  network: geonat-smoke
+  imageURL: "@@IMAGE_URL@@"
+  arch: "@@ARCH@@"
+  vcpus: 2
+  memoryMib: 2048
+  userData: |
+    #cloud-config
+    users:
+      - name: otherix
+        plain_text_passwd: otherix
+        lock_passwd: false
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: [sudo]
+        shell: /bin/bash
+    chpasswd:
+      expire: false
+    ssh_pwauth: true
+    write_files:
+      - path: /etc/netplan/50-cloud-init.yaml
+        permissions: '0600'
+        content: |
+          network:
+            version: 2
+            ethernets:
+              overlay-nic:
+                match:
+                  name: "en*"
+                dhcp4: false
+                dhcp6: false
+                optional: true
+                addresses: [10.72.0.11/24]
+    runcmd:
+      - netplan apply || true
+      - sleep 2
+      - |
+        SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
+        IF=$(ls /sys/class/net | grep -E '^en' | head -1)
+        ip addr replace 10.72.0.11/24 dev "$IF" 2>/dev/null || true
+        ip link set "$IF" up 2>/dev/null || true
+        sleep 2
+        { echo "SMOKE_NET if=$IF serial=$SC"; ip -br addr show; } > "$SC" 2>&1 || true
