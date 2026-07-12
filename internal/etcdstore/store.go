@@ -49,9 +49,9 @@ type Store struct {
 // operator-configured JWTRefreshTTL via WithRefreshTokenTTL.
 const defaultRefreshTokenTTL = 31 * 24 * time.Hour
 
-// defaultDownPathStaleness bounds how recent a gateway's reported handshake with
-// a NAT'd mesh node must be for placement to still treat that node as reachable.
-// Production overrides it from config via WithDownPathStaleness.
+// defaultDownPathStaleness bounds how recent a NAT'd mesh node's own reported
+// handshake set must be for placement to still treat that node as reachable
+// through a gateway. Production overrides it from config via WithDownPathStaleness.
 const defaultDownPathStaleness = 90 * time.Second
 
 // Option configures a Store.
@@ -72,8 +72,8 @@ func WithRefreshTokenTTL(d time.Duration) Option {
 	}
 }
 
-// WithDownPathStaleness sets the freshness window for a gateway-reported
-// handshake to keep a NAT'd mesh node schedulable. A non-positive value is
+// WithDownPathStaleness sets the freshness window for a NAT'd mesh node's own
+// reported handshake set to keep it schedulable. A non-positive value is
 // ignored (the default stands).
 func WithDownPathStaleness(d time.Duration) Option {
 	return func(s *Store) {
