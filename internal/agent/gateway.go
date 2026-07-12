@@ -60,7 +60,10 @@ func RunGateway(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) 
 	// development.
 	fabric := netfabric.New()
 
-	networks, err := reconciler.NewNetworks(fabric, nil, log, 0, false)
+	// hostsVMs=false (gateway-only), isGateway=true: this node is the relay
+	// gateway, so the reconciler enables ip_forward every pass for A->G->B
+	// WireGuard transit regardless of any egress=nat network.
+	networks, err := reconciler.NewNetworks(fabric, nil, log, 0, false, true)
 	if err != nil {
 		return fmt.Errorf("network reconciler: %w", err)
 	}

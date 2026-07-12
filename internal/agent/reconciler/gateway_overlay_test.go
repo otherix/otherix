@@ -32,7 +32,7 @@ func gatewayEgressDhcpNet() heartbeat.DeclaredNetwork {
 // end, not the bridge hardware address.
 func TestGatewayOverlayStripsServicesPlane(t *testing.T) {
 	f := readyGatewayFabric()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, false)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, false, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestGatewayOverlayStripsServicesPlane(t *testing.T) {
 // services plane must coexist under a single reconciler.
 func TestColocatedReconcilerRunsServicesAndVeth(t *testing.T) {
 	f := readyGatewayFabric()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks() error = %v", err)
 	}
@@ -99,7 +99,7 @@ func TestColocatedReconcilerRunsServicesAndVeth(t *testing.T) {
 // the strip above is gateway-mode specific, not an artifact of the input.
 func TestNonGatewayOverlayRunsServicesPlane(t *testing.T) {
 	f := readyGatewayFabric()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}

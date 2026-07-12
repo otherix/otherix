@@ -19,7 +19,7 @@ import (
 // counter the connect plane maintains lands on the matching NetworkReport, keyed
 // by the same network id the report uses, and that acquire/release balance.
 func TestNetworksSessionCounterFoldsIntoReport(t *testing.T) {
-	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestNetworksSessionCounterFoldsIntoReport(t *testing.T) {
 // report does. A non-overlapping IP yields exactly one candidate; an off-overlay
 // IP yields none.
 func TestOverlayCandidatesForIP(t *testing.T) {
-	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestOverlayCandidatesForIP(t *testing.T) {
 // gateway membership (GatewayAddr nil) must not appear as a candidate, because
 // there is no veth to source the dial from.
 func TestOverlayCandidatesRequireMembership(t *testing.T) {
-	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestOverlayCandidatesRequireMembership(t *testing.T) {
 // resolver could only ever surface the first-declared overlay, refusing a
 // legitimate session to the second.
 func TestOverlayResolverOverlappingSubnets(t *testing.T) {
-	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false)
+	rec, err := NewNetworks(&netfabric.FakeFabric{}, nil, discardLogger(), time.Minute, false, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}

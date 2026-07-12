@@ -51,6 +51,15 @@ type Networks struct {
 	// the per-network veth axis, which keys on the declared GatewayAddr.
 	hostsVMs bool
 
+	// isGateway is true when this node holds the gateway role (standalone
+	// gateway-only mode, or a co-located hypervisor with the ingress plane active).
+	// A relay gateway forwards A->G->B WireGuard transit through the kernel, so it
+	// needs net.ipv4.ip_forward on every pass independent of any egress=nat network
+	// - without it a relay gateway with no NAT network silently blackholes the
+	// relay. Orthogonal to hostsVMs (a co-located gateway is both). Set once at
+	// construction; read only from the reconcile goroutine.
+	isGateway bool
+
 	desired atomic.Pointer[networksDesired]
 	trigger chan struct{}
 
@@ -116,8 +125,11 @@ type networksDesired struct {
 // registration entirely (a node with no DHCP responder support). hostsVMs is
 // true for a hypervisor node (materialise type=bridge networks and the overlay
 // services plane for its own VMs) and false for a gateway-only node (overlay
-// transport plus ingress veths only); see the field doc.
-func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tick time.Duration, hostsVMs bool) (*Networks, error) {
+// transport plus ingress veths only); see the field doc. isGateway is true when
+// the node holds the gateway role (standalone gateway-only, or a co-located
+// hypervisor with the ingress plane active) so the reconciler enables ip_forward
+// every pass for WireGuard relay transit; see the field doc.
+func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tick time.Duration, hostsVMs, isGateway bool) (*Networks, error) {
 	if f == nil {
 		return nil, ErrNilFabric
 	}
@@ -130,6 +142,7 @@ func NewNetworks(f netfabric.Fabric, dhcp dhcp4.Responder, log *slog.Logger, tic
 		dhcp:            dhcp,
 		tick:            tick,
 		hostsVMs:        hostsVMs,
+		isGateway:       isGateway,
 		trigger:         make(chan struct{}, 1),
 		reports:         map[string]heartbeat.NetworkReport{},
 		sessions:        map[string]int{},
@@ -291,6 +304,12 @@ func (r *Networks) reconcile(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+
+	// A gateway-role node forwards A->G->B WireGuard relay transit through the
+	// kernel, which needs ip_forward regardless of whether any egress=nat network
+	// is declared. Enable it every pass, independent of the per-network loop below.
+	r.enableGatewayForwarding(ctx)
+
 	d := r.desired.Load()
 	var desired []heartbeat.DeclaredNetwork
 	var selfOverlayIP string
@@ -313,6 +332,23 @@ func (r *Networks) reconcile(ctx context.Context) {
 	r.mu.Lock()
 	r.reports = nextReports
 	r.mu.Unlock()
+}
+
+// enableGatewayForwarding turns on net.ipv4.ip_forward when this node holds the
+// gateway role, so the kernel forwards A->G->B WireGuard relay transit. A relay
+// gateway with no egress=nat network would otherwise have ip_forward=0 and
+// silently blackhole the relay - the egress path only enables it under `if nat`.
+// Idempotent and per-netns (netfabric EnableIPForwarding); best-effort: a failure
+// is logged and retried next pass, never crashing the agent (fail toward
+// inaction). No-op on a non-gateway node.
+func (r *Networks) enableGatewayForwarding(ctx context.Context) {
+	if !r.isGateway {
+		return
+	}
+	if err := r.fabric.EnableIPForwarding(); err != nil {
+		r.log.WarnContext(ctx, "gateway: enable ip_forward failed; retrying next pass",
+			slog.String("error", err.Error()))
+	}
 }
 
 // applyNetwork materialises one declared network and returns its report.

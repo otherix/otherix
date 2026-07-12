@@ -404,7 +404,12 @@ func buildReconcilers(cfg *config.AgentConfig, manager *vm.Manager, fabric netfa
 	if err != nil {
 		return agentReconcilers{}, fmt.Errorf("pool reconciler: %w", err)
 	}
-	networks, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0, true)
+	// isGateway is true when the co-located ingress plane is active (the same
+	// gate as buildIngressPlaneIfConfigured): such a node relays WireGuard transit,
+	// so the reconciler enables ip_forward every pass regardless of any egress=nat
+	// network. A plain hypervisor (no ingress listen) leaves it false.
+	isGateway := cfg.Gateway.Listen != ""
+	networks, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0, true, isGateway)
 	if err != nil {
 		return agentReconcilers{}, fmt.Errorf("network reconciler: %w", err)
 	}

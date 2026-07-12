@@ -34,7 +34,7 @@ func readyGatewayFabric() *netfabric.FakeFabric {
 // newGatewayRec builds a gateway-mode reconciler over the given fabric.
 func newGatewayRec(t *testing.T, f netfabric.Fabric) *Networks {
 	t.Helper()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, false)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, false, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
