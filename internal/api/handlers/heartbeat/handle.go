@@ -907,7 +907,7 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 // the fabric down-channel. It reads every agent's WG fabric identity and node
 // row, builds the routing inputs (Endpoint = the advertised WG endpoint, "" when
 // NAT'd; IsGateway from the node's gateway role; the reachable-peer set from
-// EstablishedPeers) and delegates the policy to ComputeWireGuardRouting: a
+// EstablishedPeers) and delegates the policy to computeWireGuardRouting: a
 // reachable peer gets a direct entry, a NAT'd<->NAT'd pair is relayed through a
 // deterministic gateway. self is looked up in the same pass; a zero-value self
 // (first heartbeat, before this node's own WG upsert lands) still yields direct
@@ -917,8 +917,8 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 	if err != nil {
 		return nil, fmt.Errorf("list agent_wireguard: %v", err)
 	}
-	var self RoutingNode
-	peers := make([]RoutingNode, 0, len(recs))
+	var self routingNode
+	peers := make([]routingNode, 0, len(recs))
 	for _, r := range recs {
 		// Skip a peer whose node row is deleted (soft-deleted -> ErrNotFound), so a
 		// stale WG record never bleeds into a live agent's mesh. DeleteNode purges
@@ -932,7 +932,7 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 			}
 			return nil, fmt.Errorf("load node %s for wireguard peer: %v", r.NodeID, err)
 		}
-		rn := RoutingNode{
+		rn := routingNode{
 			NodeID:           r.NodeID,
 			PublicKey:        r.PublicKey,
 			OverlayIP:        r.OverlayIP,
@@ -946,7 +946,18 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 		}
 		peers = append(peers, rn)
 	}
-	out := ComputeWireGuardRouting(self, peers)
+	out, omitted := computeWireGuardRouting(self, peers)
+	if len(omitted) > 0 {
+		// A NAT'd peer with no gateway both ends reach is a real connectivity black
+		// hole; surface it. The 30s heartbeat cadence is the rate limit, and this
+		// never gates the heartbeat - it is purely observability.
+		unrouted := make([]string, len(omitted))
+		for i, id := range omitted {
+			unrouted[i] = id.String()
+		}
+		h.log.WarnContext(ctx, "wireguard relay omitted: no common gateway reaches both nodes",
+			slog.String("node_id", selfNodeID.String()), slog.Any("unrouted_peers", unrouted))
+	}
 	if len(out) == 0 {
 		return nil, nil
 	}
@@ -954,7 +965,7 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 }
 
 // establishedPeerSet converts the persisted node-id strings into the set
-// ComputeWireGuardRouting keys reachability on; an unparseable id is dropped.
+// computeWireGuardRouting keys reachability on; an unparseable id is dropped.
 func establishedPeerSet(ids []string) map[uuid.UUID]bool {
 	if len(ids) == 0 {
 		return nil

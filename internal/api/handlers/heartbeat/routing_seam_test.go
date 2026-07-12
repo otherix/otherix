@@ -36,7 +36,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "mkdtemp: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(dir)
+	// os.Exit skips deferred cleanup, so remove the temp dir explicitly below.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	rt, err := etcd.Start(ctx, &etcd.Config{
@@ -59,6 +59,7 @@ func TestMain(m *testing.M) {
 
 	_ = sharedClient.Close()
 	rt.Stop(10 * time.Second)
+	os.RemoveAll(dir)
 	os.Exit(code)
 }
 
@@ -83,10 +84,15 @@ func freeTestPort() int {
 }
 
 // TestLoadDeclaredWireGuardPeers_RelaysNATdPairThroughGateway drives the real
-// producer over a real store: two NAT'd agents and one gateway, with a mutual
-// handshake between each NAT'd agent and the gateway (but none between the two
-// NAT'd agents). natA's declared peer set must be exactly the gateway (direct),
-// carrying its own /32 plus natB's relayed /32; natB gets no direct entry.
+// producer over a real store for all three nodes of a relay triangle: two NAT'd
+// agents and one gateway, with a mutual handshake between each NAT'd agent and
+// the gateway (but none between the two NAT'd agents). It asserts the full
+// A<->G<->B forwarding path:
+//   - natA's declared set is exactly the gateway (direct), carrying its own /32
+//     plus natB's relayed /32; natB gets no direct entry;
+//   - natB is symmetric: gateway direct, own /32 plus natA's relayed /32;
+//   - the gateway forwards to each dialer - TWO endpoint-less /32 entries, one per
+//     NAT'd peer, neither overwriting the other (the relay's own half).
 func TestLoadDeclaredWireGuardPeers_RelaysNATdPairThroughGateway(t *testing.T) {
 	s := freshStore(t)
 	ctx := context.Background()
@@ -100,37 +106,77 @@ func TestLoadDeclaredWireGuardPeers_RelaysNATdPairThroughGateway(t *testing.T) {
 	mustUpsertWG(t, s, natB, "pk-b", "", []string{gw.String()})
 	mustUpsertWG(t, s, gw, "pk-gw", "9.9.9.9:51820", []string{natA.String(), natB.String()})
 
+	overlayA := netip.PrefixFrom(mustOverlayIP(t, s, natA), 32).String()
 	overlayB := netip.PrefixFrom(mustOverlayIP(t, s, natB), 32).String()
 	overlayGW := netip.PrefixFrom(mustOverlayIP(t, s, gw), 32).String()
 
 	h := &Handler{log: discardLogger()}
-	var got []declaredWireGuardPeer
+	var gotA, gotB, gotGW []declaredWireGuardPeer
 	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
 		var e error
-		got, e = h.loadDeclaredWireGuardPeers(ctx, hp, natA)
+		if gotA, e = h.loadDeclaredWireGuardPeers(ctx, hp, natA); e != nil {
+			return e
+		}
+		if gotB, e = h.loadDeclaredWireGuardPeers(ctx, hp, natB); e != nil {
+			return e
+		}
+		gotGW, e = h.loadDeclaredWireGuardPeers(ctx, hp, gw)
 		return e
 	}); err != nil {
 		t.Fatalf("run projection: %v", err)
 	}
 
-	if len(got) != 1 {
-		t.Fatalf("want a single (gateway) peer entry, got %d: %+v", len(got), got)
+	// natA relays to natB through the gateway.
+	if len(gotA) != 1 {
+		t.Fatalf("natA: want a single (gateway) peer entry, got %d: %+v", len(gotA), gotA)
 	}
-	e := findPeer(got, "pk-gw")
-	if e == nil {
-		t.Fatalf("gateway entry missing: %+v", got)
+	if e := findPeer(gotA, "pk-gw"); e == nil {
+		t.Fatalf("natA: gateway entry missing: %+v", gotA)
+	} else {
+		if e.Endpoint != "9.9.9.9:51820" {
+			t.Errorf("natA: gateway endpoint = %q, want 9.9.9.9:51820", e.Endpoint)
+		}
+		if !hasAllowed(e, overlayGW) {
+			t.Errorf("natA: gateway entry missing its own /32 %s: %+v", overlayGW, e)
+		}
+		if !hasAllowed(e, overlayB) {
+			t.Errorf("natA: gateway entry missing relayed peer /32 %s: %+v", overlayB, e)
+		}
 	}
-	if e.Endpoint != "9.9.9.9:51820" {
-		t.Errorf("gateway endpoint = %q, want 9.9.9.9:51820", e.Endpoint)
+	if findPeer(gotA, "pk-b") != nil {
+		t.Errorf("natA: relayed NAT'd peer must not get a direct entry: %+v", gotA)
 	}
-	if !hasAllowed(e, overlayGW) {
-		t.Errorf("gateway entry missing its own /32 %s: %+v", overlayGW, e)
+
+	// natB is symmetric: it relays to natA through the same gateway.
+	if len(gotB) != 1 {
+		t.Fatalf("natB: want a single (gateway) peer entry, got %d: %+v", len(gotB), gotB)
 	}
-	if !hasAllowed(e, overlayB) {
-		t.Errorf("gateway entry missing relayed peer /32 %s: %+v", overlayB, e)
+	if e := findPeer(gotB, "pk-gw"); e == nil {
+		t.Fatalf("natB: gateway entry missing: %+v", gotB)
+	} else if !hasAllowed(e, overlayGW) || !hasAllowed(e, overlayA) {
+		t.Errorf("natB: gateway entry must carry own %s and relayed %s: %+v", overlayGW, overlayA, e)
 	}
-	if findPeer(got, "pk-b") != nil {
-		t.Errorf("relayed NAT'd peer must not get a direct entry: %+v", got)
+	if findPeer(gotB, "pk-a") != nil {
+		t.Errorf("natB: relayed NAT'd peer must not get a direct entry: %+v", gotB)
+	}
+
+	// The gateway forwards to each dialer: two endpoint-less /32 entries, one per
+	// NAT'd peer, neither overwriting the other.
+	if len(gotGW) != 2 {
+		t.Fatalf("gw: want two forward entries (one per dialer), got %d: %+v", len(gotGW), gotGW)
+	}
+	for _, want := range []struct{ pubkey, overlay string }{{"pk-a", overlayA}, {"pk-b", overlayB}} {
+		e := findPeer(gotGW, want.pubkey)
+		if e == nil {
+			t.Errorf("gw: missing forward entry for dialer %s: %+v", want.pubkey, gotGW)
+			continue
+		}
+		if e.Endpoint != "" {
+			t.Errorf("gw: forward entry %s must be endpoint-less, got %q", want.pubkey, e.Endpoint)
+		}
+		if !hasAllowed(e, want.overlay) {
+			t.Errorf("gw: forward entry %s must carry the dialer /32 %s: %+v", want.pubkey, want.overlay, e)
+		}
 	}
 }
 

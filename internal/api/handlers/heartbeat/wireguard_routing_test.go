@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 )
 
@@ -40,34 +41,67 @@ func hasAllowed(e *declaredWireGuardPeer, cidr string) bool {
 }
 
 func TestRouting_DirectPeer(t *testing.T) {
-	self := RoutingNode{NodeID: id(1), OverlayIP: ip("10.0.0.1")} // NAT'd
-	pub := RoutingNode{NodeID: id(2), PublicKey: "p2", OverlayIP: ip("10.0.0.2"), Endpoint: "5.5.5.5:51820"}
-	out := ComputeWireGuardRouting(self, []RoutingNode{pub})
+	self := routingNode{NodeID: id(1), OverlayIP: ip("10.0.0.1")} // NAT'd
+	pub := routingNode{NodeID: id(2), PublicKey: "p2", OverlayIP: ip("10.0.0.2"), Endpoint: "5.5.5.5:51820"}
+	out, _ := computeWireGuardRouting(self, []routingNode{pub})
 	if len(out) != 1 || out[0].Endpoint != "5.5.5.5:51820" || out[0].AllowedIPs[0] != "10.0.0.2/32" {
 		t.Fatalf("direct wrong: %+v", out)
 	}
 }
 
 func TestRouting_GatewayForwardsToDialer(t *testing.T) {
-	// self is a gateway; NAT'd peer A dialed it (in EstablishedPeers) -> direct entry, no endpoint
-	self := RoutingNode{
-		NodeID: id(2), OverlayIP: ip("10.0.0.2"), Endpoint: "2.2.2.2:51820", IsGateway: true,
-		EstablishedPeers: map[uuid.UUID]bool{id(9): true},
+	// self is a gateway; each NAT'd dialer in EstablishedPeers gets an
+	// endpoint-less direct entry (WireGuard learns the endpoint by roaming), and
+	// a second dialer must not overwrite the first.
+	tests := []struct {
+		name    string
+		dialers []routingNode
+		wantIPs map[string]string // pubkey -> expected endpoint-less /32
+	}{
+		{
+			name:    "single dialer",
+			dialers: []routingNode{{NodeID: id(9), PublicKey: "p9", OverlayIP: ip("10.0.0.9")}},
+			wantIPs: map[string]string{"p9": "10.0.0.9/32"},
+		},
+		{
+			name: "two dialers, neither overwrites the other",
+			dialers: []routingNode{
+				{NodeID: id(8), PublicKey: "p8", OverlayIP: ip("10.0.0.8")},
+				{NodeID: id(9), PublicKey: "p9", OverlayIP: ip("10.0.0.9")},
+			},
+			wantIPs: map[string]string{"p8": "10.0.0.8/32", "p9": "10.0.0.9/32"},
+		},
 	}
-	a := RoutingNode{NodeID: id(9), PublicKey: "p9", OverlayIP: ip("10.0.0.9")} // NAT'd
-	out := ComputeWireGuardRouting(self, []RoutingNode{a})
-	e := findPeer(out, "p9")
-	if e == nil || e.Endpoint != "" || !hasAllowed(e, "10.0.0.9/32") {
-		t.Fatalf("gateway must forward to a dialer with an endpoint-less /32 entry: %+v", out)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			established := map[uuid.UUID]bool{}
+			for _, d := range tt.dialers {
+				established[d.NodeID] = true
+			}
+			self := routingNode{
+				NodeID: id(2), OverlayIP: ip("10.0.0.2"), Endpoint: "2.2.2.2:51820",
+				IsGateway: true, EstablishedPeers: established,
+			}
+			out, _ := computeWireGuardRouting(self, tt.dialers)
+			if len(out) != len(tt.wantIPs) {
+				t.Fatalf("want %d forward entries, got %d: %+v", len(tt.wantIPs), len(out), out)
+			}
+			for pk, cidr := range tt.wantIPs {
+				e := findPeer(out, pk)
+				if e == nil || e.Endpoint != "" || !hasAllowed(e, cidr) {
+					t.Errorf("dialer %s must get an endpoint-less %s entry: %+v", pk, cidr, out)
+				}
+			}
+		})
 	}
 }
 
 func TestRouting_RelayedMergeLowestUUID(t *testing.T) {
-	self := RoutingNode{NodeID: id(9), OverlayIP: ip("10.0.0.9"), EstablishedPeers: map[uuid.UUID]bool{id(2): true, id(3): true}}
-	peer := RoutingNode{NodeID: id(8), PublicKey: "p8", OverlayIP: ip("10.0.0.8"), EstablishedPeers: map[uuid.UUID]bool{id(2): true, id(3): true}}
-	g1 := RoutingNode{NodeID: id(2), PublicKey: "g2", OverlayIP: ip("10.0.0.2"), Endpoint: "2.2.2.2:51820", IsGateway: true}
-	g2 := RoutingNode{NodeID: id(3), PublicKey: "g3", OverlayIP: ip("10.0.0.3"), Endpoint: "3.3.3.3:51820", IsGateway: true}
-	out := ComputeWireGuardRouting(self, []RoutingNode{peer, g1, g2})
+	self := routingNode{NodeID: id(9), OverlayIP: ip("10.0.0.9"), EstablishedPeers: map[uuid.UUID]bool{id(2): true, id(3): true}}
+	peer := routingNode{NodeID: id(8), PublicKey: "p8", OverlayIP: ip("10.0.0.8"), EstablishedPeers: map[uuid.UUID]bool{id(2): true, id(3): true}}
+	g1 := routingNode{NodeID: id(2), PublicKey: "g2", OverlayIP: ip("10.0.0.2"), Endpoint: "2.2.2.2:51820", IsGateway: true}
+	g2 := routingNode{NodeID: id(3), PublicKey: "g3", OverlayIP: ip("10.0.0.3"), Endpoint: "3.3.3.3:51820", IsGateway: true}
+	out, _ := computeWireGuardRouting(self, []routingNode{peer, g1, g2})
 	g := findPeer(out, "g2") // lowest UUID id(2)
 	if g == nil || !hasAllowed(g, "10.0.0.2/32") || !hasAllowed(g, "10.0.0.8/32") {
 		t.Errorf("relayed /32 must merge into lowest-UUID gateway entry: %+v", out)
@@ -78,9 +112,13 @@ func TestRouting_RelayedMergeLowestUUID(t *testing.T) {
 }
 
 func TestRouting_EmptyIntersectionOmits(t *testing.T) {
-	self := RoutingNode{NodeID: id(9), OverlayIP: ip("10.0.0.9")}
-	peer := RoutingNode{NodeID: id(8), PublicKey: "p8", OverlayIP: ip("10.0.0.8")}
-	if out := ComputeWireGuardRouting(self, []RoutingNode{peer}); len(out) != 0 {
+	self := routingNode{NodeID: id(9), OverlayIP: ip("10.0.0.9")}
+	peer := routingNode{NodeID: id(8), PublicKey: "p8", OverlayIP: ip("10.0.0.8")}
+	out, omitted := computeWireGuardRouting(self, []routingNode{peer})
+	if len(out) != 0 {
 		t.Errorf("no common gateway => omit, got %+v", out)
+	}
+	if diff := cmp.Diff([]uuid.UUID{id(8)}, omitted); diff != "" {
+		t.Errorf("omitted node-ids mismatch (-want +got):\n%s", diff)
 	}
 }
