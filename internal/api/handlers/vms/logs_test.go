@@ -5,7 +5,6 @@ package vms
 
 import (
 	"context"
-	"crypto/tls"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,18 +23,19 @@ import (
 )
 
 // logsClientStub satisfies the handler's console-client dependency. Only
-// HTTPClient is exercised by the logs path; it returns a client that
-// trusts the httptest TLS servers the tests stand up.
-type logsClientStub struct{}
+// HTTPClient is exercised by the logs path; its transport dials the httptest
+// TLS agents through the identity-SAN dial map (the CP now dials the node's
+// identity SAN, not the raw advertised host).
+type logsClientStub struct {
+	dialMap map[string]string
+}
 
 func (logsClientStub) IssueConsoleToken(context.Context, string, string, string) (agentclient.IssueConsoleTokenResponse, error) {
 	return agentclient.IssueConsoleTokenResponse{}, nil
 }
 
-func (logsClientStub) HTTPClient() *http.Client {
-	return &http.Client{Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test dials httptest TLS servers
-	}}
+func (s logsClientStub) HTTPClient() *http.Client {
+	return &http.Client{Transport: identityDialTransport(s.dialMap)}
 }
 
 // logsStoreStub satisfies the handler's Store interface for the follow
@@ -89,19 +89,22 @@ func (s *logsStoreStub) ActiveMigrationForVM(context.Context, uuid.UUID) (store.
 
 // logsAgent stands up an httptest TLS server that emits the given line
 // (already newline-terminated) on every /logs request, then returns
-// (clean EOF). It records how many times it was dialed.
+// (clean EOF). It records how many times it was dialed and the inbound
+// Host of the last request (to prove the CP dialed the identity SAN).
 type logsAgent struct {
-	srv   *httptest.Server
-	calls int
-	mu    sync.Mutex
+	srv     *httptest.Server
+	calls   int
+	reqHost string
+	mu      sync.Mutex
 }
 
 func newLogsAgent(t *testing.T, line string) *logsAgent {
 	t.Helper()
 	a := &logsAgent{}
-	a.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	a.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		a.calls++
+		a.reqHost = r.Host
 		a.mu.Unlock()
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -120,12 +123,39 @@ func (a *logsAgent) dialCount() int {
 	return a.calls
 }
 
-func logsFollowHandler(s Store) *Handler {
+// host returns the agent's loopback listener addr (the real dial target the
+// identity SAN maps to).
+func (a *logsAgent) host() string { return a.srv.Listener.Addr().String() }
+
+// lastHost returns the inbound Host of the last request the agent served.
+func (a *logsAgent) lastHost() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reqHost
+}
+
+func logsFollowHandler(s Store, dialMap map[string]string) *Handler {
 	return New(s,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LifecycleDeps{},
-		ConsoleDeps{AgentClient: logsClientStub{}, AccessMode: "proxy"},
+		ConsoleDeps{AgentClient: logsClientStub{dialMap: dialMap}, AccessMode: "proxy"},
 		SSHDeps{})
+}
+
+// logsDialMap maps each node's identity SAN (the host the CP now dials
+// through the geo transport) to the loopback addr of its httptest agent, so
+// the stub transport reaches the real server after the handler swaps the raw
+// endpoint for the identity SAN.
+func logsDialMap(nodes map[uuid.UUID]store.Node) map[string]string {
+	m := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		host, err := stripScheme(n.AdvertisedEndpoint)
+		if err != nil {
+			continue
+		}
+		m[auth.NodeIdentitySAN(n.Name)] = host
+	}
+	return m
 }
 
 // followRequest builds a GET /logs?follow=true request carrying a cancel
@@ -170,11 +200,11 @@ func TestRelayLogsFollowing_ReattachesOnCutover(t *testing.T) {
 		// so the post-reattach poll also sees B and the stream then ends.
 		pinSequence: []uuid.UUID{nodeB},
 		nodes: map[uuid.UUID]store.Node{
-			nodeA: {ID: nodeA, AdvertisedEndpoint: agentA.srv.URL},
-			nodeB: {ID: nodeB, AdvertisedEndpoint: agentB.srv.URL},
+			nodeA: {ID: nodeA, Name: "a", AdvertisedEndpoint: agentA.srv.URL},
+			nodeB: {ID: nodeB, Name: "b", AdvertisedEndpoint: agentB.srv.URL},
 		},
 	}
-	h := logsFollowHandler(stub)
+	h := logsFollowHandler(stub, logsDialMap(stub.nodes))
 
 	rec := httptest.NewRecorder()
 	req, cancel := followRequest(t, stub.vm.Name)
@@ -206,10 +236,10 @@ func TestRelayLogsFollowing_CleanEnd(t *testing.T) {
 	stub := &logsStoreStub{
 		vm:          logsTestVM(t, owner, nodeA),
 		pinSequence: []uuid.UUID{nodeA}, // never flips
-		nodes:       map[uuid.UUID]store.Node{nodeA: {ID: nodeA, AdvertisedEndpoint: agentA.srv.URL}},
+		nodes:       map[uuid.UUID]store.Node{nodeA: {ID: nodeA, Name: "a", AdvertisedEndpoint: agentA.srv.URL}},
 		migrating:   false,
 	}
-	h := logsFollowHandler(stub)
+	h := logsFollowHandler(stub, logsDialMap(stub.nodes))
 
 	rec := httptest.NewRecorder()
 	req, cancel := followRequest(t, stub.vm.Name)
@@ -278,18 +308,14 @@ func TestRelayLogsFollowing_WaitsForFlip(t *testing.T) {
 		logsStoreStub: logsStoreStub{
 			vm: logsTestVM(t, owner, nodeA),
 			nodes: map[uuid.UUID]store.Node{
-				nodeA: {ID: nodeA, AdvertisedEndpoint: agentA.srv.URL},
-				nodeB: {ID: nodeB, AdvertisedEndpoint: agentB.srv.URL},
+				nodeA: {ID: nodeA, Name: "a", AdvertisedEndpoint: agentA.srv.URL},
+				nodeB: {ID: nodeB, Name: "b", AdvertisedEndpoint: agentB.srv.URL},
 			},
 		},
 		from: nodeA, to: nodeB, flipOn: 3, // flips on the 3rd VMByName call
 	}
 
-	hh := New(stub,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		LifecycleDeps{},
-		ConsoleDeps{AgentClient: logsClientStub{}, AccessMode: "proxy"},
-		SSHDeps{})
+	hh := logsFollowHandler(stub, logsDialMap(stub.nodes))
 
 	rec := httptest.NewRecorder()
 	req, cancel := followRequest(t, stub.vm.Name)
@@ -313,9 +339,9 @@ func TestWaitForFlip_DeadlineReturnsFalse(t *testing.T) {
 	stub := &logsStoreStub{
 		vm:          logsTestVM(t, owner, nodeA),
 		pinSequence: []uuid.UUID{nodeA},
-		nodes:       map[uuid.UUID]store.Node{nodeA: {ID: nodeA, AdvertisedEndpoint: agentA.srv.URL}},
+		nodes:       map[uuid.UUID]store.Node{nodeA: {ID: nodeA, Name: "a", AdvertisedEndpoint: agentA.srv.URL}},
 	}
-	h := logsFollowHandler(stub)
+	h := logsFollowHandler(stub, logsDialMap(stub.nodes))
 
 	ctx := context.Background()
 	_, ok := h.waitForFlip(ctx, stub.vm.Name, nodeA, 60*time.Millisecond, 10*time.Millisecond)
@@ -355,12 +381,12 @@ func TestLogs_NonFollowSingleShot(t *testing.T) {
 		vm:          logsTestVM(t, owner, nodeA),
 		pinSequence: []uuid.UUID{nodeA, nodeB}, // would flip if the loop ran
 		nodes: map[uuid.UUID]store.Node{
-			nodeA: {ID: nodeA, AdvertisedEndpoint: agentA.srv.URL},
-			nodeB: {ID: nodeB, AdvertisedEndpoint: agentB.srv.URL},
+			nodeA: {ID: nodeA, Name: "a", AdvertisedEndpoint: agentA.srv.URL},
+			nodeB: {ID: nodeB, Name: "b", AdvertisedEndpoint: agentB.srv.URL},
 		},
 	}
 	stub.vm.OwnerID = owner
-	h := logsFollowHandler(stub)
+	h := logsFollowHandler(stub, logsDialMap(stub.nodes))
 
 	rec := httptest.NewRecorder()
 	h.Logs(rec, authedLogsRequest(t, owner, stub.vm.Name, "tail=10"))
@@ -373,5 +399,38 @@ func TestLogs_NonFollowSingleShot(t *testing.T) {
 	}
 	if c := agentB.dialCount(); c != 0 {
 		t.Errorf("node B dialed %d times, want 0 (single-shot must not reconnect)", c)
+	}
+}
+
+// TestLogs_DialsIdentitySAN is the geo-routing seam test: the CP must dial the
+// agent at the node's cluster-CA identity SAN (so the geo route resolver can
+// reach it - direct for a public node, gateway splice for a NAT'd one), NOT at
+// the raw AdvertisedEndpoint host. The node's Name differs from the httptest
+// listener host, and the dial map maps only the identity SAN to the real addr,
+// so the assertion has teeth: before the fix the agent sees the loopback Host,
+// after it the identity SAN.
+func TestLogs_DialsIdentitySAN(t *testing.T) {
+	t.Parallel()
+
+	owner := uuid.New()
+	nodeID := uuid.New()
+	agent := newLogsAgent(t, "line\n")
+
+	stub := &logsStoreStub{
+		vm:          logsTestVM(t, owner, nodeID),
+		pinSequence: []uuid.UUID{nodeID},
+		nodes:       map[uuid.UUID]store.Node{nodeID: {ID: nodeID, Name: "a", AdvertisedEndpoint: agent.srv.URL}},
+	}
+	stub.vm.OwnerID = owner
+	h := logsFollowHandler(stub, map[string]string{auth.NodeIdentitySAN("a"): agent.host()})
+
+	rec := httptest.NewRecorder()
+	h.Logs(rec, authedLogsRequest(t, owner, stub.vm.Name, "tail=10"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if got, want := agent.lastHost(), auth.NodeIdentitySAN("a"); got != want {
+		t.Errorf("agent saw Host = %q, want %q (CP must dial the identity SAN, not the raw endpoint)", got, want)
 	}
 }

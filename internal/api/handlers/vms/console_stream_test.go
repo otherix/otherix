@@ -5,7 +5,6 @@ package vms
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -185,11 +185,15 @@ func (s *resolveConsoleNodeStoreStub) NodeByID(context.Context, uuid.UUID) (stor
 	return s.node, nil
 }
 
-func TestResolveConsoleNodeSplitsHostAndEndpoint(t *testing.T) {
+// TestResolveConsoleNodeUsesIdentitySAN pins the geo-routing contract: the
+// resolved host is the node's cluster-CA identity SAN (the dial host the geo
+// transport keys on) and the endpoint is the identity DialURL (what
+// IssueConsoleToken is minted against), NOT the raw AdvertisedEndpoint.
+func TestResolveConsoleNodeUsesIdentitySAN(t *testing.T) {
 	t.Parallel()
 	nid := uuid.New()
 	h := consoleStreamHandler(&resolveConsoleNodeStoreStub{
-		node: store.Node{ID: nid, AdvertisedEndpoint: "https://agent.example.com:9090"},
+		node: store.Node{ID: nid, Name: "a", AdvertisedEndpoint: "https://agent.example.com:9090"},
 	})
 	vm := store.VM{ID: uuid.New(), PinnedNodeID: &nid}
 
@@ -200,11 +204,11 @@ func TestResolveConsoleNodeSplitsHostAndEndpoint(t *testing.T) {
 	if got.id != nid {
 		t.Errorf("id = %v, want %v", got.id, nid)
 	}
-	if got.host != "agent.example.com:9090" {
-		t.Errorf("host = %q, want agent.example.com:9090", got.host)
+	if want := auth.NodeIdentitySAN("a"); got.host != want {
+		t.Errorf("host = %q, want %q", got.host, want)
 	}
-	if got.endpoint != "https://agent.example.com:9090" {
-		t.Errorf("endpoint = %q, want https://agent.example.com:9090", got.endpoint)
+	if want := agentclient.DialURL("a"); got.endpoint != want {
+		t.Errorf("endpoint = %q, want %q", got.endpoint, want)
 	}
 }
 
@@ -214,12 +218,13 @@ func TestResolveConsoleNodeSplitsHostAndEndpoint(t *testing.T) {
 // console-stream endpoint. It accepts a WS, optionally echoes the first
 // byte it reads, records bytes it receives, and closes when told.
 type wsAgentServer struct {
-	srv    *httptest.Server
-	mu     sync.Mutex
-	got    []byte
-	query  string        // RawQuery of the last accepted request (e.g. the relayed port)
-	accept chan struct{} // closed once a connection is accepted
-	closed chan struct{} // close it to make the handler drop the upstream
+	srv     *httptest.Server
+	mu      sync.Mutex
+	got     []byte
+	query   string        // RawQuery of the last accepted request (e.g. the relayed port)
+	reqHost string        // inbound Host of the last request (proves the identity-SAN dial)
+	accept  chan struct{} // closed once a connection is accepted
+	closed  chan struct{} // close it to make the handler drop the upstream
 }
 
 func newWSAgentServer(t *testing.T, echo bool) *wsAgentServer {
@@ -228,6 +233,7 @@ func newWSAgentServer(t *testing.T, echo bool) *wsAgentServer {
 	a.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		a.query = r.URL.RawQuery
+		a.reqHost = r.Host
 		a.mu.Unlock()
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
@@ -273,6 +279,13 @@ func (a *wsAgentServer) lastQuery() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.query
+}
+
+// lastHost returns the inbound Host of the last request the agent served.
+func (a *wsAgentServer) lastHost() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reqHost
 }
 
 func closeOnce(ch chan struct{}) {
@@ -327,13 +340,15 @@ func (s *followStoreStub) ActiveMigrationForVM(context.Context, uuid.UUID) (stor
 }
 
 // recordingConsoleClient routes IssueConsoleToken to a recorded endpoint
-// and returns a fixed token; HTTPClient is an InsecureSkipVerify client
-// so the CP can dial the TLS agent test servers.
+// and returns a fixed token; HTTPClient dials the TLS agent test servers
+// through the identity-SAN dial map (the CP now dials the node's identity
+// SAN, not the raw advertised host).
 type recordingConsoleClient struct {
 	mu        sync.Mutex
 	endpoints []string
 	token     string
 	issueErr  error
+	dialMap   map[string]string
 }
 
 func (c *recordingConsoleClient) IssueConsoleToken(_ context.Context, endpoint, _, _ string) (agentclient.IssueConsoleTokenResponse, error) {
@@ -354,14 +369,28 @@ func (c *recordingConsoleClient) mintedEndpoints() []string {
 }
 
 func (c *recordingConsoleClient) HTTPClient() *http.Client {
-	return &http.Client{Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test client
-	}}
+	return &http.Client{Transport: identityDialTransport(c.dialMap)}
 }
 
 func newFollowHandler(s Store, c consoleClient) *Handler {
 	return New(s, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		LifecycleDeps{}, ConsoleDeps{AgentClient: c, AccessMode: "proxy"}, SSHDeps{})
+}
+
+// nodeDialMap maps each node's identity SAN (the host the CP now dials through
+// the geo transport) to the loopback addr of its httptest agent
+// (AdvertisedEndpoint = https://<addr>), so the stub transport reaches the real
+// server after the handler swaps the raw endpoint for the identity SAN.
+func nodeDialMap(nodes ...store.Node) map[string]string {
+	m := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		host, err := stripScheme(n.AdvertisedEndpoint)
+		if err != nil {
+			continue
+		}
+		m[auth.NodeIdentitySAN(n.Name)] = host
+	}
+	return m
 }
 
 func cpConsoleServer(t *testing.T, h *Handler) *httptest.Server {
@@ -390,9 +419,9 @@ func dialOperator(t *testing.T, cp *httptest.Server, vmName, token string) *webs
 func TestConsoleRelayBridgesAndClosesCleanly(t *testing.T) {
 	t.Parallel()
 	agentA := newWSAgentServer(t, true)
-	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
+	nodeA := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agentA.host()}
 	st := &followStoreStub{vm: store.VM{ID: uuid.New(), Name: "demo"}, nodes: []store.Node{nodeA}}
-	cl := &recordingConsoleClient{token: "tok"}
+	cl := &recordingConsoleClient{token: "tok", dialMap: nodeDialMap(nodeA)}
 	cp := cpConsoleServer(t, newFollowHandler(st, cl))
 
 	op := dialOperator(t, cp, "demo", "tok")
@@ -405,6 +434,11 @@ func TestConsoleRelayBridgesAndClosesCleanly(t *testing.T) {
 	}
 	if got := agentA.received(); string(got) != "p" {
 		t.Errorf("agent received = %q, want p", got)
+	}
+	// The CP must have dialed the agent at the node identity SAN so the geo
+	// resolver can route it, not at the raw loopback host.
+	if got, want := agentA.lastHost(), auth.NodeIdentitySAN("a"); got != want {
+		t.Errorf("agent saw Host = %q, want %q", got, want)
 	}
 	if eps := cl.mintedEndpoints(); len(eps) != 0 {
 		t.Errorf("minted endpoints = %v, want none (no re-attach on first attempt)", eps)
@@ -424,13 +458,13 @@ func TestConsoleFollowReattachesAtCutover(t *testing.T) {
 	t.Parallel()
 	agentA := newWSAgentServer(t, true)
 	agentB := newWSAgentServer(t, true)
-	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
-	nodeB := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentB.host()}
+	nodeA := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agentA.host()}
+	nodeB := store.Node{ID: uuid.New(), Name: "b", AdvertisedEndpoint: "https://" + agentB.host()}
 	st := &followStoreStub{
 		vm:    store.VM{ID: uuid.New(), Name: "demo"},
 		nodes: []store.Node{nodeA, nodeB},
 	}
-	cl := &recordingConsoleClient{token: "tok"}
+	cl := &recordingConsoleClient{token: "tok", dialMap: nodeDialMap(nodeA, nodeB)}
 	cp := cpConsoleServer(t, newFollowHandler(st, cl))
 
 	op := dialOperator(t, cp, "demo", "tok")
@@ -455,14 +489,14 @@ func TestConsoleFollowReattachesAtCutover(t *testing.T) {
 		}
 		eps := cl.mintedEndpoints()
 		if typ == websocket.MessageBinary && string(data) == "b" &&
-			len(eps) > 0 && eps[len(eps)-1] == nodeB.AdvertisedEndpoint {
+			len(eps) > 0 && eps[len(eps)-1] == agentclient.DialURL(nodeB.Name) {
 			reattached = true
 			break
 		}
 	}
 	if !reattached {
 		t.Errorf("post-cutover byte never echoed from B after a mint against %q (minted = %v)",
-			nodeB.AdvertisedEndpoint, cl.mintedEndpoints())
+			agentclient.DialURL(nodeB.Name), cl.mintedEndpoints())
 	}
 }
 
@@ -472,10 +506,10 @@ func TestConsoleFollowBuffersKeystrokesDuringGap(t *testing.T) {
 	t.Parallel()
 	agentA := newWSAgentServer(t, false)
 	agentB := newWSAgentServer(t, false)
-	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
-	nodeB := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentB.host()}
+	nodeA := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agentA.host()}
+	nodeB := store.Node{ID: uuid.New(), Name: "b", AdvertisedEndpoint: "https://" + agentB.host()}
 	st := &followStoreStub{vm: store.VM{ID: uuid.New(), Name: "demo"}, nodes: []store.Node{nodeA, nodeB}}
-	cp := cpConsoleServer(t, newFollowHandler(st, &recordingConsoleClient{token: "tok"}))
+	cp := cpConsoleServer(t, newFollowHandler(st, &recordingConsoleClient{token: "tok", dialMap: nodeDialMap(nodeA, nodeB)}))
 
 	op := dialOperator(t, cp, "demo", "tok")
 	<-agentA.accept
@@ -505,11 +539,11 @@ func TestConsoleFollowGivesUpOnWindowExpiry(t *testing.T) {
 	defer shrinkConsoleReattach(t, 300*time.Millisecond, 50*time.Millisecond)()
 
 	agentA := newWSAgentServer(t, false)
-	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
+	nodeA := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agentA.host()}
 	st := &followStoreStub{
 		vm: store.VM{ID: uuid.New(), Name: "demo"}, nodes: []store.Node{nodeA}, migrating: true,
 	}
-	cp := cpConsoleServer(t, newFollowHandler(st, &recordingConsoleClient{token: "tok"}))
+	cp := cpConsoleServer(t, newFollowHandler(st, &recordingConsoleClient{token: "tok", dialMap: nodeDialMap(nodeA)}))
 
 	op := dialOperator(t, cp, "demo", "tok")
 	<-agentA.accept
@@ -528,10 +562,10 @@ func TestConsoleFollowTransientThenSuccess(t *testing.T) {
 	t.Parallel()
 	agentB := newWSAgentServer(t, true)
 	agentA := newWSAgentServer(t, true)
-	nodeA := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentA.host()}
-	nodeB := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agentB.host()}
+	nodeA := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agentA.host()}
+	nodeB := store.Node{ID: uuid.New(), Name: "b", AdvertisedEndpoint: "https://" + agentB.host()}
 	st := &followStoreStub{vm: store.VM{ID: uuid.New(), Name: "demo"}, nodes: []store.Node{nodeA, nodeB}}
-	cl := &flakyConsoleClient{recordingConsoleClient: recordingConsoleClient{token: "tok"}, failFirst: 2}
+	cl := &flakyConsoleClient{recordingConsoleClient: recordingConsoleClient{token: "tok", dialMap: nodeDialMap(nodeA, nodeB)}, failFirst: 2}
 	cp := cpConsoleServer(t, newFollowHandler(st, cl))
 
 	op := dialOperator(t, cp, "demo", "tok")
