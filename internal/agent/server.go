@@ -197,7 +197,11 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// session-CA store is fanned into the heartbeat response handler chain.
 	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, artStore, poolReconciler, vmReconciler, netReconciler, wgReconciler, healthReconciler, pubListenerReconciler, ingressCAStoreOf(ingressPlane), log)
 
-	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, dhcpResponder, nudgerFor(sender), blobsHandler)
+	// When this node also holds the gateway role, fold the CP-only node-connect
+	// splice into the shared control router (nil for a plain hypervisor, which
+	// then never exposes it). See buildNodeConnectHandler.
+	nodeConnect := buildNodeConnectHandler(cfg, ingressPlane, wgReconciler, log)
+	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, dhcpResponder, nudgerFor(sender), blobsHandler, nodeConnect)
 
 	// A NAT'd node (no advertised WireGuard endpoint) must not expose its control
 	// listener on a WAN/0.0.0.0 address: the CP reaches it only through the gateway
@@ -342,6 +346,24 @@ func ingressCAStoreOf(plane *ingress.Plane) *ingress.SessionCAStore {
 		return nil
 	}
 	return plane.CAStore
+}
+
+// buildNodeConnectHandler returns the CP-only node-connect splice handler when
+// this node also holds the gateway role (the ingress plane is active), or nil
+// for a plain hypervisor. The co-located control router folds it in exactly as
+// the standalone gateway (buildGatewayControlRouter) does; a nil handler means
+// buildRouter never mounts the splice. Same anti-SSRF deps as the standalone
+// path: the WG reconciler's known-node overlay set gates the CP-supplied target,
+// on the agent control port (a cluster convention).
+func buildNodeConnectHandler(cfg *config.AgentConfig, plane *ingress.Plane, wg *reconciler.WireGuard, log *slog.Logger) *ingress.NodeConnectHandler {
+	if plane == nil {
+		return nil
+	}
+	return ingress.NewNodeConnectHandler(ingress.NodeConnectDeps{
+		IsKnownNodeOverlayIP: wg.IsKnownNodeOverlayIP,
+		ControlPort:          controlListenPort(cfg.Server.Listen),
+		Log:                  log,
+	})
 }
 
 // startAgentListeners launches the control listener - and, when the ingress plane
@@ -1003,7 +1025,7 @@ func (noopNudger) Nudge() {}
 // goroutines inherit r.Context() and would terminate at
 // cfg.Server.ReadTimeout (~30s by default). The bounded-REST subtree
 // below opts back in via a Group.
-func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, dhcpResponder dhcp4.Responder, heartbeatNudger heartbeatHandlers.Nudger, blobsHandler *blobshandlers.Handler) http.Handler {
+func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, dhcpResponder dhcp4.Responder, heartbeatNudger heartbeatHandlers.Nudger, blobsHandler *blobshandlers.Handler, nodeConnect *ingress.NodeConnectHandler) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -1029,6 +1051,17 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 	r.Get("/v1/vms/{vm_name}/console-stream", vmsHandler.ConsoleStream)
 	r.Get("/v1/vms/{vm_name}/ssh-pipe", vmsHandler.SSHPipe)
 	r.Get("/v1/vms/{vm_name}/logs", vmsHandler.Logs)
+
+	// When this node also holds the gateway role, fold the CP-only node-connect
+	// splice into the shared control router (mirrors buildGatewayControlRouter's
+	// standalone mount). Registered OUTSIDE the Timeout group below for the same
+	// reason as the streaming routes: it hijacks and splices a long-lived tunnel a
+	// per-request deadline would tear. Still under the router-root RequireCPIdentity
+	// gate, so only the control plane reaches it. Nil for a plain hypervisor, which
+	// then never exposes the splice.
+	if nodeConnect != nil {
+		ingress.MountNodeConnectRoute(r, nodeConnect)
+	}
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(cfg.Server.ReadTimeout))
