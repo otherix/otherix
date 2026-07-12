@@ -32,9 +32,13 @@ type routingNode struct {
 //
 //   - a direct entry when the peer advertises a WireGuard endpoint (a public node
 //     or a gateway): AllowedIPs is the peer's overlay /32;
-//   - for a NAT'd peer self forwards for (self is a gateway the peer has dialed,
-//     so the peer is in self's EstablishedPeers): an endpoint-less direct entry -
-//     WireGuard learns the endpoint by roaming from the peer's inbound handshake;
+//   - when self is a gateway and the peer is NAT'd: an endpoint-less direct entry,
+//     declared unconditionally (not gated on an existing handshake) so the gateway
+//     has the peer configured before the peer dials in - WireGuard silently drops a
+//     handshake from an unconfigured peer, so gating this on self.EstablishedPeers
+//     would deadlock a cold start (the gateway would never accept the very handshake
+//     that would add the peer to EstablishedPeers). The endpoint is learned by
+//     roaming from the peer's inbound handshake;
 //   - for any other NAT'd peer: the peer's overlay /32 merged into the relaying
 //     gateway's AllowedIPs (the lowest-UUID gateway both self and the peer
 //     currently reach). When no such gateway exists the peer is omitted - a route
@@ -57,7 +61,10 @@ func computeWireGuardRouting(self routingNode, peers []routingNode) ([]declaredW
 		switch {
 		case p.Endpoint != "": // reachable peer -> direct entry
 			entries[p.NodeID] = directEntry(p, p.Endpoint)
-		case self.IsGateway && self.EstablishedPeers[p.NodeID]: // self forwards to a dialer
+		case self.IsGateway: // self is a gateway: pre-declare every NAT'd peer endpoint-less
+			// so the gateway can accept the peer's inbound handshake (WireGuard drops a
+			// handshake from an unconfigured peer). Unconditional - gating on an existing
+			// handshake would deadlock a cold start. The endpoint is learned by roaming.
 			entries[p.NodeID] = directEntry(p, "")
 		default: // NAT'd peer relayed through a gateway
 			relayed = append(relayed, p)

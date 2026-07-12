@@ -96,6 +96,29 @@ func TestRouting_GatewayForwardsToDialer(t *testing.T) {
 	}
 }
 
+// TestRouting_GatewayDeclaresNATdPeerBeforeHandshake pins the cold-start fix: a
+// gateway must declare a NAT'd peer endpoint-less even when it has NO live
+// handshake with it yet (the peer is absent from EstablishedPeers). WireGuard
+// drops a handshake from an unconfigured peer, so gating this on an existing
+// handshake deadlocks a cold start - the gateway would never accept the very
+// handshake that would add the peer to EstablishedPeers.
+func TestRouting_GatewayDeclaresNATdPeerBeforeHandshake(t *testing.T) {
+	// self is a gateway that has established with nobody yet.
+	self := routingNode{
+		NodeID: id(2), OverlayIP: ip("10.0.0.2"), Endpoint: "2.2.2.2:51820",
+		IsGateway: true, EstablishedPeers: map[uuid.UUID]bool{},
+	}
+	natd := routingNode{NodeID: id(9), PublicKey: "p9", OverlayIP: ip("10.0.0.9")} // NAT'd: no endpoint
+	out, omitted := computeWireGuardRouting(self, []routingNode{natd})
+	if len(omitted) != 0 {
+		t.Errorf("gateway must not omit a NAT'd peer it has to accept a handshake from; omitted=%v", omitted)
+	}
+	e := findPeer(out, "p9")
+	if e == nil || e.Endpoint != "" || !hasAllowed(e, "10.0.0.9/32") {
+		t.Errorf("gateway must pre-declare the NAT'd peer as an endpoint-less 10.0.0.9/32 entry before any handshake: %+v", out)
+	}
+}
+
 func TestRouting_RelayedMergeLowestUUID(t *testing.T) {
 	self := routingNode{NodeID: id(9), OverlayIP: ip("10.0.0.9"), EstablishedPeers: map[uuid.UUID]bool{id(2): true, id(3): true}}
 	peer := routingNode{NodeID: id(8), PublicKey: "p8", OverlayIP: ip("10.0.0.8"), EstablishedPeers: map[uuid.UUID]bool{id(2): true, id(3): true}}
