@@ -6018,6 +6018,23 @@ components:
             existing VM-create RPC.
           items:
             $ref: "#/components/schemas/HeartbeatDeclaredVM"
+        vm_tombstones:
+          type: array
+          description: |
+            VMs this node reported that the control plane has deleted:
+            the row is present and carries a deletion stamp. The agent
+            tears each one down, resolving the target by `vm_id` — never
+            by `vm_name`, because the delete released the VM's name guard
+            and the name may already belong to a different VM.
+
+            This is an outstanding-work queue, NOT a declaration: absence
+            from the list means "nothing to do right now" and never "tear
+            something down". It is re-sent on every heartbeat for as long
+            as the node keeps reporting the VM, so there is nothing to
+            acknowledge and a failed teardown simply retries on the next
+            tick.
+          items:
+            $ref: "#/components/schemas/HeartbeatVMTombstone"
         declared_networks:
           type: array
           description: |
@@ -6178,6 +6195,27 @@ components:
             Total number of the VNI's distinct flood-target VTEPs (remote
             nodes with an overlay IP). `established_peers < total_peers`
             signals a flood target up in the FDB but with no live tunnel.
+
+    HeartbeatVMTombstone:
+      type: object
+      description: |
+        One entry in HeartbeatResponse.vm_tombstones — a VM the control
+        plane has deleted that the reporting node still holds.
+      required: [vm_id, vm_name]
+      properties:
+        vm_id:
+          type: string
+          format: uuid
+          description: |
+            The deleted VM's id, and the only field that resolves the
+            teardown target.
+        vm_name:
+          type: string
+          description: |
+            The deleted VM's name, carried for operator-legible agent
+            logs only. It is never used to resolve the target: the
+            delete released the VM's name guard, so the name may already
+            belong to a different VM.
 
     HeartbeatDeclaredVM:
       type: object

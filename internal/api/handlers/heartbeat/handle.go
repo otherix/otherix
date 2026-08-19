@@ -110,6 +110,7 @@ func (h *Handler) Receive(w http.ResponseWriter, r *http.Request) {
 		ReceivedAt:             time.Now().UTC().Format(time.RFC3339Nano),
 		DeclaredPools:          outcome.declaredPools,
 		DeclaredVMs:            outcome.declaredVMs,
+		VMTombstones:           outcome.vmTombstones,
 		DeclaredNetworks:       outcome.declaredNetworks,
 		DeclaredWireGuardPeers: outcome.declaredWireGuardPeers,
 		SelfOverlayIP:          outcome.selfOverlayIP,
@@ -192,6 +193,7 @@ type heartbeatOutcome struct {
 	systemDisk             pressureTransitionKind
 	declaredPools          []declaredPool
 	declaredVMs            []declaredVM
+	vmTombstones           []vmTombstone
 	declaredNetworks       []declaredNetwork
 	declaredWireGuardPeers []declaredWireGuardPeer
 	declaredFDB            []declaredFDBEntry
@@ -247,7 +249,7 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 			return err
 		}
 		outcome.systemDisk = sysKind
-		if err := h.applyObservedReports(ctx, hp, agent.NodeID, body); err != nil {
+		if err := h.applyObservedReports(ctx, hp, agent.NodeID, body, &outcome); err != nil {
 			return err
 		}
 		if err := h.loadDeclared(ctx, hp, agent.NodeID, &outcome); err != nil {
@@ -277,10 +279,12 @@ func (h *Handler) project(ctx context.Context, agent *auth.Agent, body *requestB
 // health, pools, blob inventories, networks, wireguard) after the node-update
 // and pressure steps. Split out of project so that function's branching stays
 // under the gocyclo ceiling; the order is preserved from the inline sequence.
-func (h *Handler) applyObservedReports(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, body *requestBody) error {
-	if err := h.applyVMs(ctx, hp, nodeID, body.VMs); err != nil {
+func (h *Handler) applyObservedReports(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, body *requestBody, outcome *heartbeatOutcome) error {
+	tombstones, err := h.applyVMs(ctx, hp, nodeID, body.VMs)
+	if err != nil {
 		return err
 	}
+	outcome.vmTombstones = tombstones
 	if err := h.applyHealthChecks(ctx, hp, nodeID, body.HealthChecks); err != nil {
 		return err
 	}
@@ -1352,9 +1356,11 @@ func resolveMigration(ctx context.Context, hp store.HeartbeatProjection, nodeID 
 	return row.MigrationHost, row.MigrationPortRangeStart, row.MigrationPortRangeEnd, nil
 }
 
-func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []vmReport) error {
+// applyVMs projects the reported VM runtime and returns the teardown
+// tombstones for the VMs this node reported that the control plane has deleted.
+func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []vmReport) ([]vmTombstone, error) {
 	if len(reports) == 0 {
-		return nil
+		return nil, nil
 	}
 	ids := make([]uuid.UUID, 0, len(reports))
 	for _, r := range reports {
@@ -1362,7 +1368,7 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 	}
 	known, err := hp.FilterExistingVMIDs(ctx, ids)
 	if err != nil {
-		return fmt.Errorf("filter vm ids: %v", err)
+		return nil, fmt.Errorf("filter vm ids: %v", err)
 	}
 	knownSet := make(map[uuid.UUID]struct{}, len(known))
 	for _, id := range known {
@@ -1370,18 +1376,20 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 	}
 	pinned, err := hp.FilterVMIDsPinnedToNode(ctx, nodeID, ids)
 	if err != nil {
-		return fmt.Errorf("filter pinned vm ids: %v", err)
+		return nil, fmt.Errorf("filter pinned vm ids: %v", err)
 	}
 	pinnedSet := make(map[uuid.UUID]struct{}, len(pinned))
 	for _, id := range pinned {
 		pinnedSet[id] = struct{}{}
 	}
 
+	var unrecognised []vmReport
 	for _, r := range reports {
 		if _, ok := knownSet[r.VMUUID]; !ok {
 			h.log.WarnContext(ctx, "heartbeat references unknown vm; skipping",
 				slog.String("node_id", nodeID.String()),
 				slog.String("vm_uuid", r.VMUUID.String()))
+			unrecognised = append(unrecognised, r)
 			continue
 		}
 		// Placement-authority gate. current_node_id feeds the
@@ -1399,10 +1407,53 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 			continue
 		}
 		if err := h.applyVMReport(ctx, hp, nodeID, r); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return h.resolveVMTombstones(ctx, hp, nodeID, unrecognised), nil
+}
+
+// resolveVMTombstones turns the reported-but-unrecognised VM ids into teardown
+// signals. It emits one ONLY on a positive read: the row is present and carries
+// a deletion stamp, which is the durable trace of an explicit user delete.
+//
+// It deliberately does not treat "absent from knownSet" as the trigger.
+// FilterExistingVMIDs swallows per-row errors and admits only err == nil, so
+// its complement conflates {no row, soft-deleted row, transient read failure} -
+// a fail-open producer, and wiring a destructive action to one is exactly the
+// trap this design exists to avoid. knownSet is used only to skip the lookup
+// for VMs that are demonstrably live.
+//
+// Any read failure emits nothing and is logged: uncertainty resolves toward
+// leaving the guest running.
+func (h *Handler) resolveVMTombstones(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, unknown []vmReport) []vmTombstone {
+	if len(unknown) > store.VMTombstoneLookupCap {
+		h.log.WarnContext(ctx, "reported unknown vm ids exceed the tombstone lookup cap; resolving a prefix this tick",
+			slog.String("node_id", nodeID.String()),
+			slog.Int("reported", len(unknown)),
+			slog.Int("cap", store.VMTombstoneLookupCap))
+		unknown = unknown[:store.VMTombstoneLookupCap]
+	}
+	var out []vmTombstone
+	for _, r := range unknown {
+		deleted, name, err := hp.VMSoftDeleted(ctx, r.VMUUID)
+		if err != nil {
+			h.log.WarnContext(ctx, "vm tombstone lookup failed; not signalling teardown",
+				slog.String("node_id", nodeID.String()),
+				slog.String("vm_uuid", r.VMUUID.String()),
+				slog.String("error", err.Error()))
+			continue
+		}
+		if !deleted {
+			continue
+		}
+		h.log.InfoContext(ctx, "signalling teardown of a deleted vm the node still holds",
+			slog.String("node_id", nodeID.String()),
+			slog.String("vm_uuid", r.VMUUID.String()),
+			slog.String("vm_name", name))
+		out = append(out, vmTombstone{VMID: r.VMUUID, VMName: name})
+	}
+	return out
 }
 
 // applyVMReport upserts a single VM runtime row from one heartbeat vmReport. The
