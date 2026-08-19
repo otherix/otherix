@@ -31,6 +31,23 @@ const overlayWGDevice = "otwg0"
 // read unbounded before it is rejected.
 const nodeConnectMaxBody = 4 << 10
 
+// defaultNodeConnectCap bounds the concurrent CP splices one gateway carries.
+// The control plane opens one session per cold connection to a node behind it,
+// and its streaming proxies turn a single user request (a followed serial log,
+// for instance) into one long-lived session, so the count is user-driven even
+// though only the control plane dials this route. Steady state is a handful of
+// connections per node, so a few hundred is orders of magnitude above normal
+// while still bounding the descriptors and buffers one gateway can be made to
+// hold - and the gateway shares those descriptors with its other planes, whose
+// own caps would not otherwise protect them.
+const defaultNodeConnectCap = 256
+
+// nodeConnectSlotKey is the single accounting bucket the node-connect plane
+// uses. connectSlots keys per VM for the credential-gated splice; a node-connect
+// target is a NODE, so there is no second dimension to split on and both caps
+// collapse onto one total.
+const nodeConnectSlotKey = "node-connect"
+
 // NodeConnectDeps carries what the gateway CP-only /v1/connect-node splice needs.
 // The route is reached only by the control plane (RequireCPIdentity gates the
 // router it mounts on), so there is no per-request credential here; the security
@@ -62,6 +79,7 @@ type NodeConnectHandler struct {
 	isKnownNodeOverlayIP func(ip netip.Addr) bool
 	controlPort          int
 	dial                 func(ctx context.Context, network, addr string) (net.Conn, error)
+	slots                *connectSlots
 	log                  *slog.Logger
 }
 
@@ -82,6 +100,7 @@ func NewNodeConnectHandler(deps NodeConnectDeps) *NodeConnectHandler {
 		isKnownNodeOverlayIP: deps.IsKnownNodeOverlayIP,
 		controlPort:          deps.ControlPort,
 		dial:                 dial,
+		slots:                newConnectSlots(defaultNodeConnectCap, defaultNodeConnectCap),
 		log:                  log,
 	}
 }
@@ -95,9 +114,10 @@ type nodeConnectTarget struct {
 }
 
 // Connect handles POST /v1/connect-node. It validates the CP-supplied target
-// fail-closed (must be a known-node overlay IP on the control port), then hijacks
-// the inbound connection, dials the target over the overlay, and splices raw
-// bytes until either side closes or the session idles out.
+// fail-closed (must be a known-node overlay IP on the control port), takes a
+// concurrency slot, then hijacks the inbound connection, dials the target over
+// the overlay, and splices raw bytes until either side closes or the session
+// idles out.
 func (h *NodeConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	ip, port, ok := h.validateTarget(w, r)
 	if !ok {
@@ -106,6 +126,19 @@ func (h *NodeConnectHandler) Connect(w http.ResponseWriter, r *http.Request) {
 
 	// Rebuild the dial address from the validated values only.
 	target := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+
+	// Take a slot before the dial and release it on every exit path, exactly as
+	// the credential-gated splice does. Each session costs two goroutines, two
+	// descriptors and two buffers, and one is opened per control-plane connection,
+	// so an unbounded count is a gateway-wide exhaustion the other planes on this
+	// process would feel too. Refusing at the cap is transient and retryable; the
+	// caller sees the same 503 the sibling route returns.
+	if err := h.slots.acquire(nodeConnectSlotKey); err != nil {
+		response.WriteError(w, r, http.StatusServiceUnavailable,
+			response.CodeIngressUnavailable, "gateway connection capacity reached", nil)
+		return
+	}
+	defer h.slots.release(nodeConnectSlotKey)
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {

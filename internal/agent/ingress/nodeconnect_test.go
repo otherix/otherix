@@ -13,7 +13,9 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // failNodeDial is a node-connect dial seam that fails the test if it is ever
@@ -158,4 +160,61 @@ func rawNodeConnect(t *testing.T, srvAddr, body string) (net.Conn, *bufio.Reader
 		}
 	}
 	return c, br, status
+}
+
+// TestNodeConnect_CapRefusesBeyondLimit drives real spliced sessions through the
+// handler and proves the concurrency cap holds: with capacity for one session,
+// the second connect is refused with 503 before it dials, and closing the first
+// frees the slot for a later one. Without a cap a single caller can open
+// unbounded sessions - the CP turns one user request into one gateway splice -
+// and exhaust the gateway's descriptors, taking down its control path to every
+// node behind it.
+func TestNodeConnect_CapRefusesBeyondLimit(t *testing.T) {
+	echoAddr, _ := startEcho(t)
+
+	var dials atomic.Int32
+	h := NewNodeConnectHandler(NodeConnectDeps{
+		IsKnownNodeOverlayIP: func(ip netip.Addr) bool { return ip == netip.MustParseAddr("10.0.0.9") },
+		ControlPort:          9443,
+		dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			dials.Add(1)
+			return (&net.Dialer{}).DialContext(ctx, network, echoAddr)
+		},
+		Log: discardLogger(),
+	})
+	h.slots = newConnectSlots(1, 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(h.Connect))
+	t.Cleanup(srv.Close)
+	const target = `{"overlay_ip":"10.0.0.9","port":9443}`
+
+	first, _, status := rawNodeConnect(t, srv.Listener.Addr().String(), target)
+	if !strings.Contains(status, "200") {
+		t.Fatalf("first session status = %q, want 200", strings.TrimSpace(status))
+	}
+
+	second, _, status := rawNodeConnect(t, srv.Listener.Addr().String(), target)
+	_ = second.Close()
+	if !strings.Contains(status, "503") {
+		t.Errorf("second session status = %q, want 503 at the cap", strings.TrimSpace(status))
+	}
+	if got := dials.Load(); got != 1 {
+		t.Errorf("dials = %d, want 1 (a refusal at the cap must not dial)", got)
+	}
+
+	// Closing the held session releases the slot, so the cap throttles rather
+	// than latching the gateway shut.
+	_ = first.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		c, _, status := rawNodeConnect(t, srv.Listener.Addr().String(), target)
+		_ = c.Close()
+		if strings.Contains(status, "200") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot never freed after the held session closed; last status = %q", strings.TrimSpace(status))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
