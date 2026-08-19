@@ -6023,7 +6023,7 @@ components:
           description: |
             VMs this node reported that the control plane has deleted:
             the row is present and carries a deletion stamp. The agent
-            tears each one down, resolving the target by `vm_id` — never
+            tears each one down, resolving the target by `vm_id` - never
             by `vm_name`, because the delete released the VM's name guard
             and the name may already belong to a different VM.
 
@@ -6199,7 +6199,7 @@ components:
     HeartbeatVMTombstone:
       type: object
       description: |
-        One entry in HeartbeatResponse.vm_tombstones — a VM the control
+        One entry in HeartbeatResponse.vm_tombstones - a VM the control
         plane has deleted that the reporting node still holds.
       required: [vm_id, vm_name]
       properties:
