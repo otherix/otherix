@@ -5724,7 +5724,8 @@ components:
         One report in HeartbeatRequest.wireguard — the agent's observed
         WireGuard (`otwg0`) interface state (the overlay up-channel).
         `public_key` + `endpoint` are authoritative for CP redistribution
-        to peers; `listen_port` + `established_peers` are observability.
+        to peers; `listen_port` is observability. `established_peers` drives
+        relay wiring, whether the CP can dial the node, and placement.
       required: [public_key, endpoint, listen_port, reconciliation_status]
       properties:
         public_key:
@@ -5743,10 +5744,21 @@ components:
         established_peers:
           type: array
           description: |
-            Public keys of peers with which the agent currently has an
-            established WireGuard handshake (observability).
+            Node ids of the peers the agent currently has an established
+            WireGuard handshake with. Authoritative unless
+            `peers_unavailable` is true.
           items:
             type: string
+        peers_unavailable:
+          type: boolean
+          description: |
+            True when the agent could not observe its established peer set this
+            tick (the handshake read failed, or no heartbeat response has yet
+            delivered the peer identity map it resolves handshakes through). The
+            CP then PRESERVES the previously-reported `established_peers` instead
+            of overwriting it, so a transient blind tick does not read as "this
+            node reaches nobody". Absent or false means `established_peers` is
+            authoritative (an empty array clears the stored set).
         reconciliation_status:
           type: string
           enum: [pending, ready, failed]

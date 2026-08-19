@@ -83,15 +83,22 @@ type blobReport struct {
 }
 
 // wireGuardReport mirrors the agent's observed WG state. public_key + endpoint
-// are authoritative for redistribution; listen_port + established_peers are
-// observability. A nil report (agent without WG state) is skipped at ingest.
+// are authoritative for redistribution; listen_port is observability.
+// established_peers drives relay wiring, CP dialability and the placement
+// down-path gate. A nil report (agent without WG state) is skipped at ingest.
 type wireGuardReport struct {
-	PublicKey            string   `json:"public_key"`
-	Endpoint             string   `json:"endpoint"`
-	ListenPort           int32    `json:"listen_port"`
-	EstablishedPeers     []string `json:"established_peers,omitempty"`
-	ReconciliationStatus string   `json:"reconciliation_status"`
-	ReconciliationError  *string  `json:"reconciliation_error"`
+	PublicKey        string   `json:"public_key"`
+	Endpoint         string   `json:"endpoint"`
+	ListenPort       int32    `json:"listen_port"`
+	EstablishedPeers []string `json:"established_peers,omitempty"`
+	// PeersUnavailable is true when the agent could not observe its peer set this
+	// tick (the handshake read failed, or it has not yet received the pubkey ->
+	// node-id map it resolves handshakes through). The CP then PRESERVES the stored
+	// set instead of overwriting it, mirroring blobs_unavailable. Absent or false
+	// means established_peers is authoritative (an empty set clears the stored one).
+	PeersUnavailable     bool    `json:"peers_unavailable,omitempty"`
+	ReconciliationStatus string  `json:"reconciliation_status"`
+	ReconciliationError  *string `json:"reconciliation_error"`
 }
 
 // declaredWireGuardPeer is one peer in the fabric down-channel: another agent's

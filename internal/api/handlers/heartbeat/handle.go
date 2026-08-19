@@ -877,13 +877,19 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 		return nil
 	}
 	err := hp.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{
-		NodeID:               nodeID,
-		PublicKey:            rep.PublicKey,
-		Endpoint:             rep.Endpoint,
-		ListenPort:           rep.ListenPort,
-		EstablishedPeers:     rep.EstablishedPeers,
-		ReconciliationStatus: rep.ReconciliationStatus,
-		ReconciliationError:  rep.ReconciliationError,
+		NodeID:     nodeID,
+		PublicKey:  rep.PublicKey,
+		Endpoint:   rep.Endpoint,
+		ListenPort: rep.ListenPort,
+		// peers_unavailable means the agent could not OBSERVE its peer set this
+		// tick, not that it reaches nobody. Preserve the stored set: it is what the
+		// relay wiring, the CP dial route and the placement down-path gate all key
+		// on, so treating a blind tick as empty would blackhole the overlay and cut
+		// the CP's control path until the next heartbeat.
+		EstablishedPeers:         rep.EstablishedPeers,
+		PreserveEstablishedPeers: rep.PeersUnavailable,
+		ReconciliationStatus:     rep.ReconciliationStatus,
+		ReconciliationError:      rep.ReconciliationError,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrAgentWireguardPubkeyInUse) {

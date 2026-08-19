@@ -8,6 +8,7 @@ package heartbeat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,7 +21,11 @@ import (
 
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	"github.com/otherix/otherix/internal/agent/netfabric"
+	"github.com/otherix/otherix/internal/agent/reconciler"
+	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/etcd"
 	"github.com/otherix/otherix/internal/etcdstore"
 	"github.com/otherix/otherix/internal/store"
@@ -212,4 +217,97 @@ func mustOverlayIP(t *testing.T, s *etcdstore.Store, id uuid.UUID) netip.Addr {
 		t.Fatalf("read wg %s: %v", id, err)
 	}
 	return rec.OverlayIP
+}
+
+// TestWireGuardReportSeam_RestartedAgentKeepsRelay drives the REAL
+// report-then-project sequence across the agent/CP seam for a NAT'd node that
+// has just restarted: a fresh WireGuard reconciler (no heartbeat response
+// consumed yet, so it cannot resolve handshakes to node ids) builds its report,
+// the report crosses the wire as JSON, and the CP projection ingests it. The
+// stored peer set must survive, and with it the relay that carries the other
+// NAT'd node's traffic. Feeding established_peers to the projection directly
+// would bypass exactly the producer half this covers.
+func TestWireGuardReportSeam_RestartedAgentKeepsRelay(t *testing.T) {
+	s := freshStore(t)
+	ctx := context.Background()
+
+	keyA, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	pubA := keyA.PublicKey().String()
+
+	natA, natB, gw := uuid.New(), uuid.New(), uuid.New()
+	mustCreateNode(t, s, natA, "nat-a", false)
+	mustCreateNode(t, s, natB, "nat-b", false)
+	mustCreateNode(t, s, gw, "gw", true)
+	mustSetIngressEndpoint(t, s, gw, "https://gw.example:9444")
+
+	// Converged state: both NAT'd nodes hold a handshake with the gateway.
+	mustUpsertWG(t, s, natA, pubA, "", []string{gw.String()})
+	mustUpsertWG(t, s, natB, "pk-b", "", []string{gw.String()})
+	mustUpsertWG(t, s, gw, "pk-gw", "9.9.9.9:51820", []string{natA.String(), natB.String()})
+	overlayA := netip.PrefixFrom(mustOverlayIP(t, s, natA), 32).String()
+
+	// nat-a restarts: otwg0 and its kernel peers survive, but the reconciler's
+	// declared-peer snapshot is empty until the first heartbeat RESPONSE lands -
+	// which necessarily follows this REQUEST.
+	rec, err := reconciler.NewWireGuard(&netfabric.FakeFabric{
+		WireGuardPeerHandshakesResult: []netfabric.WGPeerHandshake{
+			{PublicKey: keyA.PublicKey(), LastHandshake: time.Now()},
+		},
+	}, keyA, config.WireGuardConfig{}, discardLogger(), time.Second)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+	wire, err := json.Marshal(rec.WireGuardReport())
+	if err != nil {
+		t.Fatalf("marshal agent report: %v", err)
+	}
+	var got wireGuardReport
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatalf("unmarshal into the CP receiver: %v", err)
+	}
+
+	h := &Handler{log: discardLogger()}
+	var declaredB []declaredWireGuardPeer
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		if e := h.applyWireguardReport(ctx, hp, natA, &got); e != nil {
+			return e
+		}
+		var e error
+		declaredB, e = h.loadDeclaredWireGuardPeers(ctx, hp, natB)
+		return e
+	}); err != nil {
+		t.Fatalf("run projection: %v", err)
+	}
+
+	stored, err := s.AgentWireguardByNodeID(ctx, natA)
+	if err != nil {
+		t.Fatalf("read back nat-a wireguard: %v", err)
+	}
+	if len(stored.EstablishedPeers) != 1 || stored.EstablishedPeers[0] != gw.String() {
+		t.Errorf("nat-a EstablishedPeers = %v, want [%s] preserved across the restart tick",
+			stored.EstablishedPeers, gw)
+	}
+	e := findPeer(declaredB, "pk-gw")
+	if e == nil {
+		t.Fatalf("nat-b lost its gateway entry: %+v", declaredB)
+	}
+	if !hasAllowed(e, overlayA) {
+		t.Errorf("nat-b gateway entry lost the relayed peer /32 %s: %+v", overlayA, e)
+	}
+}
+
+// mustSetIngressEndpoint records a gateway's self-reported ingress splicer URL,
+// the signal that its gateway plane is actually serving.
+func mustSetIngressEndpoint(t *testing.T, s *etcdstore.Store, id uuid.UUID, endpoint string) {
+	t.Helper()
+	if err := s.RunHeartbeatProjection(context.Background(), func(hp store.HeartbeatProjection) error {
+		return hp.UpdateNodeHeartbeat(context.Background(), store.UpdateNodeHeartbeatParams{
+			ID: id, IngressAdvertisedEndpoint: endpoint,
+		})
+	}); err != nil {
+		t.Fatalf("set ingress endpoint on %s: %v", id, err)
+	}
 }

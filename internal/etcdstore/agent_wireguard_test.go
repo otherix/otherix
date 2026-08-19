@@ -171,3 +171,46 @@ func TestAgentWireguardByNodeIDNotFound(t *testing.T) {
 		t.Errorf("err = %v, want store.ErrNotFound", err)
 	}
 }
+
+func TestAgentWireguardPreserveEstablishedPeers(t *testing.T) {
+	ctx := context.Background()
+	s, _ := startStore(t)
+	node := uuid.New()
+	peer := uuid.New().String()
+	if err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{
+		NodeID: node, PublicKey: "pk", EstablishedPeers: []string{peer},
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	// The agent could not observe its peer set this tick: every other field still
+	// applies, the peer set is left alone.
+	if err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{
+		NodeID: node, PublicKey: "pk", ListenPort: 51821,
+		EstablishedPeers: nil, PreserveEstablishedPeers: true,
+	}); err != nil {
+		t.Fatalf("preserve upsert: %v", err)
+	}
+	rec, err := s.AgentWireguardByNodeID(ctx, node)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if len(rec.EstablishedPeers) != 1 || rec.EstablishedPeers[0] != peer {
+		t.Errorf("EstablishedPeers = %v, want [%s] preserved", rec.EstablishedPeers, peer)
+	}
+	if rec.ListenPort != 51821 {
+		t.Errorf("ListenPort = %d, want 51821 (other fields still apply)", rec.ListenPort)
+	}
+	// Without the flag an empty report is authoritative and clears the set.
+	if err := s.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{
+		NodeID: node, PublicKey: "pk", EstablishedPeers: nil,
+	}); err != nil {
+		t.Fatalf("clearing upsert: %v", err)
+	}
+	rec, err = s.AgentWireguardByNodeID(ctx, node)
+	if err != nil {
+		t.Fatalf("read back after clear: %v", err)
+	}
+	if len(rec.EstablishedPeers) != 0 {
+		t.Errorf("EstablishedPeers = %v, want cleared by an authoritative empty report", rec.EstablishedPeers)
+	}
+}

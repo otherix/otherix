@@ -238,8 +238,14 @@ func TestWireGuardReportEstablishedStaleAndZero(t *testing.T) {
 			{NodeID: "zero", PublicKey: zeroPeer.PublicKey().String()},
 		},
 	})
-	if got := r.WireGuardReport().EstablishedPeers; len(got) != 0 {
+	rep := r.WireGuardReport()
+	if got := rep.EstablishedPeers; len(got) != 0 {
 		t.Errorf("EstablishedPeers = %v, want none (stale + zero excluded)", got)
+	}
+	// The declared peer set is known, so an empty result is a genuine observation:
+	// the CP must be free to clear the stored set.
+	if rep.PeersUnavailable {
+		t.Errorf("PeersUnavailable = true, want false (the declared peer set is known)")
 	}
 }
 
@@ -254,6 +260,35 @@ func TestWireGuardReportEstablishedFabricError(t *testing.T) {
 	}
 	if len(rep.EstablishedPeers) != 0 {
 		t.Errorf("EstablishedPeers = %v, want none on fabric error", rep.EstablishedPeers)
+	}
+	// A fabric read error means "unknown", not "none": the flag tells the CP to
+	// preserve the stored set instead of clearing it.
+	if !rep.PeersUnavailable {
+		t.Errorf("PeersUnavailable = false, want true on a fabric read error")
+	}
+}
+
+func TestWireGuardReportPeersUnavailableBeforeFirstResponse(t *testing.T) {
+	// The pubkey -> node-id map arrives only in a heartbeat RESPONSE, so the very
+	// first REQUEST after an agent start has no snapshot to map handshakes with -
+	// even though otwg0 and its kernel peers survived the restart. Reporting an
+	// empty set there would look like "this node reaches nobody"; the flag marks
+	// it unknown so the CP preserves what it has.
+	key, _ := wgtypes.GeneratePrivateKey()
+	peerKey, _ := wgtypes.GeneratePrivateKey()
+	r, _ := NewWireGuard(&netfabric.FakeFabric{
+		WireGuardPeerHandshakesResult: []netfabric.WGPeerHandshake{
+			{PublicKey: peerKey.PublicKey(), LastHandshake: time.Unix(1000, 0)},
+		},
+	}, key, config.WireGuardConfig{}, discardLogger(), time.Second)
+	r.now = func() time.Time { return time.Unix(1100, 0) }
+
+	rep := r.WireGuardReport()
+	if !rep.PeersUnavailable {
+		t.Errorf("PeersUnavailable = false, want true before the first heartbeat response")
+	}
+	if len(rep.EstablishedPeers) != 0 {
+		t.Errorf("EstablishedPeers = %v, want none with no declared peer set", rep.EstablishedPeers)
 	}
 }
 

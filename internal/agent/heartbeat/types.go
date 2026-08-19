@@ -59,16 +59,25 @@ type Report struct {
 
 // WireGuardReport is the agent's observed WG interface state (the heartbeat
 // up-channel). PublicKey + Endpoint are authoritative for CP redistribution;
-// ListenPort + EstablishedPeers are observability. ReconciliationStatus
-// (pending/ready/failed) + ReconciliationError surface the outcome of the WG
-// reconciler's last pass so an otwg0 failure is visible like a bridge failure.
+// ListenPort is observability. EstablishedPeers is load-bearing: the CP wires
+// the relay topology, decides whether it can dial this node, and gates placement
+// on it. ReconciliationStatus (pending/ready/failed) + ReconciliationError
+// surface the outcome of the WG reconciler's last pass so an otwg0 failure is
+// visible like a bridge failure.
 type WireGuardReport struct {
-	PublicKey            string   `json:"public_key"`
-	Endpoint             string   `json:"endpoint"`
-	ListenPort           int32    `json:"listen_port"`
-	EstablishedPeers     []string `json:"established_peers,omitempty"`
-	ReconciliationStatus string   `json:"reconciliation_status"`
-	ReconciliationError  *string  `json:"reconciliation_error"`
+	PublicKey        string   `json:"public_key"`
+	Endpoint         string   `json:"endpoint"`
+	ListenPort       int32    `json:"listen_port"`
+	EstablishedPeers []string `json:"established_peers,omitempty"`
+	// PeersUnavailable is true when the agent could not OBSERVE its established
+	// peer set this tick - the handshake read failed, or no heartbeat response has
+	// delivered the pubkey -> node-id map the observation is resolved through. The
+	// CP then preserves the stored set rather than clearing it (fail-closed,
+	// mirrors Report.BlobsUnavailable). A genuinely empty set with the flag unset
+	// still clears, so a truly isolated node cannot look reachable forever.
+	PeersUnavailable     bool    `json:"peers_unavailable,omitempty"`
+	ReconciliationStatus string  `json:"reconciliation_status"`
+	ReconciliationError  *string `json:"reconciliation_error"`
 }
 
 // DeclaredWireGuardPeer is one other agent the CP wants in this agent's WG mesh
