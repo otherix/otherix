@@ -100,3 +100,82 @@ func TestProjectVMLifecycleDoesNotResurrectADeletedVM(t *testing.T) {
 		t.Errorf("stop task = (status %v, finished %v), want success + finished", task.Status, task.FinishedAt)
 	}
 }
+
+// TestProjectVMLifecycleRetriesAStaleLiveVMRow drives the same read-to-commit
+// window against a VM that is still live: an unrelated writer bumps the row
+// between the read and the commit, so the desired_phase put loses its compare.
+// The projection is the only writer of desired_phase on the lifecycle path, so
+// the intent must be re-applied to the re-read row, not dropped - a dropped put
+// leaves the agent's reconciler driving the guest back to its previous phase.
+// The runtime phase and the task finalize ride the losing branch and must land
+// as well.
+func TestProjectVMLifecycleRetriesAStaleLiveVMRow(t *testing.T) {
+	s, _ := FreshStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	vm := store.VM{
+		ID: uuid.New(), OwnerID: uuid.New(), Name: "vm-" + uuid.NewString()[:8],
+		DesiredPhase: store.VmDesiredPhaseRunning, Architecture: store.CpuArchAmd64,
+		CpuCores: 2, MemoryMib: 2048, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.c.PutJSON(ctx, vmKey(vm.ID), vm); err != nil {
+		t.Fatalf("seed vm: %v", err)
+	}
+	nodeID := uuid.New()
+	if err := s.c.PutJSON(ctx, vmRuntimeKey(vm.ID), store.VMRuntime{
+		VmID: vm.ID, CurrentNodeID: &nodeID, Phase: store.VmPhaseRunning, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed vm runtime: %v", err)
+	}
+	stopTask := seedLifecycleTask(t, s, "vm.stop", vm.ID)
+
+	// The snapshot and revision a running `vm stop` projection holds.
+	snap, rev, err := s.vmWithRev(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("vmWithRev: %v", err)
+	}
+
+	// An unrelated writer bumps the row, staling the snapshot without deleting it.
+	pinned := uuid.New()
+	live := snap
+	live.PinnedNodeID = &pinned
+	if err := s.c.PutJSON(ctx, vmKey(vm.ID), live); err != nil {
+		t.Fatalf("bump vm row: %v", err)
+	}
+
+	// The stop projection commits afterwards, still holding the pre-bump row.
+	snap.DesiredPhase = store.VmDesiredPhaseStopped
+	if err := s.projectVMLifecycle(ctx, vm.ID, &snap, rev, store.VmPhaseStopped,
+		store.UpdateTaskFinalizedParams{ID: stopTask, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("projectVMLifecycle: %v", err)
+	}
+
+	got, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if got.DesiredPhase != store.VmDesiredPhaseStopped {
+		t.Errorf("desired_phase = %v, want %v: the lifecycle projection dropped the operator's intent", got.DesiredPhase, store.VmDesiredPhaseStopped)
+	}
+	if got.PinnedNodeID == nil || *got.PinnedNodeID != pinned {
+		t.Errorf("pinned_node_id = %v, want %v: the retry must re-apply intent onto the re-read row", got.PinnedNodeID, pinned)
+	}
+
+	rt, err := s.VMRuntimeByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMRuntimeByID: %v", err)
+	}
+	if rt.Phase != store.VmPhaseStopped {
+		t.Errorf("runtime phase = %v, want %v", rt.Phase, store.VmPhaseStopped)
+	}
+
+	task, err := s.TaskByID(ctx, stopTask)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
+		t.Errorf("stop task = (status %v, finished %v), want success + finished", task.Status, task.FinishedAt)
+	}
+}
