@@ -928,6 +928,10 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 		PublishedListeners: pubRec,
 		Migration:          cfg.Migration,
 		QEMU:               cfg.QEMU,
+		// The CP composes a gateway splice target for this node from the port its
+		// control listener binds (the same port the overlay control listener uses),
+		// so it must be reported rather than inferred from the advertised endpoint.
+		ControlListenPort: int32(controlListenPort(cfg.Server.Listen)), //nolint:gosec // controlListenPort returns a TCP port, always well below 2^31
 	}
 	// The image cache tier store may be nil when no artifacts root is
 	// configured; only wire the adapter when present so it never dereferences a

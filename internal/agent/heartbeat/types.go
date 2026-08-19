@@ -55,6 +55,12 @@ type Report struct {
 	// otherwise. The CP preserves the last non-empty value, so a transient empty
 	// tick never drops the node out of ingress gateway selection.
 	IngressAdvertisedEndpoint string `json:"ingress_advertised_endpoint,omitempty"`
+	// ControlListenPort is the port this agent binds its mTLS control listener on.
+	// The CP needs it to compose a gateway splice target for a NAT'd node: the
+	// node's overlay control listener binds this port, and a gateway accepts a
+	// splice target only on the port IT listens on, so the CP refuses to route
+	// when the two disagree instead of composing a target that is always refused.
+	ControlListenPort int32 `json:"control_listen_port,omitempty"`
 }
 
 // WireGuardReport is the agent's observed WG interface state (the heartbeat

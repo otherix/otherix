@@ -36,6 +36,24 @@ func seedWG(t *testing.T, s *etcdstore.Store, nodeID uuid.UUID, endpoint string,
 	}
 }
 
+// seedControlPort records a node's self-reported mTLS control listener port, the
+// port the CP composes a gateway splice target from. Every real node reports one
+// on its first heartbeat.
+func seedControlPort(t *testing.T, s *etcdstore.Store, nodeID uuid.UUID, port int32) {
+	t.Helper()
+	ctx := context.Background()
+	err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		return hp.UpdateNodeHeartbeat(ctx, store.UpdateNodeHeartbeatParams{ID: nodeID, ControlListenPort: port})
+	})
+	if err != nil {
+		t.Fatalf("seedControlPort(%v): %v", nodeID, err)
+	}
+}
+
+// clusterControlPort is the uniform agent control-listener port these fixtures
+// use, matching the agent config default.
+const clusterControlPort = int32(9443)
+
 // seedWGStaleGateway seeds a NAT'd node whose own established peers list gateway
 // but whose report is backdated by age, so the down-path freshness bound can be
 // exercised. It writes through the normal upsert (to allocate the overlay index),
@@ -81,6 +99,7 @@ func TestDownPathGate_TeethNATdNodeListsNoGateway(t *testing.T) {
 	s, _ := startStore(t)
 	poolName := uniquePoolName("downpath-teeth")
 	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
+	seedControlPort(t, s, natd, clusterControlPort)
 	seedWG(t, s, natd, "", nil) // NAT'd, own peers list no gateway
 	// A public gateway exists, but the NAT'd node does not list it in its own
 	// established peers, so the CP resolver would find no route.
@@ -99,6 +118,8 @@ func TestDownPathGate_ReachableNATdNode(t *testing.T) {
 	poolName := uniquePoolName("downpath-reach")
 	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
 	gw := mkGatewayNodeNoPool(t, s, "gw")
+	seedControlPort(t, s, natd, clusterControlPort)
+	seedControlPort(t, s, gw, clusterControlPort)
 	seedWG(t, s, natd, "", []string{gw.String()}) // own peers list the public gateway
 
 	if !eligibleIDs(t, s, poolName)[natd] {
@@ -114,6 +135,8 @@ func TestDownPathGate_StaleOwnReport(t *testing.T) {
 	poolName := uniquePoolName("downpath-stale")
 	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
 	gw := mkGatewayNodeNoPool(t, s, "gw")
+	seedControlPort(t, s, natd, clusterControlPort)
+	seedControlPort(t, s, gw, clusterControlPort)
 	// Default DownPathStaleness is 90s; backdate the node's own report well past it.
 	seedWGStaleGateway(t, s, c, natd, gw, 2*time.Minute)
 
@@ -130,6 +153,7 @@ func TestDownPathGate_DoesNotFlipNodeHealth(t *testing.T) {
 	ctx := context.Background()
 	poolName := uniquePoolName("downpath-orth")
 	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
+	seedControlPort(t, s, natd, clusterControlPort)
 	seedWG(t, s, natd, "", nil) // NAT'd, lists no gateway -> down-path dead
 
 	_ = eligibleIDs(t, s, poolName) // exercise the gate
@@ -191,9 +215,29 @@ func TestDownPathGate_GatewayWithoutIngressEndpoint(t *testing.T) {
 	if _, err := s.UncordonNode(ctx, gwp.ID); err != nil {
 		t.Fatalf("UncordonNode(gateway): %v", err)
 	}
+	seedControlPort(t, s, natd, clusterControlPort)
+	seedControlPort(t, s, gwp.ID, clusterControlPort)
 	seedWG(t, s, natd, "", []string{gwp.ID.String()})
 
 	if eligibleIDs(t, s, poolName)[natd] {
 		t.Errorf("NAT'd node %v reaching only a gateway that serves no gateway plane must not be a placement candidate", natd)
+	}
+}
+
+// TestDownPathGate_ControlPortDisagreement excludes a NAT'd node whose control
+// listener port differs from its only gateway's: the gateway refuses a splice
+// target on any other port, so the CP could never drive that node. Without the
+// check the node would look schedulable and every VM placed on it would fail.
+func TestDownPathGate_ControlPortDisagreement(t *testing.T) {
+	s, _ := startStore(t)
+	poolName := uniquePoolName("downpath-portmismatch")
+	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
+	gw := mkGatewayNodeNoPool(t, s, "gw")
+	seedControlPort(t, s, natd, clusterControlPort+1)
+	seedControlPort(t, s, gw, clusterControlPort)
+	seedWG(t, s, natd, "", []string{gw.String()})
+
+	if eligibleIDs(t, s, poolName)[natd] {
+		t.Errorf("NAT'd node %v whose control port differs from its gateway's must not be a placement candidate", natd)
 	}
 }

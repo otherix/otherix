@@ -222,6 +222,11 @@ func buildGatewaySender(ctx context.Context, cfg *config.AgentConfig, nodeName s
 		VMs:       noVMs{},
 		Networks:  netRec,
 		WireGuard: wgRec,
+		// A standalone gateway is the relay hub the CP splices through: it accepts a
+		// splice target only on the control port it listens on, so the CP needs that
+		// port reported to compose one and to refuse a mismatched route.
+		ControlListenPort:         int32(controlListenPort(cfg.Server.Listen)), //nolint:gosec // controlListenPort returns a TCP port, always well below 2^31
+		IngressAdvertisedEndpoint: cfg.Gateway.AdvertisedEndpoint,
 	})
 	if err != nil {
 		log.Warn("heartbeat disabled: collector init failed", "error", err.Error())

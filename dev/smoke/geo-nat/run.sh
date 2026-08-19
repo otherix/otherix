@@ -23,18 +23,13 @@
 # on node-1 and node-2 forces all of their inter-site traffic through the public
 # gateway - the functional essence of CGNAT, no nested namespaces required.
 #
-# Dev-stack fixture note (why node-2 is repatched): a real operator bootstraps a
-# NAT'd node with an advertised CONTROL endpoint on the cluster-uniform control
-# port (9443). The dev seed instead points each node's advertised endpoint at a
+# Dev-stack note: the dev seed points each node's advertised endpoint at a
 # DISTINCT per-node Lima host-forward port (node-1 :9443, node-2 :9444, node-3
-# :9445) so the host can reach each node directly in the normal PUBLIC stack. The
-# gateway splice validates the CP-supplied target against its own (uniform)
-# control port, and every node's overlay control listener binds that same port,
-# so a NAT'd target must advertise :9443. node-1 already does; node-2's CP-side
-# advertised endpoint is repatched from :9444 to :9443 here - a one-field,
-# reversible edit of the embedded dev etcd that emulates a correctly
-# geo-bootstrapped node without a destructive delete + re-bootstrap. Only the port
-# is used for the splice target; the host is never dialled for a NAT'd node.
+# :9445) so the host can reach each node directly in the normal PUBLIC stack.
+# That is deliberately irrelevant here: a NAT'd node's advertised endpoint is
+# never dialled, and the CP composes the splice target from the control listener
+# port each agent REPORTS (a uniform 9443 across the dev stack), which is also
+# the only port a gateway accepts a target on.
 #
 # PREREQUISITES: a fresh three-node Lima dev stack built + deployed from the
 # CURRENT tree (the co-located gateway must serve /v1/connect-node, which older
@@ -59,9 +54,7 @@ NODE1="node-1"; NODE2="node-2"; GW="node-3"   # node-1/2 NAT'd, node-3 public ga
 NET="geonat-smoke"                            # fixed; delete-firsted on start
 IMAGE_URL="${IMAGE_URL:-${SMOKE_IMAGE_URL}}"
 ARCH="${ARCH:-${SMOKE_ARCH}}"
-CONTROL_PORT="9443"                           # cluster-uniform agent control port
 GW_INGRESS_PORT="9444"                         # co-located gateway ingress listener port
-ETCD="${ETCD:-http://127.0.0.1:2379}"          # embedded dev etcd (plain HTTP, dev only)
 
 CONVERGE_WAIT="${CONVERGE_WAIT:-180}"          # mesh + relay wiring
 RELAY_PING_WAIT="${RELAY_PING_WAIT:-60}"       # node-level overlay ping through the relay
@@ -83,9 +76,6 @@ restart_node() { run_on "$(smoke_handle "$1")" sudo systemctl restart otherix-ag
 node_ip() { run_on "$(smoke_handle "$1")" sh -c "ip -4 -o addr show | grep -oE '192\.168\.[0-9]+\.[0-9]+' | head -1"; }
 node_status() { otx node get "$1" --output json 2>/dev/null | jq -r '.status'; }
 overlay_ip()  { otx node get "$1" --output json 2>/dev/null | jq -r '.wireguard.overlay_ip' | cut -d/ -f1; }
-node_id_of()  { otx node get "$1" --output json 2>/dev/null | jq -r '.id'; }
-etcdget() { etcdctl --endpoints="$ETCD" get "$1" --print-value-only 2>/dev/null; }
-etcdput() { etcdctl --endpoints="$ETCD" put "$1" "$2" >/dev/null 2>&1; }
 
 # back up agent.yaml once per node so a re-run never stacks edits, then work from
 # the clean copy.
@@ -122,21 +112,6 @@ make_gateway() {
   run_on "$h" sudo rm -f /var/lib/otherix/wg-gateway/private.key >/dev/null 2>&1 || true
 }
 
-# repatch_advertised_port IDX PORT - rewrite the node's CP-side AdvertisedEndpoint
-# port in the embedded dev etcd (see the fixture note in the header). Returns the
-# ORIGINAL endpoint on stdout so the caller can restore it.
-repatch_advertised_port() {
-  local name="$1" port="$2" id key row orig new
-  id="$(node_id_of "$name")"; [ -n "$id" ] && [ "$id" != "null" ] || { echo ""; return 1; }
-  key="/otherix/nodes/${id}"
-  row="$(etcdget "$key")"; [ -n "$row" ] || { echo ""; return 1; }
-  orig="$(echo "$row" | jq -r '.AdvertisedEndpoint')"
-  new="$(echo "$row" | jq -c --arg e "https://127.0.0.1:${port}" '.AdvertisedEndpoint=$e')"
-  etcdput "$key" "$new" || { echo ""; return 1; }
-  echo "$orig"
-}
-
-NODE2_ORIG_ENDPOINT=""
 GATEWAY_ENABLED=0
 cleanup() {
   echo "--- cleanup ---"
@@ -144,15 +119,6 @@ cleanup() {
   otx vm delete "${NET}-b" --wait --force >/dev/null 2>&1 || true
   otx vm delete "${NET}-gate" --wait --force >/dev/null 2>&1 || true
   otx network delete "$NET" --force >/dev/null 2>&1 || true
-  # restore node-2's advertised endpoint (best-effort)
-  if [ -n "$NODE2_ORIG_ENDPOINT" ]; then
-    local id; id="$(node_id_of "$NODE2")"
-    if [ -n "$id" ] && [ "$id" != "null" ]; then
-      local row; row="$(etcdget "/otherix/nodes/${id}")"
-      [ -n "$row" ] && etcdput "/otherix/nodes/${id}" \
-        "$(echo "$row" | jq -c --arg e "$NODE2_ORIG_ENDPOINT" '.AdvertisedEndpoint=$e')"
-    fi
-  fi
   [ "$GATEWAY_ENABLED" = 1 ] && otx node gateway disable "$GW" >/dev/null 2>&1 || true
   restore_yaml 1; restore_yaml 2; restore_yaml 3
   restart_node 1 >/dev/null 2>&1 || true
@@ -166,9 +132,7 @@ trap cleanup EXIT
 echo "=== geo-nat smoke: preconditions ==="
 [ "${SMOKE_PLATFORM}" = "lima" ] || fail "geo-nat smoke is Lima-only (NAT emulation relies on the Lima topology); netns CGNAT is a separate CI smoke"
 command -v jq >/dev/null || fail "jq is required"
-command -v etcdctl >/dev/null || fail "etcdctl is required (dev etcd fixture)"
 cp_ready || fail "CP not up on :8080 (run make local-dev-deploy)"
-etcdget /otherix/nodes >/dev/null 2>&1 || etcdctl --endpoints="$ETCD" endpoint health >/dev/null 2>&1 || fail "dev etcd not reachable at $ETCD"
 for n in "$NODE1" "$NODE2" "$GW"; do
   [ "$(node_status "$n")" = "ready" ] || fail "$n not ready; run make local-dev-deploy"
 done
@@ -180,11 +144,8 @@ cleanup >/dev/null 2>&1 || true   # clear stale VMs/net from a prior run (keeps 
 make_gateway; GATEWAY_ENABLED=1
 make_natd 1
 make_natd 2
-NODE2_ORIG_ENDPOINT="$(repatch_advertised_port "$NODE2" "$CONTROL_PORT")" \
-  || fail "could not repatch $NODE2 advertised port in etcd"
-info "$NODE2 advertised endpoint: ${NODE2_ORIG_ENDPOINT} -> https://127.0.0.1:${CONTROL_PORT}"
 restart_node 1; restart_node 2; restart_node 3
-pass "$GW is the co-located gateway; $NODE1 + $NODE2 are NAT'd (advertised control :${CONTROL_PORT})"
+pass "$GW is the co-located gateway; $NODE1 + $NODE2 are NAT'd"
 
 # --- step 2: mesh + relay convergence, node-level relay ping -----------
 echo "=== step 2: wait for the hub-and-spoke relay to wire, then ping node->node through it ==="
@@ -295,7 +256,7 @@ else
 fi
 # The gate must NOT flip the node's own status - it stays ready (orthogonal to health).
 [ "$(node_status "$NODE1")" = "ready" ] || fail "down-path gate wrongly changed $NODE1 status (should stay ready)"
-pass "down-path gate excluded $NODE1 while its status stayed ready; re-enabling gateway"
+pass "down-path gate excluded $NODE1 while its status stayed ready"
 otx node gateway disable "$GW" >/dev/null 2>&1 || true   # idempotent no-op if already off
 otx vm delete "${NET}-gate" --wait --force >/dev/null 2>&1 || true
 

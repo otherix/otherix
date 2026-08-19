@@ -50,6 +50,11 @@ type requestBody struct {
 	// overwrites, an empty/absent value leaves the stored endpoint untouched so a
 	// transient empty tick never drops the node out of gateway selection.
 	IngressAdvertisedEndpoint string `json:"ingress_advertised_endpoint,omitempty"`
+	// ControlListenPort is the port the node's agent binds its mTLS control
+	// listener on. Folded into node.ControlListenPort preserve-on-zero; the route
+	// resolver composes a gateway splice target from it and refuses a route whose
+	// two ends listen on different ports.
+	ControlListenPort int32 `json:"control_listen_port,omitempty"`
 }
 
 // healthCheckReport mirrors HealthCheckReport on the agent side (the manual-sync

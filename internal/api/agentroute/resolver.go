@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -82,21 +83,34 @@ func (r *Resolver) Resolve(nodeName string) (agentclient.AgentRoute, error) {
 		return agentclient.AgentRoute{Direct: endpointHostPort(node.AdvertisedEndpoint)}, nil
 	}
 
-	gw, ok := r.selectGateway(ctx, wg)
+	// A gateway only splices to a target on the control port IT listens on, so a
+	// route can be composed only for a target that listens on that same port. An
+	// unreported port (zero) is unknown, never a default: guessing one would
+	// compose a target the gateway refuses permanently, with no diagnostic on this
+	// side. Both conditions fold into the gateway selection so the error names the
+	// real state.
+	if node.ControlListenPort <= 0 {
+		return agentclient.AgentRoute{}, fmt.Errorf(
+			"agentroute: node %q is NAT'd and has not reported its control listener port", nodeName)
+	}
+	gw, ok := r.selectGateway(ctx, wg, node.ControlListenPort)
 	if !ok {
-		return agentclient.AgentRoute{}, fmt.Errorf("agentroute: node %q is NAT'd and no reachable gateway", nodeName)
+		return agentclient.AgentRoute{}, fmt.Errorf(
+			"agentroute: node %q is NAT'd and no reachable gateway serves the gateway plane on control port %d",
+			nodeName, node.ControlListenPort)
 	}
 	return agentclient.AgentRoute{
 		GatewayDial:   endpointHostPort(gw.AdvertisedEndpoint),
 		GatewaySAN:    auth.NodeIdentitySAN(gw.Name),
-		TargetOverlay: net.JoinHostPort(wg.OverlayIP.String(), controlPort(node.AdvertisedEndpoint)),
+		TargetOverlay: net.JoinHostPort(wg.OverlayIP.String(), strconv.Itoa(int(node.ControlListenPort))),
 	}, nil
 }
 
 // selectGateway picks the lowest-UUID gateway-role node the NAT'd node currently
 // reaches (in its EstablishedPeers) that the CP can dial (has an advertised
-// endpoint) and that actually serves the gateway plane. Empty intersection =>
-// (_, false): no route is wired.
+// endpoint), that actually serves the gateway plane, and that listens on the
+// same control port as the target (controlPort) - the only port it accepts a
+// splice target on. Empty intersection => (_, false): no route is wired.
 //
 // The gateway role is a CP-side bit an operator can set on any node; whether the
 // node's agent serves the gateway plane is decided from its own config, and the
@@ -104,7 +118,7 @@ func (r *Resolver) Resolve(nodeName string) (agentclient.AgentRoute, error) {
 // the plane is up). Without that check the CP would splice to a node that never
 // mounted the splice route - a permanent 404 on every call to the NAT'd nodes
 // behind it. Skipping such a node instead makes the failure loud and localised.
-func (r *Resolver) selectGateway(ctx context.Context, wg store.AgentWireguard) (store.Node, bool) {
+func (r *Resolver) selectGateway(ctx context.Context, wg store.AgentWireguard, controlPort int32) (store.Node, bool) {
 	reached := make(map[uuid.UUID]bool, len(wg.EstablishedPeers))
 	for _, s := range wg.EstablishedPeers {
 		if id, err := uuid.Parse(s); err == nil {
@@ -124,6 +138,9 @@ func (r *Resolver) selectGateway(ctx context.Context, wg store.AgentWireguard) (
 		if !n.GatewayRole || n.AdvertisedEndpoint == "" || n.IngressAdvertisedEndpoint == "" || !reached[n.ID] {
 			continue
 		}
+		if n.ControlListenPort != controlPort {
+			continue
+		}
 		if !found || bytes.Compare(n.ID[:], best.ID[:]) < 0 {
 			best, found = n, true
 		}
@@ -132,10 +149,9 @@ func (r *Resolver) selectGateway(ctx context.Context, wg store.AgentWireguard) (
 }
 
 // endpointHostPort extracts host:port from an https endpoint URL, defaulting the
-// port to the agent control-listener default (defaultControlPort) when absent -
-// matching controlPort, so a port-less endpoint dials the same port both helpers
-// assume. A URL that will not parse is returned unchanged so the dial surfaces
-// the real error rather than a rewritten one.
+// port to the agent control-listener default (defaultControlPort) when absent.
+// A URL that will not parse is returned unchanged so the dial surfaces the real
+// error rather than a rewritten one.
 func endpointHostPort(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
@@ -145,13 +161,4 @@ func endpointHostPort(rawURL string) string {
 		return net.JoinHostPort(u.Hostname(), defaultControlPort)
 	}
 	return u.Host
-}
-
-// controlPort returns the port of the node's advertised control endpoint,
-// falling back to the agent control-listener default.
-func controlPort(rawURL string) string {
-	if u, err := url.Parse(rawURL); err == nil && u.Port() != "" {
-		return u.Port()
-	}
-	return defaultControlPort
 }

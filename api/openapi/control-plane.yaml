@@ -5717,6 +5717,17 @@ components:
             Optional; absent when the node runs no declared health checks.
           items:
             $ref: "#/components/schemas/HeartbeatHealthCheckReport"
+        control_listen_port:
+          type: integer
+          description: |
+            The port the agent binds its mTLS control listener on. The CP needs
+            it to reach a node that sits behind NAT: such a node is driven
+            through a gateway that splices to the node's overlay address, and a
+            gateway accepts a splice target only on the port it itself listens
+            on. The CP therefore refuses to route when the two ends report
+            different ports rather than composing a target that is always
+            rejected. Applied preserve-on-zero: an absent value leaves the last
+            reported port in place.
 
     HeartbeatWireGuardReport:
       type: object

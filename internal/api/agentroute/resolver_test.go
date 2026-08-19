@@ -134,10 +134,10 @@ func TestResolve_UnknownNode_ZeroRoute(t *testing.T) {
 }
 
 func TestResolve_NATd_RoutesThroughLowestUUIDGateway(t *testing.T) {
-	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443"}
+	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443", ControlListenPort: 9443}
 	// Two reachable gateways; the lower-UUID one must win.
-	gwHi := store.Node{ID: uuid.MustParse("ffffffff-0000-0000-0000-000000000000"), Name: "gw-hi", GatewayRole: true, AdvertisedEndpoint: "https://hi.gw:9443", IngressAdvertisedEndpoint: "https://hi.gw:9444"}
-	gwLo := store.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Name: "gw-lo", GatewayRole: true, AdvertisedEndpoint: "https://lo.gw:9443", IngressAdvertisedEndpoint: "https://lo.gw:9444"}
+	gwHi := store.Node{ID: uuid.MustParse("ffffffff-0000-0000-0000-000000000000"), Name: "gw-hi", GatewayRole: true, AdvertisedEndpoint: "https://hi.gw:9443", IngressAdvertisedEndpoint: "https://hi.gw:9444", ControlListenPort: 9443}
+	gwLo := store.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Name: "gw-lo", GatewayRole: true, AdvertisedEndpoint: "https://lo.gw:9443", IngressAdvertisedEndpoint: "https://lo.gw:9444", ControlListenPort: 9443}
 	f := newReader(natd, gwHi, gwLo)
 	f.wg[natd.ID] = store.AgentWireguard{
 		NodeID:           natd.ID,
@@ -161,9 +161,9 @@ func TestResolve_NATd_RoutesThroughLowestUUIDGateway(t *testing.T) {
 }
 
 func TestResolve_NATd_UnreachedGateway_NotSelected(t *testing.T) {
-	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443"}
+	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443", ControlListenPort: 9443}
 	// Gateway exists but the NAT'd node does not currently reach it.
-	gw := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:9443", IngressAdvertisedEndpoint: "https://gw:9444"}
+	gw := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:9443", IngressAdvertisedEndpoint: "https://gw:9444", ControlListenPort: 9443}
 	f := newReader(natd, gw)
 	f.wg[natd.ID] = store.AgentWireguard{
 		NodeID:           natd.ID,
@@ -178,7 +178,7 @@ func TestResolve_NATd_UnreachedGateway_NotSelected(t *testing.T) {
 }
 
 func TestResolve_NATd_NonGatewayPeer_NotSelected(t *testing.T) {
-	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443"}
+	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443", ControlListenPort: 9443}
 	peer := store.Node{ID: uuid.New(), Name: "peer", GatewayRole: false, AdvertisedEndpoint: "https://peer:9443"}
 	f := newReader(natd, peer)
 	f.wg[natd.ID] = store.AgentWireguard{
@@ -199,7 +199,7 @@ func TestResolve_NATd_GatewayNotServingItsPlane_NotSelected(t *testing.T) {
 	// endpoint. A role-only node never mounted the splice route and never enabled
 	// forwarding, so routing through it would 404 every CP call and blackhole
 	// relayed guest traffic. Fail loudly instead.
-	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443"}
+	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443", ControlListenPort: 9443}
 	roleOnly := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:9443"}
 	f := newReader(natd, roleOnly)
 	f.wg[natd.ID] = store.AgentWireguard{
@@ -211,5 +211,73 @@ func TestResolve_NATd_GatewayNotServingItsPlane_NotSelected(t *testing.T) {
 
 	if got, err := agentroute.New(f).Resolve("edge"); err == nil {
 		t.Errorf("Resolve(edge) = %+v, nil error; want an error (the gateway serves no gateway plane)", got)
+	}
+}
+
+func TestResolve_NATd_TargetsTheReportedControlPort(t *testing.T) {
+	// The splice target port must come from the node's REPORTED control listener
+	// port, not from its advertised endpoint: an advertised endpoint may carry a
+	// forwarded or otherwise different port, and the gateway only accepts a target
+	// on the control port it itself listens on.
+	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:19443", ControlListenPort: 9443}
+	gw := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:29443", IngressAdvertisedEndpoint: "https://gw:9444", ControlListenPort: 9443}
+	f := newReader(natd, gw)
+	f.wg[natd.ID] = store.AgentWireguard{
+		NodeID:           natd.ID,
+		Endpoint:         "",
+		OverlayIP:        netip.MustParseAddr("10.100.0.9"),
+		EstablishedPeers: []string{gw.ID.String()},
+	}
+
+	got, err := agentroute.New(f).Resolve("edge")
+	if err != nil {
+		t.Fatalf("Resolve(edge) error: %v", err)
+	}
+	want := agentclient.AgentRoute{
+		GatewayDial:   "gw:29443",
+		GatewaySAN:    "node-gw.agents.otherix.local",
+		TargetOverlay: "10.100.0.9:9443",
+	}
+	if got != want {
+		t.Errorf("Resolve(edge) = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolve_NATd_ControlPortDisagreement_FailsClosed(t *testing.T) {
+	// A gateway validates a splice target against its OWN control port, so a
+	// target listening on a different port is refused permanently. Refuse to
+	// compose such a route at all: a loud error beats a route guaranteed to be
+	// rejected with no diagnostic on the CP side.
+	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443", ControlListenPort: 9444}
+	gw := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:9443", IngressAdvertisedEndpoint: "https://gw:9444", ControlListenPort: 9443}
+	f := newReader(natd, gw)
+	f.wg[natd.ID] = store.AgentWireguard{
+		NodeID:           natd.ID,
+		Endpoint:         "",
+		OverlayIP:        netip.MustParseAddr("10.100.0.9"),
+		EstablishedPeers: []string{gw.ID.String()},
+	}
+
+	if got, err := agentroute.New(f).Resolve("edge"); err == nil {
+		t.Errorf("Resolve(edge) = %+v, nil error; want an error (control ports disagree)", got)
+	}
+}
+
+func TestResolve_NATd_UnreportedControlPort_FailsClosed(t *testing.T) {
+	// A node that has never reported its control listener port gives the CP no
+	// target it can trust; guessing one would splice to a port the gateway
+	// refuses. Fail toward inaction.
+	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443"}
+	gw := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:9443", IngressAdvertisedEndpoint: "https://gw:9444", ControlListenPort: 9443}
+	f := newReader(natd, gw)
+	f.wg[natd.ID] = store.AgentWireguard{
+		NodeID:           natd.ID,
+		Endpoint:         "",
+		OverlayIP:        netip.MustParseAddr("10.100.0.9"),
+		EstablishedPeers: []string{gw.ID.String()},
+	}
+
+	if got, err := agentroute.New(f).Resolve("edge"); err == nil {
+		t.Errorf("Resolve(edge) = %+v, nil error; want an error (no reported control port)", got)
 	}
 }

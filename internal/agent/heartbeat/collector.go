@@ -145,6 +145,8 @@ type LinuxCollector struct {
 	// ingressAdvertisedEndpoint is the node's ingress splicer URL, reported when
 	// the ingress plane is active on this node. Empty for a plain hypervisor.
 	ingressAdvertisedEndpoint string
+	// controlListenPort is the port the agent's mTLS control listener binds.
+	controlListenPort int32
 }
 
 // CollectorDeps bundles the collector's construction-time inputs.
@@ -177,6 +179,9 @@ type CollectorDeps struct {
 	// the ingress plane is active (a co-located hypervisor or standalone gateway);
 	// left empty for a plain hypervisor.
 	IngressAdvertisedEndpoint string
+	// ControlListenPort is the port the agent's mTLS control listener binds. Set
+	// by every run path; the CP composes a gateway splice target from it.
+	ControlListenPort int32
 }
 
 // NewLinux constructs a LinuxCollector. Returns an error on non-Linux
@@ -218,6 +223,7 @@ func NewLinux(deps CollectorDeps) (*LinuxCollector, error) {
 		architecture:              archFromGo(runtime.GOARCH),
 		hostName:                  host,
 		ingressAdvertisedEndpoint: deps.IngressAdvertisedEndpoint,
+		controlListenPort:         deps.ControlListenPort,
 	}, nil
 }
 
@@ -305,6 +311,7 @@ func (c *LinuxCollector) Collect(_ context.Context) (Report, error) {
 		Resources:                 resources,
 		VMs:                       c.buildVMReports(),
 		IngressAdvertisedEndpoint: c.ingressAdvertisedEndpoint,
+		ControlListenPort:         c.controlListenPort,
 	}
 	c.foldObservedInventory(&report)
 	return report, nil

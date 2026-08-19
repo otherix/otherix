@@ -1323,6 +1323,7 @@ func (h *Handler) applyNodeUpdate(ctx context.Context, hp store.HeartbeatProject
 		SystemDiskTotalBytes:      body.Resources.SystemDiskTotalBytes,
 		SystemDiskAvailableBytes:  body.Resources.SystemDiskAvailableBytes,
 		IngressAdvertisedEndpoint: body.IngressAdvertisedEndpoint,
+		ControlListenPort:         body.ControlListenPort,
 	}
 	if err := hp.UpdateNodeHeartbeat(ctx, params); err != nil {
 		if errors.Is(err, store.ErrConcurrentUpdate) {
