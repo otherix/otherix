@@ -107,6 +107,13 @@ const (
 	SchedReasonFirmwareNotReady      = "firmware_not_ready"
 )
 
+// VMTombstoneLookupCap bounds how many reported-but-unrecognised VM ids one
+// heartbeat resolves against the store. It is 0 in steady state; the cap keeps
+// a node reporting a large fabricated list from amplifying into unbounded
+// reads. A truncated pass is logged, never silent, and the remainder is picked
+// up on subsequent heartbeats.
+const VMTombstoneLookupCap = 64
+
 // SchedulingSpec is the deferred placement input captured at admission and
 // consumed at bind. Stored as JSON in VM.SchedulingSpec so admission stays a
 // pure write and the scheduler resolves the (node, pool) later.

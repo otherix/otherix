@@ -142,3 +142,9 @@ func TestApplyPublishedListenersSkipsDeletedLB(t *testing.T) {
 		t.Fatalf("applyPublishedListeners wrote %d rows for a deleted LB, want 0", len(spy.upserts))
 	}
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (s *publishedListenerSpy) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}

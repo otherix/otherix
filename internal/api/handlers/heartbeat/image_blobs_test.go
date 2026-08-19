@@ -118,3 +118,9 @@ func TestApplyImageBlobInventoryUnavailablePreserves(t *testing.T) {
 		t.Errorf("UpsertNodeImageBlobInventory called, want skipped on image_blobs_unavailable")
 	}
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (s *imageBlobsSpy) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}

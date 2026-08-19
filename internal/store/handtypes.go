@@ -41,6 +41,10 @@ type HeartbeatProjection interface {
 	// under a compare on it so a delete or a migration cutover racing the write is
 	// skipped rather than resurrecting or regressing the runtime row.
 	VMWithRev(ctx context.Context, id uuid.UUID) (VM, int64, error)
+	// VMSoftDeleted reports whether a VM row exists and carries a deletion
+	// stamp, and returns its name for logging. The heartbeat emits a teardown
+	// tombstone only on a true result - a positive read, never an absence.
+	VMSoftDeleted(ctx context.Context, id uuid.UUID) (deleted bool, name string, err error)
 	// FilterVMIDsPinnedToNode returns the subset of ids whose vms row is pinned
 	// to nodeID (PinnedNodeID set and equal). It is the placement-authority gate
 	// for the heartbeat: a node may only report runtime for VMs the scheduler

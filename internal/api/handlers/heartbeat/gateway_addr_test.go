@@ -109,3 +109,9 @@ func TestLoadDeclaredNetworksNormalNodeGetsNoAddr(t *testing.T) {
 		t.Errorf("normal node got gateway_addr %+v, want nil", got[0].GatewayAddr)
 	}
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (f *fakeGatewayAddrProjection) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}

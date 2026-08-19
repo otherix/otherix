@@ -71,3 +71,9 @@ func TestApplyBlobInventoryClampsSize(t *testing.T) {
 		t.Errorf("node blob inventory after clamp mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (s *nodeBlobsSpy) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}

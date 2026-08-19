@@ -84,6 +84,55 @@ func TestVMByNameAndByID(t *testing.T) {
 	}
 }
 
+// TestVMSoftDeleted_TrueOnlyForAPositiveReadOfADeletedRow asserts the teardown
+// trigger cannot be satisfied by an absence: a live row and a missing row both
+// report false, and only a row that exists with DeletedAt set reports true.
+func TestVMSoftDeleted_TrueOnlyForAPositiveReadOfADeletedRow(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+
+	liveID, _, _, _ := seedCreatedVM(t, s)
+
+	deletedID, _, _, _ := seedCreatedVM(t, s)
+	toDelete, err := s.VMByID(ctx, deletedID)
+	if err != nil {
+		t.Fatalf("VMByID(pre-delete): %v", err)
+	}
+	delTask := taskParams(store.TaskStatusPending, nil)
+	if _, err := s.EnqueueTask(ctx, delTask, testJobArgs{}); err != nil {
+		t.Fatalf("EnqueueTask(delete): %v", err)
+	}
+	// Soft-delete through the production projection, so the row under test is
+	// the one a real `vm delete` leaves behind (and the row stays readable).
+	if err := s.ProjectVMDeleteSuccess(ctx, toDelete,
+		store.UpdateTaskFinalizedParams{ID: delTask.ID, Status: store.TaskStatusSuccess},
+	); err != nil {
+		t.Fatalf("ProjectVMDeleteSuccess: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		id          uuid.UUID
+		wantDeleted bool
+		wantName    string
+	}{
+		{name: "live row", id: liveID, wantDeleted: false, wantName: ""},
+		{name: "missing row", id: uuid.New(), wantDeleted: false, wantName: ""},
+		{name: "soft-deleted row", id: deletedID, wantDeleted: true, wantName: toDelete.Name},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotDeleted, gotName, err := s.VMSoftDeleted(ctx, tt.id)
+			if err != nil {
+				t.Fatalf("VMSoftDeleted(%v) error = %v, want nil", tt.id, err)
+			}
+			if gotDeleted != tt.wantDeleted || gotName != tt.wantName {
+				t.Errorf("VMSoftDeleted(%v) = (%v, %q), want (%v, %q)", tt.id, gotDeleted, gotName, tt.wantDeleted, tt.wantName)
+			}
+		})
+	}
+}
+
 func TestVMRuntimeByIDAndUpdatePhase(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()

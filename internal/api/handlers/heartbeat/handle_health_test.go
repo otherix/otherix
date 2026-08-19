@@ -147,3 +147,9 @@ func TestApplyHealthChecksSkipsDeletedLB(t *testing.T) {
 		t.Fatalf("applyHealthChecks wrote %d verdicts for a deleted LB, want 0 (not resurrected)", len(spy.upserts))
 	}
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (s *healthCheckSpy) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}

@@ -173,3 +173,9 @@ func TestApplyPoolReportsInventoryStoreFailure(t *testing.T) {
 		t.Errorf("applyPoolReports = nil, want error on inventory store failure")
 	}
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (s *poolReportsSpy) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}

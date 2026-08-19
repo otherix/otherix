@@ -92,3 +92,9 @@ func TestProjectStampsLivenessLast(t *testing.T) {
 		t.Errorf("UpdateNodeHeartbeat ran despite an observed-report failure; liveness must be stamped LAST")
 	}
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (s *livenessProjectionSpy) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}
