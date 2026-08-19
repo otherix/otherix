@@ -129,8 +129,10 @@ func digestOpFromVM(vm store.VM, imageSHA256 []byte, now time.Time) (*clientv3.O
 // ProjectVMLifecycleSuccess writes the VM's desired_phase (when non-empty), its
 // observed runtime phase, and finalizes the lifecycle task - all in one
 // transaction, with the desired_phase put guarded by a compare on the VM row's
-// ModRevision. The transaction groups the writes so a poll never sees a
-// half-applied terminal; the compare keeps a concurrent `vm delete` from being
+// ModRevision. The first commit groups the writes, so a poll sees no
+// half-applied terminal unless the compare loses - on a retry the task settles
+// a round trip before the desired_phase put lands. The compare keeps a
+// concurrent `vm delete` from being
 // overwritten by a lifecycle op holding a stale snapshot, which would clear the
 // row's deletion stamp and strand the guest (a resurrected row is neither
 // declared on a node nor tombstoned). Any other writer bumping the row loses
@@ -172,7 +174,8 @@ const projectVMLifecycleCASAttempts = 5
 func (s *Store) projectVMLifecycle(ctx context.Context, vmID uuid.UUID, vm *store.VM, vmRev int64, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error {
 	now := time.Now().UTC()
 
-	// ops are the unconditional writes: they commit in both branches below.
+	// ops are the unconditional writes: they commit in whichever branch the
+	// first attempt below takes, and are not repeated on a retry.
 	var ops []clientv3.Op
 
 	// vm_runtime.phase: a missing runtime row is a no-op (the SQL update
@@ -212,6 +215,7 @@ func (s *Store) projectVMLifecycle(ctx context.Context, vmID uuid.UUID, vm *stor
 	// the guest back to the phase the operator just moved it away from.
 	desiredPhase := vm.DesiredPhase
 	row, rowRev := *vm, vmRev
+	retryOps := ops
 	for attempt := 0; attempt < projectVMLifecycleCASAttempts; attempt++ {
 		row.DesiredPhase = desiredPhase
 		row.UpdatedAt = now
@@ -227,8 +231,8 @@ func (s *Store) projectVMLifecycle(ctx context.Context, vmID uuid.UUID, vm *stor
 		// lifecycle task hanging in running with no reaper to settle it.
 		resp, err := s.c.Raw().Txn(ctx).
 			If(clientv3.Compare(clientv3.ModRevision(vmKey(vmID)), "=", rowRev)).
-			Then(append([]clientv3.Op{clientv3.OpPut(vmKey(vmID), string(val))}, ops...)...).
-			Else(ops...).
+			Then(append([]clientv3.Op{clientv3.OpPut(vmKey(vmID), string(val))}, retryOps...)...).
+			Else(retryOps...).
 			Commit()
 		if err != nil {
 			return fmt.Errorf("project vm lifecycle txn: %v", err)
@@ -237,7 +241,10 @@ func (s *Store) projectVMLifecycle(ctx context.Context, vmID uuid.UUID, vm *stor
 			return nil
 		}
 		// Lost the compare: the else branch already committed the runtime and
-		// task writes, so only the desired_phase put still owes a retry.
+		// task writes, so only the desired_phase put still owes a retry. Repeating
+		// them would re-put the runtime value read before the first attempt,
+		// clobbering a heartbeat that landed in between.
+		retryOps = nil
 		fresh, freshRev, err := s.vmWithRev(ctx, vmID)
 		if errors.Is(err, store.ErrNotFound) {
 			// A `vm delete` soft-deleted the row. The deletion stamp is the
@@ -249,7 +256,7 @@ func (s *Store) projectVMLifecycle(ctx context.Context, vmID uuid.UUID, vm *stor
 		}
 		row, rowRev = fresh, freshRev
 	}
-	s.log.Warn("dropped vm desired_phase write after losing the vm-row compare on every attempt",
+	s.log.WarnContext(ctx, "dropped vm desired_phase write after losing the vm-row compare on every attempt",
 		"vm_id", vmID, "task_id", fin.ID, "desired_phase", desiredPhase)
 	return nil
 }
