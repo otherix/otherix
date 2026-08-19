@@ -89,11 +89,13 @@ func NewWireGuard(fabric netfabric.Fabric, key wgtypes.Key, cfg config.WireGuard
 // exists yet), so the CP can allocate the overlay address before the interface
 // comes up. established_peers is the observed mesh health.
 func (r *WireGuard) WireGuardReport() *heartbeat.WireGuardReport {
+	peers, unavailable := r.establishedPeers()
 	rep := &heartbeat.WireGuardReport{
 		PublicKey:            r.key.PublicKey().String(),
 		Endpoint:             r.cfg.AdvertisedEndpoint,
 		ListenPort:           wgListenPort(r.cfg.ListenPort),
-		EstablishedPeers:     r.establishedPeers(),
+		EstablishedPeers:     peers,
+		PeersUnavailable:     unavailable,
 		ReconciliationStatus: "pending",
 	}
 	if st := r.status.Load(); st != nil {
@@ -108,19 +110,30 @@ func (r *WireGuard) WireGuardReport() *heartbeat.WireGuardReport {
 
 // establishedPeers reads observed handshakes from the fabric and maps each peer
 // whose last handshake is recent (wgEstablishedWindow) back to its node id via
-// the declared peer set. Returns nil when otwg0 is absent or the read fails -
-// the report still carries pubkey/endpoint/port so the CP can allocate the
-// overlay IP before the interface exists (the N2c-1 invariant).
-func (r *WireGuard) establishedPeers() []string {
+// the declared peer set. The report still carries pubkey/endpoint/port on every
+// path so the CP can allocate the overlay IP before the interface exists (the
+// N2c-1 invariant).
+//
+// unavailable distinguishes "could not observe" from "observed none". The
+// handshake read failing, or no heartbeat response having delivered the
+// pubkey -> node-id map yet (the map arrives only in a RESPONSE, so the first
+// REQUEST of every agent process has none), means the set is UNKNOWN: the CP
+// must preserve what it already holds instead of treating this node as
+// reaching nobody. A known-but-empty declared set is a real observation and
+// reports unavailable=false.
+func (r *WireGuard) establishedPeers() (peers []string, unavailable bool) {
 	handshakes, err := r.fabric.WireGuardPeerHandshakes(wgInterfaceName)
 	if err != nil {
-		r.log.Debug("wireguard peer handshakes unavailable; no established peers",
+		r.log.Debug("wireguard peer handshakes unavailable; reporting the set as unknown",
 			slog.String("error", err.Error()))
-		return nil
+		return nil, true
 	}
 	d := r.desired.Load()
-	if d == nil || len(d.peers) == 0 {
-		return nil
+	if d == nil {
+		return nil, true
+	}
+	if len(d.peers) == 0 {
+		return nil, false
 	}
 	byPub := make(map[string]string, len(d.peers)) // pubkey -> node_id
 	for _, p := range d.peers {
@@ -139,10 +152,56 @@ func (r *WireGuard) establishedPeers() []string {
 		out = append(out, nodeID)
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, false
 	}
 	sort.Strings(out)
-	return out
+	return out, false
+}
+
+// IsKnownNodeOverlayIP reports whether ip is the overlay address of a node the
+// CP currently declares as this agent's WireGuard peer. The gateway
+// /v1/connect-node splice validates a CP-supplied dial target against this set,
+// so it can only ever be steered to a meshed node's overlay IP - never a guest
+// VM address or the anycast service IP (the anti-SSRF gate). Reads the latest
+// applied desired snapshot; safe for concurrent use, and returns false until the
+// first heartbeat populates the peer set (fail closed).
+func (r *WireGuard) IsKnownNodeOverlayIP(ip netip.Addr) bool {
+	d := r.desired.Load()
+	if d == nil {
+		return false
+	}
+	want := ip.Unmap()
+	for _, p := range d.peers {
+		if p.OverlayIP == "" {
+			continue
+		}
+		peerIP, err := netip.ParseAddr(p.OverlayIP)
+		if err != nil {
+			continue
+		}
+		if peerIP.Unmap() == want {
+			return true
+		}
+	}
+	return false
+}
+
+// SelfOverlayIP returns this node's CP-assigned overlay address and true once a
+// heartbeat has delivered self_overlay_ip, or the zero Addr and false before
+// then (or if the delivered value does not parse). The agent control server
+// binds a second mTLS listener on this address so the gateway /v1/connect-node
+// splice can reach a NAT'd node over otwg0. Reads the same atomic desired
+// snapshot the reconcile goroutine applies; safe for concurrent use.
+func (r *WireGuard) SelfOverlayIP() (netip.Addr, bool) {
+	d := r.desired.Load()
+	if d == nil || d.selfOverlayIP == "" {
+		return netip.Addr{}, false
+	}
+	pfx, err := netip.ParsePrefix(d.selfOverlayIP)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return pfx.Addr().Unmap(), true
 }
 
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. Copies the

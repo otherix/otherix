@@ -97,6 +97,12 @@ func (h heartbeatProjection) UpdateNodeHeartbeat(ctx context.Context, arg store.
 		if arg.IngressAdvertisedEndpoint != "" {
 			n.IngressAdvertisedEndpoint = arg.IngressAdvertisedEndpoint
 		}
+		// Same preserve-on-zero rule: the control listener port is what the CP
+		// composes a gateway splice target from, so an unreported value must leave
+		// the last known one alone rather than make the node unroutable.
+		if arg.ControlListenPort > 0 {
+			n.ControlListenPort = arg.ControlListenPort
+		}
 		now := time.Now().UTC()
 		n.LastHeartbeatAt = &now
 		n.UpdatedAt = now

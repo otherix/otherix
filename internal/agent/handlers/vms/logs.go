@@ -37,10 +37,11 @@ func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 			response.CodeVMNotFound, "vm not found", nil)
 		return
 	}
-	if !h.resolveLogsTarget(w, r, name) {
+	v, ok := h.resolveLogsTarget(w, r, name)
+	if !ok {
 		return
 	}
-	mux := h.manager.GetMux(name)
+	mux := h.manager.GetMux(v.ID)
 	if mux == nil {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeVMNotRunning,
@@ -60,23 +61,24 @@ func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 	h.streamLogs(w, r, sub)
 }
 
-// resolveLogsTarget confirms the named VM exists. Returns true on
-// success; on miss / internal error it writes the response envelope
-// and the caller bails out.
-func (h *Handler) resolveLogsTarget(w http.ResponseWriter, r *http.Request, name string) bool {
-	_, err := h.manager.ByName(name)
+// resolveLogsTarget resolves the named VM, whose id keys the
+// multiplexer registry. Returns the VM and true on success; on miss /
+// internal error it writes the response envelope and the caller bails
+// out.
+func (h *Handler) resolveLogsTarget(w http.ResponseWriter, r *http.Request, name string) (*vm.VM, bool) {
+	v, err := h.manager.ByName(name)
 	if err == nil {
-		return true
+		return v, true
 	}
 	if errors.Is(err, vm.ErrNotFound) {
 		response.WriteError(w, r, http.StatusNotFound,
 			response.CodeVMNotFound, "vm not found", nil)
-		return false
+		return nil, false
 	}
 	h.log.Error("logs: resolve vm failed", "vm", name, "error", err.Error())
 	response.WriteError(w, r, http.StatusInternalServerError,
 		response.CodeInternal, "internal error", nil)
-	return false
+	return nil, false
 }
 
 // prepareLogsStream clears the hijacked-connection deadlines and

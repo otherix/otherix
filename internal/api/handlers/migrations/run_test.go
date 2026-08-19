@@ -1154,9 +1154,9 @@ func TestVanishedSourceTask_LiveTargetCompletedCommits(t *testing.T) {
 	// The probe MUST hit the TARGET endpoint, never the source: a source restart
 	// wipes the source record, so probing the source would 404 even after a
 	// completed handoff and wrongly fail the migration (split-brain). Pin it.
-	if len(agent.getMigrationEndpoints) != 1 || agent.getMigrationEndpoints[0] != nodeB.AdvertisedEndpoint {
+	if len(agent.getMigrationEndpoints) != 1 || agent.getMigrationEndpoints[0] != agentclient.DialURL(nodeB.Name) {
 		t.Errorf("probe endpoints = %v, want [%q] (TARGET, not source %q)",
-			agent.getMigrationEndpoints, nodeB.AdvertisedEndpoint, nodeA.AdvertisedEndpoint)
+			agent.getMigrationEndpoints, agentclient.DialURL(nodeB.Name), agentclient.DialURL(nodeA.Name))
 	}
 	got, err := s.MigrationByID(ctx, m.ID)
 	if err != nil {
@@ -1462,8 +1462,8 @@ func TestDriveHandshake_LiveSourceFailureCancelsTarget(t *testing.T) {
 		t.Fatalf("cancelCalls = %v, want one CancelMigration(target)", agent.cancelCalls)
 	}
 	call := agent.cancelCalls[0]
-	if call.endpoint != nodeB.AdvertisedEndpoint {
-		t.Errorf("cancel endpoint = %q, want target %q", call.endpoint, nodeB.AdvertisedEndpoint)
+	if call.endpoint != agentclient.DialURL(nodeB.Name) {
+		t.Errorf("cancel endpoint = %q, want target %q", call.endpoint, agentclient.DialURL(nodeB.Name))
 	}
 	if call.vmName != vm.Name {
 		t.Errorf("cancel vmName = %q, want %q", call.vmName, vm.Name)
@@ -1578,11 +1578,11 @@ func TestConvergePostCutoverNudgesOverlayPeers(t *testing.T) {
 		nudged[ep] = true
 	}
 	agent.mu.Unlock()
-	if !nudged[nodeB.AdvertisedEndpoint] {
-		t.Errorf("target endpoint %q not nudged; nudged=%v", nodeB.AdvertisedEndpoint, nudged)
+	if !nudged[agentclient.DialURL(nodeB.Name)] {
+		t.Errorf("target endpoint %q not nudged; nudged=%v", agentclient.DialURL(nodeB.Name), nudged)
 	}
-	if !nudged[peer.AdvertisedEndpoint] {
-		t.Errorf("overlay peer endpoint %q not nudged; nudged=%v", peer.AdvertisedEndpoint, nudged)
+	if !nudged[agentclient.DialURL(peer.Name)] {
+		t.Errorf("overlay peer endpoint %q not nudged; nudged=%v", agentclient.DialURL(peer.Name), nudged)
 	}
 }
 
@@ -2175,8 +2175,8 @@ func TestDriveHandshake_CancelledDuringPollFinalizesCancelled(t *testing.T) {
 		t.Fatalf("cancelCalls = %v, want one target reap for the cancelled live migration", agent.cancelCalls)
 	}
 	call := agent.cancelCalls[0]
-	if call.endpoint != nodeB.AdvertisedEndpoint || call.vmName != vm.Name || call.migID != m.ID.String() {
-		t.Errorf("cancel call = %+v, want {endpoint:%q vmName:%q migID:%q}", call, nodeB.AdvertisedEndpoint, vm.Name, m.ID.String())
+	if call.endpoint != agentclient.DialURL(nodeB.Name) || call.vmName != vm.Name || call.migID != m.ID.String() {
+		t.Errorf("cancel call = %+v, want {endpoint:%q vmName:%q migID:%q}", call, agentclient.DialURL(nodeB.Name), vm.Name, m.ID.String())
 	}
 
 	// The VM stays on its source: a cancelled migration never re-pins.
@@ -2333,8 +2333,8 @@ func TestFinalizeTerminalCancelled_SourceFailedReapsTarget(t *testing.T) {
 	if len(agent.cancelCalls) != 1 {
 		t.Fatalf("cancelCalls = %v, want one target reap (source aborted)", agent.cancelCalls)
 	}
-	if agent.cancelCalls[0].endpoint != nodeB.AdvertisedEndpoint {
-		t.Errorf("cancel endpoint = %q, want target %q", agent.cancelCalls[0].endpoint, nodeB.AdvertisedEndpoint)
+	if agent.cancelCalls[0].endpoint != agentclient.DialURL(nodeB.Name) {
+		t.Errorf("cancel endpoint = %q, want target %q", agent.cancelCalls[0].endpoint, agentclient.DialURL(nodeB.Name))
 	}
 	if agent.deleteSourceCalls != 0 {
 		t.Errorf("DeleteVMOnSource calls = %d, want 0 (no cutover; source keeps the VM)", agent.deleteSourceCalls)

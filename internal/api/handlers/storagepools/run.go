@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/config"
 	"github.com/otherix/otherix/internal/store"
 )
@@ -70,10 +71,12 @@ func runScan(ctx context.Context, st WorkerStore, exec ScanExecutor, pressureDis
 	}
 
 	result, execErr := exec.Execute(ctx, ScanArgs{
-		PoolID:             pool.ID,
-		PoolName:           pool.Name,
-		NodeID:             node.ID,
-		AdvertisedEndpoint: node.AdvertisedEndpoint,
+		PoolID:   pool.ID,
+		PoolName: pool.Name,
+		NodeID:   node.ID,
+		// Dial the node by its identity URL so the CP->agent transport pins TLS to
+		// the node identity and routes a NAT'd node through a gateway splice.
+		AdvertisedEndpoint: agentclient.DialURL(node.Name),
 	})
 	if execErr != nil {
 		return failTask(ctx, st, log, "storagepools.scan", taskID, errCodeScanFailed, execErr)

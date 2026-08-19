@@ -73,7 +73,7 @@ func loadMaterial(t *testing.T, dir string) (tls.Certificate, *x509.Certificate)
 func newClient(t *testing.T, dir string) *agentclient.Client {
 	t.Helper()
 	cert, ca := loadMaterial(t, dir)
-	cli, err := agentclient.New(fastConfig(t, dir), cert, ca)
+	cli, err := agentclient.New(fastConfig(t, dir), cert, ca, agentclient.DirectResolver{})
 	if err != nil {
 		t.Fatalf("agentclient.New: %v", err)
 	}
@@ -144,7 +144,7 @@ func jsonWrite(t *testing.T, w http.ResponseWriter, status int, v any) {
 
 func TestNew_DisabledRejected(t *testing.T) {
 	t.Parallel()
-	_, err := agentclient.New(config.AgentClientConfig{Enabled: false}, tls.Certificate{}, nil)
+	_, err := agentclient.New(config.AgentClientConfig{Enabled: false}, tls.Certificate{}, nil, agentclient.DirectResolver{})
 	if err == nil {
 		t.Fatal("agentclient.New(disabled) returned nil error")
 	}
@@ -189,7 +189,7 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 	cfg := fastConfig(t, dir)
 	cfg.PollMaxInterval = cfg.PollInterval / 2
 	cert, ca := loadMaterial(t, dir)
-	_, err := agentclient.New(cfg, cert, ca)
+	_, err := agentclient.New(cfg, cert, ca, agentclient.DirectResolver{})
 	if err == nil {
 		t.Fatal("New with PollMaxInterval < PollInterval returned nil error")
 	}
@@ -199,7 +199,7 @@ func TestNew_RejectsEmptyMaterial(t *testing.T) {
 	t.Parallel()
 	dir := writeMaterial(t)
 	cfg := fastConfig(t, dir)
-	if _, err := agentclient.New(cfg, tls.Certificate{}, nil); err == nil {
+	if _, err := agentclient.New(cfg, tls.Certificate{}, nil, agentclient.DirectResolver{}); err == nil {
 		t.Fatal("New with empty cert returned nil error")
 	}
 }
@@ -411,7 +411,7 @@ func TestPollTask_BackoffProgression(t *testing.T) {
 	cfg.Timeout = 5 * time.Second
 
 	cert, ca := loadMaterial(t, dir)
-	cli, err := agentclient.New(cfg, cert, ca)
+	cli, err := agentclient.New(cfg, cert, ca, agentclient.DirectResolver{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestPollTask_TimeoutExceeded(t *testing.T) {
 	cfg.Timeout = 100 * time.Millisecond
 
 	cert, ca := loadMaterial(t, dir)
-	cli, err := agentclient.New(cfg, cert, ca)
+	cli, err := agentclient.New(cfg, cert, ca, agentclient.DirectResolver{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestPollTask_ContextCancel(t *testing.T) {
 	cfg.Timeout = 10 * time.Second
 
 	cert, ca := loadMaterial(t, dir)
-	cli, err := agentclient.New(cfg, cert, ca)
+	cli, err := agentclient.New(cfg, cert, ca, agentclient.DirectResolver{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -607,7 +607,7 @@ func TestConfig_DefaultsRoundtrip(t *testing.T) {
 	dir := writeMaterial(t)
 	cfg := fastConfig(t, dir)
 	cert, ca := loadMaterial(t, dir)
-	cli, err := agentclient.New(cfg, cert, ca)
+	cli, err := agentclient.New(cfg, cert, ca, agentclient.DirectResolver{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

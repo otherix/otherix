@@ -598,11 +598,19 @@ type Node struct {
 	// which is the mTLS control endpoint. Set on a gateway node; empty on a
 	// plain hypervisor and on legacy rows that predate the field.
 	IngressAdvertisedEndpoint string
-	MigrationHost             string
-	MigrationPortRangeStart   int32
-	MigrationPortRangeEnd     int32
-	Status                    NodeStatus
-	CordonedAt                *time.Time
+	// ControlListenPort is the port the node's agent binds its mTLS control
+	// listener on, self-reported through heartbeat. It is the port the node's
+	// overlay control listener binds AND the only port that node accepts as a
+	// splice target when it acts as a gateway, so the CP uses it to compose a
+	// splice target and to refuse a route whose two ends disagree. Zero on a node
+	// that has not reported it yet; the CP treats zero as unknown, never as a
+	// default.
+	ControlListenPort       int32
+	MigrationHost           string
+	MigrationPortRangeStart int32
+	MigrationPortRangeEnd   int32
+	Status                  NodeStatus
+	CordonedAt              *time.Time
 	// DrainTaskID points at the in-flight node.drain task while the node is
 	// draining; nil otherwise. Set atomically with the ready|cordoned ->
 	// draining flip, cleared atomically when the drain finalizes the node back

@@ -43,7 +43,7 @@ func overlayDhcpNet() heartbeat.DeclaredNetwork {
 func TestApplyOverlayEgressRegistersDHCP(t *testing.T) {
 	f := readyEgressFabric()
 	fake := &dhcp4.FakeResponder{}
-	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestApplyOverlayEgressRegistersDHCP(t *testing.T) {
 func TestApplyOverlayDNSWithoutEgressRegistersAndPlumbsL3(t *testing.T) {
 	f := readyEgressFabric()
 	fake := &dhcp4.FakeResponder{}
-	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestApplyOverlayDNSWithoutEgressRegistersAndPlumbsL3(t *testing.T) {
 func TestApplyOverlayNatDNSDisabledWithholdsResolver(t *testing.T) {
 	f := readyEgressFabric()
 	fake := &dhcp4.FakeResponder{}
-	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestApplyOverlayNatDNSDisabledWithholdsResolver(t *testing.T) {
 func TestApplyOverlayDHCPRegisterErrorStaysReady(t *testing.T) {
 	f := readyEgressFabric()
 	fake := &dhcp4.FakeResponder{Errs: map[string]error{"RegisterNetwork": errors.New("boom")}}
-	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestDHCPRegisterFailureLogsOncePerError(t *testing.T) {
 	fake := &dhcp4.FakeResponder{Errs: map[string]error{"RegisterNetwork": errors.New("boom")}}
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	rec, err := NewNetworks(f, fake, log, time.Minute, true)
+	rec, err := NewNetworks(f, fake, log, time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestDHCPRegisterRecoveryRelogsOnReFailure(t *testing.T) {
 	fake := &dhcp4.FakeResponder{Errs: map[string]error{"RegisterNetwork": errors.New("boom")}}
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	rec, err := NewNetworks(f, fake, log, time.Minute, true)
+	rec, err := NewNetworks(f, fake, log, time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestDHCPRegisterRecoveryRelogsOnReFailure(t *testing.T) {
 func TestApplyOverlayNoDHCPSkipsRegister(t *testing.T) {
 	f := readyEgressFabric()
 	fake := &dhcp4.FakeResponder{}
-	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestApplyOverlayNoDHCPSkipsRegister(t *testing.T) {
 func TestApplyOverlayDHCPTeardownDeregisters(t *testing.T) {
 	f := readyEgressFabric()
 	fake := &dhcp4.FakeResponder{}
-	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, fake, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}

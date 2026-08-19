@@ -201,7 +201,7 @@ func runningRuntimeStore() *snapWorkerStoreStub {
 		snapshot: store.Snapshot{ID: uuid.New(), VmID: uuid.New(), Name: "daily"},
 		vm:       store.VM{Name: "myvm"},
 		runtime:  store.VMRuntime{CurrentNodeID: &nodeID},
-		node:     store.Node{ID: nodeID, AdvertisedEndpoint: "https://node-a:9443"},
+		node:     store.Node{ID: nodeID, Name: "node-a", AdvertisedEndpoint: "https://node-a:9443"},
 	}
 }
 
@@ -413,8 +413,8 @@ func TestRunSnapshotDelete_GCsOnlyOrphanedBlobs(t *testing.T) {
 	if exec.deleteVMID != st.snapshot.VmID {
 		t.Errorf("agent Delete vm_id = %v, want the snapshot's vm_id %v", exec.deleteVMID, st.snapshot.VmID)
 	}
-	if exec.deleteEndpoint != st.node.AdvertisedEndpoint {
-		t.Errorf("agent Delete endpoint = %q, want the placement holder's %q", exec.deleteEndpoint, st.node.AdvertisedEndpoint)
+	if want := agentclient.DialURL(st.node.Name); exec.deleteEndpoint != want {
+		t.Errorf("agent Delete endpoint = %q, want the placement holder's identity URL %q", exec.deleteEndpoint, want)
 	}
 	if got, want := exec.deleteBlobs, []string{"aa"}; !sameStrings(got, want) {
 		t.Errorf("agent Delete orphaned blobs = %v, want ONLY the orphaned %v (shared bb must never be GC'd)", got, want)
@@ -465,7 +465,7 @@ func TestRunSnapshotDelete_HolderNodeGone_SkipsAndContinues(t *testing.T) {
 		{Index: 1, Device: "virtio1", SHA256: "bb", SizeBytes: 20, Format: "qcow2"},
 	}
 	st.orphanedReturn = []string{"aa", "bb"}
-	liveNode := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://live:9443"}
+	liveNode := store.Node{ID: uuid.New(), Name: "live", AdvertisedEndpoint: "https://live:9443"}
 	goneNode := uuid.New()
 	st.nodesByID = map[uuid.UUID]store.Node{liveNode.ID: liveNode}
 	st.nodeErrByID = map[uuid.UUID]error{goneNode: store.ErrNotFound}
@@ -479,8 +479,8 @@ func TestRunSnapshotDelete_HolderNodeGone_SkipsAndContinues(t *testing.T) {
 	if exec.deleteCallCount != 1 {
 		t.Errorf("agent Delete call count = %d, want 1 (only the reachable holder; the gone node is skipped)", exec.deleteCallCount)
 	}
-	if exec.deleteEndpoint != liveNode.AdvertisedEndpoint {
-		t.Errorf("agent Delete endpoint = %q, want the reachable holder %q", exec.deleteEndpoint, liveNode.AdvertisedEndpoint)
+	if want := agentclient.DialURL(liveNode.Name); exec.deleteEndpoint != want {
+		t.Errorf("agent Delete endpoint = %q, want the reachable holder's identity URL %q", exec.deleteEndpoint, want)
 	}
 	if got, want := exec.deleteBlobs, []string{"aa"}; !sameStrings(got, want) {
 		t.Errorf("reachable holder orphans = %v, want only its own digest %v", got, want)

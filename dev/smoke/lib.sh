@@ -102,3 +102,53 @@ cp_ready() { curl -fsSk "${CP_BASE}/healthz" >/dev/null 2>&1; }
 # cp_version — print the CP build version from /healthz (best-effort; empty on
 # failure). Smokes use it only for a banner line.
 cp_version() { curl -fsSk "${CP_BASE}/healthz" | jq -r '.version' 2>/dev/null; }
+
+# --- orphaned-VM hygiene -------------------------------------------------
+#
+# A force-delete removes the control-plane VM row without instructing the agent
+# to tear the VM down, so the agent keeps the qemu process and replays it from
+# its own meta.json on every restart. Those orphans accumulate across runs and
+# actively corrupt later ones: they hold vCPU and memory the scheduler then
+# refuses to allocate (a pinned create silently stays pending), and a VM created
+# with the same name collides with the orphan on the agent's name-addressed
+# surface. Smokes therefore reap them BEFORE they create anything - at that
+# point any VM the agent runs but the CP does not know is unambiguously stale,
+# so there is no race with a create that is still in flight.
+
+# smoke_cp_vm_ids - the VM ids the control plane currently knows, one per line.
+smoke_cp_vm_ids() {
+    "${OTX:-./bin/otherix}" vm list --output json 2>/dev/null | jq -r '.data[]?.id // empty' 2>/dev/null
+}
+
+# smoke_node_vm_uuids IDX - the uuids of qemu processes running on that node.
+smoke_node_vm_uuids() {
+    run_on "$(smoke_handle "$1")" sh -c \
+        "pgrep -a qemu-system 2>/dev/null | grep -oE '\-uuid [0-9a-f-]+' | awk '{print \$2}'" 2>/dev/null
+}
+
+# smoke_reap_orphan_vms - stop every qemu the CP does not know about and drop
+# the on-node state that would otherwise replay it. Prints what it reaped.
+# Killing alone is not enough: the agent rebuilds its registry from
+# <state>/vms/<uuid>/meta.json at startup and restarts the VM, so the state
+# directory and the pool disk must go too, with the agent stopped across the
+# removal so it cannot race the reap.
+smoke_reap_orphan_vms() {
+    local known idx handle uuids u reaped=0
+    known="$(smoke_cp_vm_ids)"
+    for idx in 1 2 3; do
+        handle="$(smoke_handle "$idx")"
+        uuids="$(smoke_node_vm_uuids "$idx")"
+        [ -n "$uuids" ] || continue
+        for u in $uuids; do
+            printf '%s\n' "$known" | grep -qx "$u" && continue
+            echo "   reaping orphan vm $u on node-$idx (no control-plane row)"
+            run_on "$handle" sudo systemctl stop otherix-agent >/dev/null 2>&1 || true
+            run_on "$handle" sudo sh -c "pkill -f 'qemu-system.*$u' || true" >/dev/null 2>&1 || true
+            run_on "$handle" sudo sh -c "rm -rf '$(smoke_state "$idx")/vms/$u' /var/lib/otherix/pools/*/vms/$u" >/dev/null 2>&1 || true
+            reaped=1
+        done
+        [ "$reaped" = 1 ] && run_on "$handle" sudo systemctl start otherix-agent >/dev/null 2>&1 || true
+    done
+    [ "$reaped" = 1 ] && sleep 5
+    return 0
+}

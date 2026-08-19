@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/response"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
@@ -114,7 +115,7 @@ func (h *Handler) propagateCancel(ctx context.Context, m store.Migration, vm sto
 		if source, err := h.store.NodeByID(abortCtx, *m.SourceNodeID); err != nil {
 			h.log.WarnContext(ctx, "migrations.cancel: resolve source node for propagation",
 				"migration_id", m.ID.String(), "source_node_id", m.SourceNodeID.String(), "error", err)
-		} else if _, err := h.agent.CancelMigration(abortCtx, source.AdvertisedEndpoint, vm.Name, m.ID.String()); err != nil {
+		} else if _, err := h.agent.CancelMigration(abortCtx, agentclient.DialURL(source.Name), vm.Name, m.ID.String()); err != nil {
 			h.log.WarnContext(ctx, "migrations.cancel: source abort failed; relying on agent timeout + worker convergence",
 				"migration_id", m.ID.String(), "endpoint", source.AdvertisedEndpoint, "error", err)
 		}
@@ -126,7 +127,7 @@ func (h *Handler) propagateCancel(ctx context.Context, m store.Migration, vm sto
 		if target, err := h.store.NodeByID(abortCtx, *m.TargetNodeID); err != nil {
 			h.log.WarnContext(ctx, "migrations.cancel: resolve target node for propagation",
 				"migration_id", m.ID.String(), "target_node_id", m.TargetNodeID.String(), "error", err)
-		} else if _, err := h.agent.CancelMigration(abortCtx, target.AdvertisedEndpoint, vm.Name, m.ID.String()); err != nil {
+		} else if _, err := h.agent.CancelMigration(abortCtx, agentclient.DialURL(target.Name), vm.Name, m.ID.String()); err != nil {
 			h.log.WarnContext(ctx, "migrations.cancel: target incoming teardown failed; relying on agent timeout backstop",
 				"migration_id", m.ID.String(), "endpoint", target.AdvertisedEndpoint, "error", err)
 		}

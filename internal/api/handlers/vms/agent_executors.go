@@ -99,7 +99,7 @@ func (e *agentVMCreateExecutor) Execute(ctx context.Context, args CreateArgs) (C
 	if err != nil {
 		return CreateResult{}, err
 	}
-	terminal, err := e.client.PollTask(ctx, args.Node.AdvertisedEndpoint, agentTaskID)
+	terminal, err := e.client.PollTask(ctx, agentclient.DialURL(args.Node.Name), agentTaskID)
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("poll task: %w", err)
 	}
@@ -170,7 +170,7 @@ func (e *agentVMCreateExecutor) postOrResumeCreate(ctx context.Context, args Cre
 		hint := args.ResolvedImageDigest
 		body.ResolvedImageDigest = &hint
 	}
-	agentTaskID, err := e.client.PostVMCreate(ctx, args.Node.AdvertisedEndpoint, idemKey, body)
+	agentTaskID, err := e.client.PostVMCreate(ctx, agentclient.DialURL(args.Node.Name), idemKey, body)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("post vm.create: %w", err)
 	}
@@ -206,7 +206,7 @@ func (e *agentVMDeleteExecutor) Execute(ctx context.Context, args DeleteArgs) (D
 		}
 		return DeleteResult{}, err
 	}
-	terminal, err := e.client.PollTask(ctx, args.Node.AdvertisedEndpoint, agentTaskID)
+	terminal, err := e.client.PollTask(ctx, agentclient.DialURL(args.Node.Name), agentTaskID)
 	if err != nil {
 		return DeleteResult{}, fmt.Errorf("poll task: %w", err)
 	}
@@ -235,7 +235,7 @@ func (e *agentVMDeleteExecutor) postOrResumeDelete(ctx context.Context, args Del
 		return *args.AgentTaskID, nil
 	}
 	idemKey := args.TaskID.String()
-	agentTaskID, err := e.client.DeleteVM(ctx, args.Node.AdvertisedEndpoint, args.VMName, idemKey)
+	agentTaskID, err := e.client.DeleteVM(ctx, agentclient.DialURL(args.Node.Name), args.VMName, idemKey)
 	if err != nil {
 		// 404 on delete-of-missing-vm is idempotent success — the
 		// agent doesn't have the VM, which is the desired outcome.

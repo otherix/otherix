@@ -91,7 +91,7 @@ INTEGRATION_TAGS := integration,$(TEST_TAGS)
 
 # The etcd-backed suites share one in-process member per test binary (TestMain),
 # so the wall-clock is dominated by the work, not member churn.
-ETCD_TEST_PKGS := ./internal/etcd/... ./internal/etcdstore/... ./internal/api/handlers/migrations/... ./cmd/api/... ./tests/apie2e/...
+ETCD_TEST_PKGS := ./internal/etcd/... ./internal/etcdstore/... ./internal/api/handlers/migrations/... ./internal/api/handlers/heartbeat/... ./cmd/api/... ./tests/apie2e/...
 test: ## Run unit tests with race detector and coverage
 	$(GO) test ./... -race -tags=$(TEST_TAGS) -coverprofile=coverage.out
 
@@ -166,6 +166,10 @@ smoke-wireguard-mesh: ## Cross-agent WireGuard mesh smoke: real cross-host hands
 .PHONY: smoke-overlay-vm
 smoke-overlay-vm: ## Overlay VM-to-VM smoke: two real VMs cross-node ping over the overlay via CP-distributed FDB (run after local-dev-start)
 	bash dev/smoke/overlay-vm/run.sh
+
+.PHONY: smoke-geo-nat
+smoke-geo-nat: ## Geo NAT smoke: CP drives VMs onto two NAT'd nodes via the gateway splice + guest VXLAN relayed hub-and-spoke + down-path gate (Lima only; run after local-dev-deploy)
+	bash dev/smoke/geo-nat/run.sh
 
 .PHONY: smoke-manifests
 smoke-manifests: ## YAML-manifest CLI smoke: `otherix create -f` / `get -o yaml` / `delete -f` against the real Lima agent (run after local-dev-start)

@@ -188,13 +188,19 @@ type RedeemJoinTokenParams struct {
 // heartbeat up-channel ingest. AgentIndex / OverlayIP are CP-assigned, not part
 // of the agent's report, so they are absent here.
 type UpsertAgentWireguardParams struct {
-	NodeID               uuid.UUID
-	PublicKey            string
-	Endpoint             string
-	ListenPort           int32
-	EstablishedPeers     []string
-	ReconciliationStatus string
-	ReconciliationError  *string
+	NodeID           uuid.UUID
+	PublicKey        string
+	Endpoint         string
+	ListenPort       int32
+	EstablishedPeers []string
+	// PreserveEstablishedPeers keeps the stored EstablishedPeers untouched instead
+	// of overwriting it with EstablishedPeers. Set when the agent reported the set
+	// as unobservable this tick (fail-closed): the CP wires relays, decides
+	// dialability, and gates placement on this set, so a transient blind tick must
+	// not read as "this node reaches nobody".
+	PreserveEstablishedPeers bool
+	ReconciliationStatus     string
+	ReconciliationError      *string
 }
 
 // IssuedCert is the metadata the redemption persists for a freshly signed agent

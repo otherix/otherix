@@ -127,7 +127,10 @@ func (h *Handler) logsStreamClient() *http.Client {
 
 // resolveLogsNode resolves vm -> owning node -> agent host. It prefers
 // PinnedNodeID (set by the create handler and flipped by the cutover Txn),
-// falling back to the storage pool's node.
+// falling back to the storage pool's node. The host is the node's cluster-CA
+// identity SAN (auth.NodeIdentitySAN), dialed through the shared geo transport
+// (direct for a public node, gateway splice for a NAT'd one) - the same host
+// every control handler dials, so the geo route resolver can route it.
 func (h *Handler) resolveLogsNode(ctx context.Context, vm store.VM) (logsNode, error) {
 	nodeID, err := h.resolveNodeForVM(ctx, vm)
 	if err != nil {
@@ -137,18 +140,15 @@ func (h *Handler) resolveLogsNode(ctx context.Context, vm store.VM) (logsNode, e
 	if err != nil {
 		return logsNode{}, fmt.Errorf("load node: %w", err)
 	}
-	host, err := stripScheme(node.AdvertisedEndpoint)
-	if err != nil {
-		return logsNode{}, fmt.Errorf("agent endpoint malformed: %w", err)
-	}
-	return logsNode{id: nodeID, host: host}, nil
+	return logsNode{id: nodeID, host: auth.NodeIdentitySAN(node.Name)}, nil
 }
 
 // logsAgentURL composes the agent-side logs URL. rawQuery is forwarded
 // verbatim (the client's tail/follow on the first attempt, "tail=-1&
-// follow=true" on a re-dial). The host comes from node.AdvertisedEndpoint
-// (admin-controlled) and the name from the chi URL param - trusted inputs,
-// same as the console-stream proxy.
+// follow=true" on a re-dial). The host is the node's cluster-CA identity SAN
+// (auth.NodeIdentitySAN), dialed through the shared geo transport (direct for
+// a public node, gateway splice for a NAT'd one), and the name comes from the
+// chi URL param - trusted inputs, same as the console-stream proxy.
 func logsAgentURL(agentHost, vmName, rawQuery string) string {
 	u := fmt.Sprintf("https://%s/v1/vms/%s/logs", agentHost, vmName)
 	if rawQuery != "" {
@@ -181,8 +181,8 @@ const (
 // cannot (headers are sent) and surfaces as logsPumpBroke for the caller's
 // reconnect decision.
 func (h *Handler) pumpLogsOnce(w http.ResponseWriter, r *http.Request, client *http.Client, agentURL, vmName string, started *bool) logsPumpOutcome {
-	// agentURL is composed from admin-controlled node.AdvertisedEndpoint +
-	// the URL-param vmName, not user body. Trusted - same as the console
+	// agentURL is composed from the node's identity SAN (auth.NodeIdentitySAN)
+	// + the URL-param vmName, not user body. Trusted - same as the console
 	// proxy.
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, agentURL, nil) //nolint:gosec // see comment above
 	if err != nil {

@@ -80,3 +80,27 @@ func TestGatewayConfigValidatesIngressListenWithoutEnabled(t *testing.T) {
 		t.Errorf("validate() with ingress listen == control listen returned nil, want a distinct-port error")
 	}
 }
+
+// TestAgentConfigWireGuardAdvertisedEndpointOptional pins that the WireGuard
+// advertised endpoint is optional: a node behind NAT reports no reachable WG
+// endpoint (empty), and a node with a public endpoint reports one. Both must
+// pass Validate - the endpoint is a reachability hint the control plane keys on,
+// not a runtime-config requirement. A future Validate rule that rejected the
+// empty form would strand every NAT'd node at config load.
+func TestAgentConfigWireGuardAdvertisedEndpointOptional(t *testing.T) {
+	t.Run("empty endpoint (behind NAT) passes", func(t *testing.T) {
+		c := baseGatewayAgentConfig()
+		c.WireGuard.AdvertisedEndpoint = ""
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate(empty wireguard advertised endpoint) = %v, want nil", err)
+		}
+	})
+
+	t.Run("public endpoint passes", func(t *testing.T) {
+		c := baseGatewayAgentConfig()
+		c.WireGuard.AdvertisedEndpoint = "203.0.113.7:51820"
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate(public wireguard advertised endpoint) = %v, want nil", err)
+		}
+	})
+}

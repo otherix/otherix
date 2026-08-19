@@ -465,7 +465,7 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 func pollOutgoing(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, cfg MigrateConfig, log *slog.Logger, taskID uuid.UUID, m store.Migration, vm store.VM, source store.Node, agentTaskID uuid.UUID) (*agentclient.TaskTerminal, error) {
 	deadline := cfg.now().Add(cfg.maxPollDuration())
 	for {
-		terminal, perr := agent.PollTask(ctx, source.AdvertisedEndpoint, agentTaskID)
+		terminal, perr := agent.PollTask(ctx, agentclient.DialURL(source.Name), agentTaskID)
 		if perr == nil {
 			return &terminal, nil
 		}
@@ -555,7 +555,7 @@ func reconcileVanishedSourceTask(ctx context.Context, st MigrationWorkerStore, a
 		return fmt.Errorf("load target node for vanished-task migration %s: %v", m.ID, err)
 	}
 
-	srcHandoff, err := agent.GetMigration(ctx, target.AdvertisedEndpoint, vm.Name, m.ID.String())
+	srcHandoff, err := agent.GetMigration(ctx, agentclient.DialURL(target.Name), vm.Name, m.ID.String())
 	if err != nil {
 		var ae *agentclient.AgentError
 		if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
@@ -610,7 +610,7 @@ func cancelTargetIncoming(ctx context.Context, agent MigrationAgentClient, log *
 	if !m.Live || m.TargetNodeID == nil {
 		return
 	}
-	if _, err := agent.CancelMigration(ctx, target.AdvertisedEndpoint, vm.Name, m.ID.String()); err != nil {
+	if _, err := agent.CancelMigration(ctx, agentclient.DialURL(target.Name), vm.Name, m.ID.String()); err != nil {
 		log.WarnContext(ctx, "target incoming teardown failed; relying on agent timeout backstop",
 			slog.String("migration_id", m.ID.String()), slog.String("target", target.AdvertisedEndpoint), slog.String("error", err.Error()))
 	}
@@ -635,12 +635,12 @@ func cancelTargetIncoming(ctx context.Context, agent MigrationAgentClient, log *
 // since offline migration overwhelmingly targets running VMs.
 func convergePostCutover(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node, live bool) {
 	if vm.DesiredPhase == store.VmDesiredPhaseRunning && !live {
-		if err := agent.StartVMOnTarget(ctx, target.AdvertisedEndpoint, vm.Name); err != nil {
+		if err := agent.StartVMOnTarget(ctx, agentclient.DialURL(target.Name), vm.Name); err != nil {
 			log.WarnContext(ctx, "post-cutover start on target failed",
 				slog.String("migration_id", migID.String()), slog.String("target", target.AdvertisedEndpoint), slog.String("error", err.Error()))
 		}
 	}
-	if err := agent.DeleteVMOnSource(ctx, source.AdvertisedEndpoint, vm.Name); err != nil {
+	if err := agent.DeleteVMOnSource(ctx, agentclient.DialURL(source.Name), vm.Name); err != nil {
 		log.WarnContext(ctx, "post-cutover source cleanup failed (disk leaked)",
 			slog.String("migration_id", migID.String()), slog.String("source", source.AdvertisedEndpoint), slog.String("error", err.Error()))
 	}
@@ -655,9 +655,9 @@ func convergePostCutover(ctx context.Context, st MigrationWorkerStore, agent Mig
 		log.WarnContext(ctx, "post-cutover peer lookup failed; relying on heartbeat backstop",
 			slog.String("migration_id", migID.String()), slog.String("error", err.Error()))
 	}
-	endpoints := map[string]struct{}{target.AdvertisedEndpoint: {}}
+	endpoints := map[string]struct{}{agentclient.DialURL(target.Name): {}}
 	for _, p := range peers {
-		endpoints[p.AdvertisedEndpoint] = struct{}{}
+		endpoints[agentclient.DialURL(p.Name)] = struct{}{}
 	}
 	for ep := range endpoints {
 		if err := agent.NudgeHeartbeat(ctx, ep); err != nil {
@@ -712,7 +712,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 	// max(SizeBytes, ExpectedSize) guard size it correctly (fixes live AND offline -
 	// they share this incoming-request literal). A fetch failure or zero size is a
 	// RETRYABLE error: the VM stays on source, fail-safe-to-source.
-	srcVM, err := agent.VM(ctx, source.AdvertisedEndpoint, vm.Name)
+	srcVM, err := agent.VM(ctx, agentclient.DialURL(source.Name), vm.Name)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("fetch source vm for disk size: %v", err)
 	}
@@ -720,7 +720,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		return uuid.Nil, fmt.Errorf("source vm %s reported no boot disk size; cannot size destination", vm.Name)
 	}
 	expected := srcVM.BootDiskVirtualSizeBytes
-	incoming, err := agent.StartIncomingMigration(ctx, target.AdvertisedEndpoint, vm.Name, agentapi.MigrationIncomingRequest{
+	incoming, err := agent.StartIncomingMigration(ctx, agentclient.DialURL(target.Name), vm.Name, agentapi.MigrationIncomingRequest{
 		MigrationID:        m.ID,
 		Mode:               mode,
 		SourceNodeIdentity: ptrString(sourceIdentity(source.Name)),
@@ -739,7 +739,7 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 	if !m.Live {
 		outMode = agentapi.MigrationOutgoingRequestMode(agentapi.MigrationModeOffline)
 	}
-	agentTaskStr, err := agent.StartOutgoingMigration(ctx, source.AdvertisedEndpoint, vm.Name, agentapi.MigrationOutgoingRequest{
+	agentTaskStr, err := agent.StartOutgoingMigration(ctx, agentclient.DialURL(source.Name), vm.Name, agentapi.MigrationOutgoingRequest{
 		MigrationID:        m.ID,
 		Mode:               outMode,
 		TargetEndpoint:     incoming.ListenEndpoint,
@@ -1001,7 +1001,7 @@ func reconcileCancelledMigration(ctx context.Context, st MigrationWorkerStore, a
 		return fmt.Errorf("load source node for cancelled migration %s: %v", m.ID, err)
 	}
 
-	terminal, perr := agent.PollTask(ctx, source.AdvertisedEndpoint, *task.AgentTaskID)
+	terminal, perr := agent.PollTask(ctx, agentclient.DialURL(source.Name), *task.AgentTaskID)
 	if perr != nil {
 		// Source outcome UNKNOWN: fail toward inaction. The target is NOT reaped and
 		// nothing is finalized; the next delivery re-arbitrates.
@@ -1101,7 +1101,7 @@ func reconcileCancelledNoAgentTask(ctx context.Context, st MigrationWorkerStore,
 		return fmt.Errorf("load vm for cancelled migration %s: %v", m.ID, err)
 	}
 
-	srcMig, err := agent.GetMigration(ctx, source.AdvertisedEndpoint, vm.Name, m.ID.String())
+	srcMig, err := agent.GetMigration(ctx, agentclient.DialURL(source.Name), vm.Name, m.ID.String())
 	if err != nil {
 		var ae *agentclient.AgentError
 		if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
@@ -1158,7 +1158,7 @@ func reapTargetIncoming(ctx context.Context, st MigrationWorkerStore, agent Migr
 	if verr != nil {
 		return
 	}
-	if _, cerr := agent.CancelMigration(ctx, target.AdvertisedEndpoint, vm.Name, m.ID.String()); cerr != nil {
+	if _, cerr := agent.CancelMigration(ctx, agentclient.DialURL(target.Name), vm.Name, m.ID.String()); cerr != nil {
 		log.WarnContext(ctx, "reconcile: target incoming teardown failed; agent timeout backstop",
 			slog.String("migration_id", m.ID.String()), slog.String("error", cerr.Error()))
 	}

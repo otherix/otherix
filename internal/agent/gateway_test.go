@@ -236,6 +236,18 @@ func TestRunGatewayTwoListeners(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("control /health (node cert) status = %d, want 403", resp.StatusCode)
 		}
+
+		// The highest-consequence route (raw-byte splice to another node) must sit
+		// behind the same CP-identity gate: a node leaf is refused before routing,
+		// so it never reaches the hijacking handler.
+		connResp, err := client.Post("https://"+controlListen+"/v1/connect-node", "application/json", nil)
+		if err != nil {
+			t.Fatalf("control POST /v1/connect-node with node cert: %v", err)
+		}
+		defer connResp.Body.Close()
+		if connResp.StatusCode != http.StatusForbidden {
+			t.Errorf("control POST /v1/connect-node (node cert) status = %d, want 403", connResp.StatusCode)
+		}
 	})
 
 	t.Run("control serves health to CP identity", func(t *testing.T) {
@@ -275,6 +287,17 @@ func TestRunGatewayTwoListeners(t *testing.T) {
 			if got != http.StatusNotFound {
 				t.Errorf("ingress GET %s status = %d, want 404 (control route must not be on ingress)", path, got)
 			}
+		}
+		// The node-connect splice is a control-plane route: it must not live on the
+		// ingress (bearer) plane, even by method.
+		connResp, err := ingressClient.Post("https://"+ingressListen+"/v1/connect-node", "application/json", nil)
+		if err != nil {
+			t.Fatalf("ingress POST /v1/connect-node: %v", err)
+		}
+		connGot := connResp.StatusCode
+		connResp.Body.Close()
+		if connGot != http.StatusNotFound {
+			t.Errorf("ingress POST /v1/connect-node status = %d, want 404 (control route must not be on ingress)", connGot)
 		}
 		// Control does not serve the connect route.
 		controlClient := httpsClient(certs.caPool, &cpCert)

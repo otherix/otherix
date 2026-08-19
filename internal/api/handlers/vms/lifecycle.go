@@ -141,7 +141,7 @@ func (h *Handler) runSyncLifecycle(w http.ResponseWriter, r *http.Request, op sy
 	}
 
 	idemKey := uuid.NewString()
-	if _, err := h.dispatchSyncOp(r.Context(), op, node.AdvertisedEndpoint, vm.Name, idemKey); err != nil {
+	if _, err := h.dispatchSyncOp(r.Context(), op, agentclient.DialURL(node.Name), vm.Name, idemKey); err != nil {
 		writeLifecycleError(w, r, h.log, op, err)
 		return
 	}

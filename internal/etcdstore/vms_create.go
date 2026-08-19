@@ -373,6 +373,11 @@ func (s *Store) poolNodePairs(ctx context.Context, name string, keep func(store.
 	if err != nil {
 		return nil, err
 	}
+	wgByNode, publicGateways, err := s.downPathReachability(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
 	var out []poolNodePair
 	for _, p := range pools {
 		// LOW-1: skip a node with a live delete-intent - a bind onto it is guaranteed
@@ -401,11 +406,88 @@ func (s *Store) poolNodePairs(ctx context.Context, name string, keep func(store.
 		if err != nil {
 			return nil, err
 		}
-		if keep(poolEff, nodeEff) {
-			out = append(out, poolNodePair{pool: poolEff, node: nodeEff})
+		if !keep(poolEff, nodeEff) {
+			continue
 		}
+		rec, hasWG := wgByNode[node.ID]
+		natd := hasWG && rec.Endpoint == ""
+		if !downPathReachable(natd, rec.EstablishedPeers, rec.UpdatedAt, node.ControlListenPort, publicGateways, now, s.downPathStaleness) {
+			continue
+		}
+		out = append(out, poolNodePair{pool: poolEff, node: nodeEff})
 	}
 	return out, nil
+}
+
+// downPathReachability builds the per-placement down-path reachability inputs:
+// wgByNode maps a node id to its agent-reported WireGuard record (used to detect
+// a NAT'd node via an empty Endpoint and to read its own reported handshake set),
+// and publicGateways maps each node id the CP can drive a splice through to the
+// control port that gateway listens on - the same three conditions agentroute
+// selectGateway applies (gateway role, an advertised control endpoint, and a
+// reported ingress endpoint proving the gateway plane is up), with the port
+// carried so the caller can apply selectGateway's fourth condition too.
+//
+// The gate is an existence check over a node's established set while the
+// resolver takes a minimum over the same set, so the two can pick differently
+// when several gateways qualify; they agree on WHETHER any route exists, which
+// is what a placement decision turns on.
+//
+// ponytail: one ListAgentWireguard range + one AllNodes enumeration per placement
+// call - O(nodes), acceptable at current cluster scale. Build an index only if a
+// placement hot path shows up here.
+func (s *Store) downPathReachability(ctx context.Context) (map[uuid.UUID]store.AgentWireguard, map[uuid.UUID]int32, error) {
+	wgs, err := s.ListAgentWireguard(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	nodes, err := s.AllNodes(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	byNode := make(map[uuid.UUID]store.AgentWireguard, len(wgs))
+	for _, rec := range wgs {
+		byNode[rec.NodeID] = rec
+	}
+	publicGateways := make(map[uuid.UUID]int32)
+	for _, n := range nodes {
+		// The ingress endpoint is the agent's signal that it actually serves the
+		// gateway plane; the role alone is a CP-side bit that can be set on a node
+		// whose agent never mounts the splice route. Requiring both keeps this
+		// predicate aligned with the resolver, so the gate cannot report a node
+		// schedulable that the CP has no way to drive. A gateway that has not
+		// reported its control listener port cannot be composed a target for and is
+		// left out entirely.
+		if n.HasRole(store.NodeRoleGateway) && n.AdvertisedEndpoint != "" && n.IngressAdvertisedEndpoint != "" && n.ControlListenPort > 0 {
+			publicGateways[n.ID] = n.ControlListenPort
+		}
+	}
+	return byNode, publicGateways, nil
+}
+
+// downPathReachable reports whether the CP can currently drive a node's control
+// plane for placement. A node the CP dials directly - not a NAT'd mesh node - is
+// always reachable. A NAT'd mesh node is reachable iff its report is within
+// staleness and its own reported handshake set still lists a gateway the CP can
+// splice through: one that is dialable, serves the gateway plane, and listens on
+// the same control port as this node (controlPort), the only port it accepts a
+// splice target on. A node that has not reported its own control port has no
+// composable target and is unreachable. This mirrors the CP's actual drive-path
+// (agentroute selectGateway), so a placement decision agrees with what the CP
+// will attempt. Confined to the placement predicate; it never writes NodeStatus.
+func downPathReachable(natd bool, established []string, reportedAt time.Time, controlPort int32, publicGateways map[uuid.UUID]int32, now time.Time, staleness time.Duration) bool {
+	if !natd {
+		return true
+	}
+	if now.Sub(reportedAt) > staleness || controlPort <= 0 {
+		return false
+	}
+	for _, s := range established {
+		if id, err := uuid.Parse(s); err == nil && publicGateways[id] == controlPort {
+			return true
+		}
+	}
+	return false
 }
 
 // nodeSchedulable is the single predicate deciding whether a node may receive

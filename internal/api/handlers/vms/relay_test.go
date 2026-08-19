@@ -20,6 +20,7 @@ import (
 
 	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 )
 
@@ -192,12 +193,12 @@ func TestRelayUnknownGrantRejected(t *testing.T) {
 func TestRelayGrantRelaysEndToEnd(t *testing.T) {
 	t.Parallel()
 	agent := newWSAgentServer(t, true)
-	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
+	node := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agent.host()}
 	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
 	st := &relayStoreStub{grant: grantFor("demo", "ubuntu"), vm: vm, node: node}
 
 	r := chi.NewRouter()
-	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{}).Relay)
+	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{dialMap: nodeDialMap(node)}).Relay)
 	cp := httptest.NewServer(r)
 	t.Cleanup(cp.Close)
 
@@ -220,6 +221,11 @@ func TestRelayGrantRelaysEndToEnd(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if string(agent.received()) == "ssh-bytes" {
+			// The CP must have dialed the agent's ssh-pipe at the node identity
+			// SAN so the geo resolver can route it, not the raw loopback host.
+			if got, want := agent.lastHost(), auth.NodeIdentitySAN("a"); got != want {
+				t.Errorf("agent saw Host = %q, want %q", got, want)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -266,7 +272,7 @@ func TestRelaySourceIPPinnedGrantOutOfPinRejectedNoDial(t *testing.T) {
 func TestRelaySourceIPPinnedGrantInPinRelays(t *testing.T) {
 	t.Parallel()
 	agent := newWSAgentServer(t, true)
-	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
+	node := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agent.host()}
 	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
 	g := grantFor("demo", "ubuntu")
 	// The httptest server accepts the operator over loopback, so RemoteAddr is
@@ -276,7 +282,7 @@ func TestRelaySourceIPPinnedGrantInPinRelays(t *testing.T) {
 	st := &relayStoreStub{grant: g, vm: vm, node: node}
 
 	r := chi.NewRouter()
-	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{}).Relay)
+	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{dialMap: nodeDialMap(node)}).Relay)
 	cp := httptest.NewServer(r)
 	t.Cleanup(cp.Close)
 
@@ -313,7 +319,7 @@ func TestRelaySourceIPPinnedGrantInPinRelays(t *testing.T) {
 func TestRelayVMIDMatchRelays(t *testing.T) {
 	t.Parallel()
 	agent := newWSAgentServer(t, true)
-	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
+	node := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agent.host()}
 	vmID := uuid.New()
 	vm := store.VM{ID: vmID, Name: "demo", PinnedNodeID: &node.ID}
 	grant := store.IngressGrant{
@@ -323,7 +329,7 @@ func TestRelayVMIDMatchRelays(t *testing.T) {
 	st := &relayStoreStub{grant: grant, vm: vm, node: node}
 
 	r := chi.NewRouter()
-	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{}).Relay)
+	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{dialMap: nodeDialMap(node)}).Relay)
 	cp := httptest.NewServer(r)
 	t.Cleanup(cp.Close)
 
@@ -431,7 +437,7 @@ func TestBuildSSHPipeURLEscapesName(t *testing.T) {
 func TestRelayForwardsPort(t *testing.T) {
 	t.Parallel()
 	agent := newWSAgentServer(t, true)
-	node := store.Node{ID: uuid.New(), AdvertisedEndpoint: "https://" + agent.host()}
+	node := store.Node{ID: uuid.New(), Name: "a", AdvertisedEndpoint: "https://" + agent.host()}
 	vm := store.VM{ID: uuid.New(), Name: "demo", PinnedNodeID: &node.ID}
 	// The grant must authorize the exact port the relay forwards: the relay
 	// enforces the per-VM port scope, so a grant that lists 5432 is required for
@@ -443,7 +449,7 @@ func TestRelayForwardsPort(t *testing.T) {
 	st := &relayStoreStub{grant: grant, vm: vm, node: node}
 
 	r := chi.NewRouter()
-	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{}).Relay)
+	r.Get("/v1/vms/{id}/relay", relayHandler(st, &recordingConsoleClient{dialMap: nodeDialMap(node)}).Relay)
 	cp := httptest.NewServer(r)
 	t.Cleanup(cp.Close)
 

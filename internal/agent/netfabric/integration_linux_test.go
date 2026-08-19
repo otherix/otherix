@@ -581,6 +581,88 @@ func TestLinuxFabricWireGuardLifecycle(t *testing.T) {
 	})
 }
 
+// TestLinuxFabricWireGuardPreservesRoamingEndpoint pins the geo-relay
+// regression: SetWireGuardPeers re-applied with a NAT'd peer (declared with a
+// nil Endpoint) must NOT wipe the endpoint the kernel roaming-learned from that
+// peer's inbound handshake. A gateway relays for such peers and the reconciler
+// re-applies on every tick; the old ReplacePeers-based apply deleted and re-added
+// every peer, dropping the roaming endpoint and leaving the gateway with nowhere
+// to forward. Revert the fix (ReplacePeers: true) and the re-apply nils the
+// endpoint, failing this test.
+func TestLinuxFabricWireGuardPreservesRoamingEndpoint(t *testing.T) {
+	withNetNS(t, func() {
+		f := New()
+		cfg := wgTestConfig(t)
+		if err := f.EnsureWireGuard(cfg); err != nil {
+			t.Fatalf("EnsureWireGuard = %v", err)
+		}
+
+		peerKey, err := wgtypes.GeneratePrivateKey()
+		if err != nil {
+			t.Fatalf("GeneratePrivateKey (peer) = %v", err)
+		}
+		peerPub := peerKey.PublicKey()
+
+		// A NAT'd peer: declared with a nil Endpoint (the CP does not know its
+		// address; the kernel learns it by roaming from the peer's handshake).
+		natd := WGPeer{
+			PublicKey:  peerPub,
+			AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.42.0.2/32")},
+		}
+		if err := f.SetWireGuardPeers(cfg.Name, []WGPeer{natd}); err != nil {
+			t.Fatalf("SetWireGuardPeers (initial) = %v", err)
+		}
+
+		// Simulate the kernel roaming-learning the peer's endpoint from an inbound
+		// handshake by setting it out of band.
+		roaming := &net.UDPAddr{IP: net.ParseIP("192.0.2.7"), Port: 51820}
+		c, err := wgctrl.New()
+		if err != nil {
+			t.Fatalf("wgctrl.New = %v", err)
+		}
+		defer c.Close()
+		if err := c.ConfigureDevice(cfg.Name, wgtypes.Config{Peers: []wgtypes.PeerConfig{
+			{PublicKey: peerPub, Endpoint: roaming},
+		}}); err != nil {
+			t.Fatalf("seed roaming endpoint = %v", err)
+		}
+
+		// A reconciler re-apply with the SAME nil-endpoint peer must preserve the
+		// roaming endpoint.
+		if err := f.SetWireGuardPeers(cfg.Name, []WGPeer{natd}); err != nil {
+			t.Fatalf("SetWireGuardPeers (re-apply) = %v", err)
+		}
+		dev, err := c.Device(cfg.Name)
+		if err != nil {
+			t.Fatalf("Device = %v", err)
+		}
+		var got *net.UDPAddr
+		for i := range dev.Peers {
+			if dev.Peers[i].PublicKey == peerPub {
+				got = dev.Peers[i].Endpoint
+			}
+		}
+		if got == nil {
+			t.Fatalf("roaming endpoint wiped by re-apply (nil); want %s preserved", roaming)
+		}
+		if got.String() != roaming.String() {
+			t.Errorf("endpoint = %s after re-apply, want %s preserved", got, roaming)
+		}
+
+		// A peer dropped from the desired set is still removed.
+		if err := f.SetWireGuardPeers(cfg.Name, nil); err != nil {
+			t.Fatalf("SetWireGuardPeers (drop) = %v", err)
+		}
+		dev, err = c.Device(cfg.Name)
+		if err != nil {
+			t.Fatalf("Device after drop = %v", err)
+		}
+		if len(dev.Peers) != 0 {
+			t.Errorf("peer not removed after dropping from desired set: %d peers remain", len(dev.Peers))
+		}
+	})
+}
+
 // TestLinuxFabricWireGuardRecoverFromDown forges an admin-down WireGuard link
 // out of band (a crash after LinkAdd/configure but before LinkSetUp) and
 // asserts the next EnsureWireGuard tick brings it back up with the overlay

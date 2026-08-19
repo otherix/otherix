@@ -197,7 +197,7 @@ func (b *Broker) pullFromHolder(ctx context.Context, digest string, holder, cons
 	// holder's serve listener self-expires on its token TTL (and is torn down by
 	// the agent on shutdown), so the broker relies on that self-expiry rather
 	// than tracking the deadline.
-	serveEndpoint, _, err := b.exec.ServeBlob(ctx, holder.AdvertisedEndpoint, digest, token, consumerNodeID.String())
+	serveEndpoint, _, err := b.exec.ServeBlob(ctx, agentclient.DialURL(holder.Name), digest, token, consumerNodeID.String())
 	if err != nil {
 		// best-effort: saga phase is non-authoritative metadata; a write failure must not abort an in-progress pull.
 		_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseFailed)
@@ -211,7 +211,7 @@ func (b *Broker) pullFromHolder(ctx context.Context, digest string, holder, cons
 	// not the digest, so it names exactly this serve even if another serve of the
 	// same digest is live.
 	defer func() {
-		if stopErr := b.exec.StopServe(ctx, holder.AdvertisedEndpoint, token); stopErr != nil {
+		if stopErr := b.exec.StopServe(ctx, agentclient.DialURL(holder.Name), token); stopErr != nil {
 			b.log.WarnContext(ctx, "blobbroker: stop serve failed (best-effort)",
 				"holder", holder.AdvertisedEndpoint, "error", stopErr)
 		}
@@ -240,7 +240,7 @@ func (b *Broker) pullFromHolder(ctx context.Context, digest string, holder, cons
 	} else {
 		expectedSize, _ = b.store.BlobSize(ctx, digest)
 	}
-	if pullErr := b.exec.PullBlobAndAwait(ctx, consumer.AdvertisedEndpoint, digest, token, serveEndpoint, hid, expectedSize, tier); pullErr != nil {
+	if pullErr := b.exec.PullBlobAndAwait(ctx, agentclient.DialURL(consumer.Name), digest, token, serveEndpoint, hid, expectedSize, tier); pullErr != nil {
 		// best-effort: saga phase is non-authoritative metadata; a write failure must not abort an in-progress pull.
 		_ = b.store.SetPullSagaPhase(ctx, saga.ID, store.PullSagaPhaseFailed)
 		return fmt.Errorf("consumer pull: %v", pullErr)

@@ -93,7 +93,11 @@ type UpdateNodeHeartbeatParams struct {
 	// stored endpoint untouched (a transient empty tick must not drop a gateway out
 	// of ingress selection).
 	IngressAdvertisedEndpoint string
-	ID                        uuid.UUID
+	// ControlListenPort is the node's self-reported mTLS control listener port.
+	// Applied preserve-on-zero in UpdateNodeHeartbeat, for the same reason as
+	// IngressAdvertisedEndpoint: an unreported value must not erase a known one.
+	ControlListenPort int32
+	ID                uuid.UUID
 }
 
 type UpdateNodeMemoryPressureParams struct {

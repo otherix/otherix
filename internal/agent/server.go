@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -196,10 +197,21 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 	// session-CA store is fanned into the heartbeat response handler chain.
 	sender := buildSender(heartbeatCtx, cfg, nodeName, manager, artStore, poolReconciler, vmReconciler, netReconciler, wgReconciler, healthReconciler, pubListenerReconciler, ingressCAStoreOf(ingressPlane), log)
 
-	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, dhcpResponder, nudgerFor(sender), blobsHandler)
+	// When this node also holds the gateway role, fold the CP-only node-connect
+	// splice into the shared control router (nil for a plain hypervisor, which
+	// then never exposes it). See buildNodeConnectHandler.
+	nodeConnect := buildNodeConnectHandler(cfg, ingressPlane, wgReconciler, log)
+	router := buildRouter(cfg, nodeName, log, manager, consoleTokens, dhcpResponder, nudgerFor(sender), blobsHandler, nodeConnect)
+
+	// A NAT'd node (no advertised WireGuard endpoint) must not expose its control
+	// listener on a WAN/0.0.0.0 address: the CP reaches it only through the gateway
+	// /v1/connect-node splice to the overlay-IP listener started below, and locally
+	// over loopback. A public node keeps its configured bind byte-for-byte.
+	primaryBind, controlPort := resolveControlListen(cfg)
+	warnIfLoopbackForced(cfg, log)
 
 	srv := &http.Server{
-		Addr:         cfg.Server.Listen,
+		Addr:         primaryBind,
 		Handler:      router,
 		TLSConfig:    tlsCfg,
 		ReadTimeout:  cfg.Server.ReadTimeout,
@@ -228,7 +240,14 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 
 	imageEvictDone := startImageCacheEviction(heartbeatCtx, cfg, manager, log)
 
-	errc := startAgentListeners(cfg, srv, ingressPlane, log)
+	errc := startAgentListeners(srv, ingressPlane, log)
+
+	// Also serve the mTLS control surface on this node's overlay IP once a
+	// heartbeat delivers it, so the gateway /v1/connect-node splice reaches a NAT'd
+	// agent over otwg0 (its primary listener is loopback-only). Best-effort: a bind
+	// failure before otwg0 has the address is retried, never crashes the agent, and
+	// is tracked in the drain set below rather than fed into errc.
+	overlayCtrlDone := startOverlayControlListener(heartbeatCtx, wgReconciler.SelfOverlayIP, controlPort, tlsCfg, router, cfg, log)
 
 	// Drain set waited on at shutdown. The heartbeat sender respects
 	// ctx and returns promptly; the reconcilers' Run loops only return
@@ -249,6 +268,7 @@ func Run(ctx context.Context, cfg *config.AgentConfig, log *slog.Logger) error {
 		{name: "artifact sweeper", done: artifactSweeperDone},
 		{name: "snapshot staging sweeper", done: snapStagingSweeperDone},
 		{name: "blob scrubber", done: blobScrubberDone},
+		{name: "overlay control listener", done: overlayCtrlDone},
 	}
 	if imageEvictDone != nil {
 		dones = append(dones, namedDone{name: "image cache eviction", done: imageEvictDone})
@@ -328,20 +348,38 @@ func ingressCAStoreOf(plane *ingress.Plane) *ingress.SessionCAStore {
 	return plane.CAStore
 }
 
+// buildNodeConnectHandler returns the CP-only node-connect splice handler when
+// this node also holds the gateway role (the ingress plane is active), or nil
+// for a plain hypervisor. The co-located control router folds it in exactly as
+// the standalone gateway (buildGatewayControlRouter) does; a nil handler means
+// buildRouter never mounts the splice. Same anti-SSRF deps as the standalone
+// path: the WG reconciler's known-node overlay set gates the CP-supplied target,
+// on the agent control port (a cluster convention).
+func buildNodeConnectHandler(cfg *config.AgentConfig, plane *ingress.Plane, wg *reconciler.WireGuard, log *slog.Logger) *ingress.NodeConnectHandler {
+	if plane == nil {
+		return nil
+	}
+	return ingress.NewNodeConnectHandler(ingress.NodeConnectDeps{
+		IsKnownNodeOverlayIP: wg.IsKnownNodeOverlayIP,
+		ControlPort:          controlListenPort(cfg.Server.Listen),
+		Log:                  log,
+	})
+}
+
 // startAgentListeners launches the control listener - and, when the ingress plane
 // is active, the ingress listener - in goroutines, returning the channel their
 // outcomes land on. The channel is buffered for every listener so a clean
 // shutdown (each returns http.ErrServerClosed and sends) never blocks a sender: a
 // cap-1 channel would wedge the second sender forever. A pure hypervisor runs a
 // single listener on the cap-1 channel, unchanged.
-func startAgentListeners(cfg *config.AgentConfig, srv *http.Server, plane *ingress.Plane, log *slog.Logger) chan error {
+func startAgentListeners(srv *http.Server, plane *ingress.Plane, log *slog.Logger) chan error {
 	n := 1
 	if plane != nil {
 		n = 2
 	}
 	errc := make(chan error, n)
 	go func() {
-		log.Info("listening", "addr", cfg.Server.Listen)
+		log.Info("listening", "addr", srv.Addr)
 		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 			return
@@ -359,6 +397,150 @@ func startAgentListeners(cfg *config.AgentConfig, srv *http.Server, plane *ingre
 		}()
 	}
 	return errc
+}
+
+// warnIfLoopbackForced logs a startup warning when the node has no advertised
+// WireGuard endpoint: it is treated as NAT'd (the same signal primaryControlBind
+// keys on) and its primary control listener is bound to loopback, reachable by
+// the CP only through the gateway /v1/connect-node splice. A genuinely public
+// node that forgot the flag is otherwise silently CP-unreachable, so this turns
+// the footgun into a diagnosable startup signal.
+func warnIfLoopbackForced(cfg *config.AgentConfig, log *slog.Logger) {
+	if cfg.WireGuard.AdvertisedEndpoint == "" {
+		log.Warn("no advertised WireGuard endpoint; treating node as NAT'd - primary control bound to loopback, reachable only via gateway splice")
+	}
+}
+
+// resolveControlListen returns the primary control listener bind and the control
+// port derived from cfg.Server.Listen. A NAT'd node's primary bind is forced to
+// loopback (primaryControlBind); the control port feeds the overlay-IP listener.
+// cfg.Server.Listen is only checked non-empty at config load (ServerConfig.Validate),
+// not for host:port validity, so a parse failure here is possible: the bind then
+// falls back to the configured value (the listener surfaces the malformed address
+// at bind time) and the port to empty, which makes startOverlayControlListener skip.
+func resolveControlListen(cfg *config.AgentConfig) (bind, port string) {
+	bind, err := primaryControlBind(cfg.Server.Listen, cfg.WireGuard.AdvertisedEndpoint)
+	if err != nil {
+		bind = cfg.Server.Listen
+	}
+	if _, p, err := net.SplitHostPort(cfg.Server.Listen); err == nil {
+		port = p
+	}
+	return bind, port
+}
+
+// primaryControlBind resolves the address the primary mTLS control listener
+// binds. A NAT'd node - one with no advertised WireGuard endpoint (the same
+// NAT'd signal the routing producer keys on) - must never expose its control
+// listener on a WAN/0.0.0.0 address: the CP reaches it only through the gateway
+// /v1/connect-node splice to its overlay-IP listener and locally over loopback,
+// so the primary bind is forced to loopback on the configured port. A public
+// node (non-empty advertisedEndpoint), including a gateway, keeps its configured
+// bind byte-for-byte.
+func primaryControlBind(listen, advertisedEndpoint string) (string, error) {
+	if advertisedEndpoint != "" {
+		return listen, nil
+	}
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", fmt.Errorf("parse listen address %q: %v", listen, err)
+	}
+	return net.JoinHostPort("127.0.0.1", port), nil
+}
+
+// overlayBindRetryInterval bounds how often the agent retries binding the
+// overlay-IP control listener while the overlay IP is unknown or otwg0 has not
+// yet been assigned it (the bind fails until the WG reconciler applies the
+// address to the interface).
+const overlayBindRetryInterval = 5 * time.Second
+
+// listenOverlayControl binds a TCP listener on overlayIP:port. Extracted as the
+// single fallible step the overlay-control supervisor retries: the bind fails
+// until the WG reconciler applies the overlay address to otwg0, so the caller
+// treats an error as retryable rather than fatal.
+func listenOverlayControl(overlayIP netip.Addr, port string) (net.Listener, error) {
+	return net.Listen("tcp", net.JoinHostPort(overlayIP.String(), port))
+}
+
+// startOverlayControlListener waits for the node's overlay IP to become known
+// (delivered by heartbeat, surfaced by the WG reconciler) and then binds a
+// SECOND mTLS control listener on <overlay-ip>:port, serving the same router and
+// TLS as the primary. This is the datapath the gateway /v1/connect-node splice
+// uses to reach a NAT'd agent over otwg0, whose primary listener is loopback-
+// only. Best-effort and fail-toward-inaction: a bind failure (the overlay
+// address not yet applied to otwg0) is logged and retried on the next tick and
+// never crashes the agent. Returns a channel closed when the goroutine exits.
+//
+// A public node keeps its configured (wildcard) primary bind, so it is reached
+// directly by the CP and is never spliced; starting the overlay listener there
+// would race the wildcard socket for the same port (a specific-address bind on a
+// port already held by a listening wildcard returns EADDRINUSE and would retry
+// forever). It is therefore skipped for a public node - the SAME NAT'd signal
+// primaryControlBind keys on (empty advertised WireGuard endpoint) - and skipped
+// when the control port could not be derived. Both paths return an already-
+// closed channel so the shutdown drain never blocks on them.
+//
+// ponytail: rebinds once, then holds the address for the process lifetime; a
+// mid-run overlay-IP change (re-IPAM) is not handled - it is stable per node in
+// V1, and an operator restart re-binds.
+func startOverlayControlListener(ctx context.Context, overlayIP func() (netip.Addr, bool), port string, tlsCfg *tls.Config, router http.Handler, cfg *config.AgentConfig, log *slog.Logger) <-chan struct{} {
+	if cfg.WireGuard.AdvertisedEndpoint != "" {
+		log.Info("overlay control listener skipped; node is public", "advertised_endpoint", cfg.WireGuard.AdvertisedEndpoint)
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	if port == "" {
+		log.Warn("overlay control listener skipped; control port could not be derived from listen address")
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	done := make(chan struct{})
+	go func() { //nolint:gosec // G118: the graceful shutdown below needs a fresh deadline because ctx is already cancelled at that point (the same idiom as stopAgentServers).
+		defer close(done)
+		ticker := time.NewTicker(overlayBindRetryInterval)
+		defer ticker.Stop()
+
+		var srv *http.Server
+		for {
+			if ip, ok := overlayIP(); ok {
+				ln, err := listenOverlayControl(ip, port)
+				if err != nil {
+					log.Warn("overlay control listener bind failed; will retry",
+						"addr", net.JoinHostPort(ip.String(), port), "error", err.Error())
+				} else {
+					srv = &http.Server{
+						Addr:         ln.Addr().String(),
+						Handler:      router,
+						TLSConfig:    tlsCfg,
+						ReadTimeout:  cfg.Server.ReadTimeout,
+						WriteTimeout: cfg.Server.WriteTimeout,
+					}
+					go func() {
+						log.Info("listening", "plane", "control-overlay", "addr", srv.Addr)
+						if serr := srv.ServeTLS(ln, "", ""); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+							log.Error("overlay control listener stopped with error", "addr", srv.Addr, "error", serr.Error())
+						}
+					}()
+					break
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Warn("overlay control listener shutdown failed", "addr", srv.Addr, "error", err.Error())
+		}
+	}()
+	return done
 }
 
 // stopAgentServers gracefully shuts the ingress server (when the plane is active)
@@ -404,7 +586,12 @@ func buildReconcilers(cfg *config.AgentConfig, manager *vm.Manager, fabric netfa
 	if err != nil {
 		return agentReconcilers{}, fmt.Errorf("pool reconciler: %w", err)
 	}
-	networks, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0, true)
+	// isGateway is true when the co-located ingress plane is active (the same
+	// gate as buildIngressPlaneIfConfigured): such a node relays WireGuard transit,
+	// so the reconciler enables ip_forward every pass regardless of any egress=nat
+	// network. A plain hypervisor (no ingress listen) leaves it false.
+	isGateway := cfg.Gateway.Listen != ""
+	networks, err := reconciler.NewNetworks(fabric, dhcpResponder, log, 0, true, isGateway)
 	if err != nil {
 		return agentReconcilers{}, fmt.Errorf("network reconciler: %w", err)
 	}
@@ -741,6 +928,10 @@ func buildSender(ctx context.Context, cfg *config.AgentConfig, nodeName string, 
 		PublishedListeners: pubRec,
 		Migration:          cfg.Migration,
 		QEMU:               cfg.QEMU,
+		// The CP composes a gateway splice target for this node from the port its
+		// control listener binds (the same port the overlay control listener uses),
+		// so it must be reported rather than inferred from the advertised endpoint.
+		ControlListenPort: int32(controlListenPort(cfg.Server.Listen)), //nolint:gosec // controlListenPort returns a TCP port, always well below 2^31
 	}
 	// The image cache tier store may be nil when no artifacts root is
 	// configured; only wire the adapter when present so it never dereferences a
@@ -838,7 +1029,7 @@ func (noopNudger) Nudge() {}
 // goroutines inherit r.Context() and would terminate at
 // cfg.Server.ReadTimeout (~30s by default). The bounded-REST subtree
 // below opts back in via a Group.
-func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, dhcpResponder dhcp4.Responder, heartbeatNudger heartbeatHandlers.Nudger, blobsHandler *blobshandlers.Handler) http.Handler {
+func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, manager *vm.Manager, consoleTokens *console.TokenStore, dhcpResponder dhcp4.Responder, heartbeatNudger heartbeatHandlers.Nudger, blobsHandler *blobshandlers.Handler, nodeConnect *ingress.NodeConnectHandler) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -864,6 +1055,17 @@ func buildRouter(cfg *config.AgentConfig, nodeName string, log *slog.Logger, man
 	r.Get("/v1/vms/{vm_name}/console-stream", vmsHandler.ConsoleStream)
 	r.Get("/v1/vms/{vm_name}/ssh-pipe", vmsHandler.SSHPipe)
 	r.Get("/v1/vms/{vm_name}/logs", vmsHandler.Logs)
+
+	// When this node also holds the gateway role, fold the CP-only node-connect
+	// splice into the shared control router (mirrors buildGatewayControlRouter's
+	// standalone mount). Registered OUTSIDE the Timeout group below for the same
+	// reason as the streaming routes: it hijacks and splices a long-lived tunnel a
+	// per-request deadline would tear. Still under the router-root RequireCPIdentity
+	// gate, so only the control plane reaches it. Nil for a plain hypervisor, which
+	// then never exposes the splice.
+	if nodeConnect != nil {
+		ingress.MountNodeConnectRoute(r, nodeConnect)
+	}
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Timeout(cfg.Server.ReadTimeout))

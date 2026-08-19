@@ -30,7 +30,7 @@ func overlayNet() heartbeat.DeclaredNetwork {
 // the report for id "ov1".
 func drive(t *testing.T, f netfabric.Fabric, selfIP string) heartbeat.NetworkReport {
 	t.Helper()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestApplyOverlayTeardownOnUndeclare(t *testing.T) {
 	f := &netfabric.FakeFabric{LinkStateResult: map[string]netfabric.LinkState{
 		"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
 	}}
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestApplyOverlayTeardownAfterEnsureVXLANFailed(t *testing.T) {
 		},
 		Errs: map[string]error{"EnsureVXLAN": errors.New("vxlan boom")},
 	}
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestApplyOverlayFailedOnInvalidVNI(t *testing.T) {
 	f := &netfabric.FakeFabric{LinkStateResult: map[string]netfabric.LinkState{
 		"otwg0": {Up: true, Addrs: []netip.Prefix{netip.MustParsePrefix("10.42.0.5/16")}},
 	}}
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -256,7 +256,7 @@ func readyFabricWithFDB(current []netfabric.FDBEntry) *netfabric.FakeFabric {
 
 func driveFDB(t *testing.T, f *netfabric.FakeFabric, fdb []heartbeat.DeclaredFDBEntry) {
 	t.Helper()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestApplyOverlaySkipsUnparseableFDB(t *testing.T) {
 // VTEP-ready fabric and returns the report for id "ov1" (overlayNet()'s id).
 func driveFDBReport(t *testing.T, f *netfabric.FakeFabric, fdb []heartbeat.DeclaredFDBEntry) heartbeat.NetworkReport {
 	t.Helper()
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestApplyOverlayReadyWhenFDBConverges(t *testing.T) {
 // observability only and does not feed the ready/pending decision.
 func TestApplyOverlayReadyDespiteSkippedNoIP(t *testing.T) {
 	f := readyFabricWithFDB(nil)
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestApplyOverlayReadyDespiteSkippedNoIP(t *testing.T) {
 // counts ride on the response as observability only.
 func TestApplyOverlayReadyDespiteUnestablishedFloodTargets(t *testing.T) {
 	f := readyFabricWithFDB(nil)
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestApplyOverlayReadyDespiteUnestablishedFloodTargets(t *testing.T) {
 
 func TestApplyOverlayFailsOnOversizeVNI(t *testing.T) {
 	f := readyFabricWithFDB(nil)
-	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true)
+	rec, err := NewNetworks(f, nil, discardLogger(), time.Minute, true, false)
 	if err != nil {
 		t.Fatalf("NewNetworks: %v", err)
 	}

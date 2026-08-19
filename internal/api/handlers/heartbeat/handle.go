@@ -877,13 +877,19 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 		return nil
 	}
 	err := hp.UpsertAgentWireguard(ctx, store.UpsertAgentWireguardParams{
-		NodeID:               nodeID,
-		PublicKey:            rep.PublicKey,
-		Endpoint:             rep.Endpoint,
-		ListenPort:           rep.ListenPort,
-		EstablishedPeers:     rep.EstablishedPeers,
-		ReconciliationStatus: rep.ReconciliationStatus,
-		ReconciliationError:  rep.ReconciliationError,
+		NodeID:     nodeID,
+		PublicKey:  rep.PublicKey,
+		Endpoint:   rep.Endpoint,
+		ListenPort: rep.ListenPort,
+		// peers_unavailable means the agent could not OBSERVE its peer set this
+		// tick, not that it reaches nobody. Preserve the stored set: it is what the
+		// relay wiring, the CP dial route and the placement down-path gate all key
+		// on, so treating a blind tick as empty would blackhole the overlay and cut
+		// the CP's control path until the next heartbeat.
+		EstablishedPeers:         rep.EstablishedPeers,
+		PreserveEstablishedPeers: rep.PeersUnavailable,
+		ReconciliationStatus:     rep.ReconciliationStatus,
+		ReconciliationError:      rep.ReconciliationError,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrAgentWireguardPubkeyInUse) {
@@ -903,42 +909,86 @@ func (h *Handler) applyWireguardReport(ctx context.Context, hp store.HeartbeatPr
 	return nil
 }
 
-// loadDeclaredWireGuardPeers returns every OTHER agent's WG fabric identity for
-// this node's mesh, sorted by node_id. allowed_ips is the peer's overlay /32.
+// loadDeclaredWireGuardPeers returns this node's declared WireGuard peer set for
+// the fabric down-channel. It reads every agent's WG fabric identity and node
+// row, builds the routing inputs (Endpoint = the advertised WG endpoint, "" when
+// NAT'd; IsGateway from the node's gateway role; the reachable-peer set from
+// EstablishedPeers) and delegates the policy to computeWireGuardRouting: a
+// reachable peer gets a direct entry, a NAT'd<->NAT'd pair is relayed through a
+// deterministic gateway. self is looked up in the same pass; a zero-value self
+// (first heartbeat, before this node's own WG upsert lands) still yields direct
+// entries for reachable peers and simply wires no relays.
 func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.HeartbeatProjection, selfNodeID uuid.UUID) ([]declaredWireGuardPeer, error) {
 	recs, err := hp.ListAgentWireguard(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list agent_wireguard: %v", err)
 	}
-	out := make([]declaredWireGuardPeer, 0, len(recs))
+	var self routingNode
+	peers := make([]routingNode, 0, len(recs))
 	for _, r := range recs {
-		if r.NodeID == selfNodeID {
-			continue
-		}
 		// Skip a peer whose node row is deleted (soft-deleted -> ErrNotFound), so a
 		// stale WG record never bleeds into a live agent's mesh. DeleteNode purges
 		// the record at the source; this is the sole prune. An unreachable-but-alive
-		// node keeps its peer entry so it rejoins the mesh cleanly on return.
-		if _, err := hp.NodeByID(ctx, r.NodeID); err != nil {
+		// node keeps its peer entry so it rejoins the mesh cleanly on return. The
+		// same read supplies the node's gateway role.
+		node, err := hp.NodeByID(ctx, r.NodeID)
+		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("load node %s for wireguard peer: %v", r.NodeID, err)
 		}
-		peerNet := netip.PrefixFrom(r.OverlayIP, 32) // single VTEP host route
-		out = append(out, declaredWireGuardPeer{
-			NodeID:     r.NodeID.String(),
-			PublicKey:  r.PublicKey,
-			Endpoint:   r.Endpoint,
-			OverlayIP:  r.OverlayIP.String(),
-			AllowedIPs: []string{peerNet.String()},
-		})
+		rn := routingNode{
+			NodeID:    r.NodeID,
+			PublicKey: r.PublicKey,
+			OverlayIP: r.OverlayIP,
+			Endpoint:  r.Endpoint,
+			// A node counts as a gateway for routing only when it also serves the
+			// gateway plane. The role is a CP-side bit; the reported ingress endpoint
+			// is the agent's signal that the plane is up (and with it the IP
+			// forwarding a relay needs). Relaying through a role-only node would drop
+			// every transit packet silently and suppress the no-common-gateway
+			// warning below.
+			IsGateway:        node.GatewayRole && node.IngressAdvertisedEndpoint != "",
+			EstablishedPeers: establishedPeerSet(r.EstablishedPeers),
+		}
+		if r.NodeID == selfNodeID {
+			self = rn
+			continue
+		}
+		peers = append(peers, rn)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	out, omitted := computeWireGuardRouting(self, peers)
+	if len(omitted) > 0 {
+		// A NAT'd peer with no gateway both ends reach is a real connectivity black
+		// hole; surface it. The 30s heartbeat cadence is the rate limit, and this
+		// never gates the heartbeat - it is purely observability.
+		unrouted := make([]string, len(omitted))
+		for i, id := range omitted {
+			unrouted[i] = id.String()
+		}
+		h.log.WarnContext(ctx, "wireguard relay omitted: no common gateway reaches both nodes",
+			slog.String("node_id", selfNodeID.String()), slog.Any("unrouted_peers", unrouted))
+	}
 	if len(out) == 0 {
 		return nil, nil
 	}
 	return out, nil
+}
+
+// establishedPeerSet converts the persisted node-id strings into the set
+// computeWireGuardRouting keys reachability on; an unparseable id is dropped.
+func establishedPeerSet(ids []string) map[uuid.UUID]bool {
+	if len(ids) == 0 {
+		return nil
+	}
+	set := make(map[uuid.UUID]bool, len(ids))
+	for _, s := range ids {
+		if id, err := uuid.Parse(s); err == nil {
+			set[id] = true
+		}
+	}
+	return set
 }
 
 // loadDeclaredFDB computes the controller-authoritative VXLAN FDB this node must
@@ -1273,6 +1323,7 @@ func (h *Handler) applyNodeUpdate(ctx context.Context, hp store.HeartbeatProject
 		SystemDiskTotalBytes:      body.Resources.SystemDiskTotalBytes,
 		SystemDiskAvailableBytes:  body.Resources.SystemDiskAvailableBytes,
 		IngressAdvertisedEndpoint: body.IngressAdvertisedEndpoint,
+		ControlListenPort:         body.ControlListenPort,
 	}
 	if err := hp.UpdateNodeHeartbeat(ctx, params); err != nil {
 		if errors.Is(err, store.ErrConcurrentUpdate) {

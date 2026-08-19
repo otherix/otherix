@@ -11,9 +11,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/otherix/otherix/internal/agent/ingress"
 	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/config"
 )
@@ -39,7 +41,7 @@ func TestBuildRouterPinsCPIdentity(t *testing.T) {
 	cfg := &config.AgentConfig{}
 	cfg.Server.ReadTimeout = 5 * time.Second
 
-	handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil)
+	handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil, nil)
 
 	tests := []struct {
 		name       string
@@ -74,7 +76,7 @@ func TestBuildRouterRejectsNodeCertOnConsoleStream(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.AgentConfig{}
 	cfg.Server.ReadTimeout = 5 * time.Second
-	handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil)
+	handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/vms/some-vm/console-stream?token=x", nil)
 	req.TLS = cpIdentityTLSState("node-evil")
@@ -96,7 +98,7 @@ func TestBuildRouterRejectsNodeCertOnSSHPipe(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.AgentConfig{}
 	cfg.Server.ReadTimeout = 5 * time.Second
-	handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil)
+	handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/vms/some-vm/ssh-pipe?port=5432", nil)
 	req.TLS = cpIdentityTLSState("node-evil")
@@ -106,4 +108,62 @@ func TestBuildRouterRejectsNodeCertOnSSHPipe(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("ssh-pipe with node cert: status = %d, want 403", rec.Code)
 	}
+}
+
+// TestBuildRouterMountsNodeConnectForColocatedGateway pins the co-located
+// gateway seam: when a NodeConnectHandler is supplied (the node holds the
+// gateway role alongside the hypervisor), the shared control router must serve
+// the CP-only /v1/connect-node splice - the datapath the CP uses to reach a
+// NAT'd node through this gateway. A plain hypervisor (nil handler) must NOT
+// expose it. The standalone-gateway router (buildGatewayControlRouter) already
+// mounts the route; the folded co-located path serves buildRouter, so without
+// mounting it here a co-located gateway silently 404s every splice and no NAT'd
+// node is reachable.
+func TestBuildRouterMountsNodeConnectForColocatedGateway(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.AgentConfig{}
+	cfg.Server.ReadTimeout = 5 * time.Second
+	cfg.Server.Listen = "0.0.0.0:9443"
+
+	nodeConnect := ingress.NewNodeConnectHandler(ingress.NodeConnectDeps{
+		IsKnownNodeOverlayIP: func(netip.Addr) bool { return true },
+		ControlPort:          9443,
+		Log:                  log,
+	})
+
+	t.Run("colocated gateway serves connect-node to CP identity", func(t *testing.T) {
+		handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil, nodeConnect)
+		// CP cert with an empty body: the route is mounted, so validateTarget runs
+		// and rejects the malformed (empty) body with 400 - proving the handler was
+		// reached rather than the router 404ing an unmounted path.
+		req := httptest.NewRequest(http.MethodPost, "/v1/connect-node", nil)
+		req.TLS = cpIdentityTLSState(auth.CPCertCommonName)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("colocated connect-node (cp cert, empty body) status = %d, want 400 (route mounted)", rec.Code)
+		}
+	})
+
+	t.Run("colocated gateway keeps connect-node behind the CP-identity gate", func(t *testing.T) {
+		handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil, nodeConnect)
+		req := httptest.NewRequest(http.MethodPost, "/v1/connect-node", nil)
+		req.TLS = cpIdentityTLSState("node-evil")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("colocated connect-node (node cert) status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("plain hypervisor does not expose connect-node", func(t *testing.T) {
+		handler := buildRouter(cfg, "node-test", log, nil, nil, nil, noopNudger{}, nil, nil)
+		req := httptest.NewRequest(http.MethodPost, "/v1/connect-node", nil)
+		req.TLS = cpIdentityTLSState(auth.CPCertCommonName)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("plain hypervisor connect-node status = %d, want 404 (route absent)", rec.Code)
+		}
+	})
 }

@@ -289,7 +289,7 @@ func deleteSnapshotOnHolders(ctx context.Context, st WorkerStore, exec SnapshotE
 		}
 		if err := exec.Delete(ctx, DeleteExecArgs{
 			VMID:               snap.VmID,
-			AdvertisedEndpoint: node.AdvertisedEndpoint,
+			AdvertisedEndpoint: agentclient.DialURL(node.Name),
 			SnapshotName:       snap.Name,
 			OrphanedBlobs:      orphansOnNode(orphaned, placements, nodeID),
 		}); err != nil {
@@ -372,7 +372,9 @@ func resolveSnapshotNode(ctx context.Context, st WorkerStore, vmID uuid.UUID) (e
 	if err != nil {
 		return "", "", uuid.Nil, fmt.Errorf("load node: %v", err)
 	}
-	return node.AdvertisedEndpoint, vm.Name, node.ID, nil
+	// Dial the node by its identity URL (see agentclient.DialURL): identity-pinned
+	// TLS + geo routing through a gateway splice for a NAT'd node.
+	return agentclient.DialURL(node.Name), vm.Name, node.ID, nil
 }
 
 // failCreateTask is the CREATE-kind failure path: it fails the backing task (the

@@ -69,7 +69,7 @@ func TestColocatedReconcilerServicesAndIngressVethOnOneBridge(t *testing.T) {
 		// exactly the declared self_overlay_ip. Bring it up out of band.
 		bringOverlayWireGuardUp(t, f, selfOverlay)
 
-		r, err := reconciler.NewNetworks(f, nil, discardLogger(), 40*time.Millisecond, true)
+		r, err := reconciler.NewNetworks(f, nil, discardLogger(), 40*time.Millisecond, true, false)
 		if err != nil {
 			t.Fatalf("NewNetworks(hostsVMs=true) = %v", err)
 		}

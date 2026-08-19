@@ -141,7 +141,7 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agentResp, err := h.consoleDeps.AgentClient.IssueConsoleToken(
-		r.Context(), node.AdvertisedEndpoint, vm.Name, protocol)
+		r.Context(), agentclient.DialURL(node.Name), vm.Name, protocol)
 	if err != nil {
 		writeConsoleAgentError(w, r, h.log, err)
 		return

@@ -73,7 +73,9 @@ func overlayIPForIndex(supernet netip.Prefix, idx int32) (netip.Addr, error) {
 // UpsertAgentWireguard records an agent's observed WG state. First report for a
 // node allocates a monotonic index + overlay IP and acquires the pubkey guard;
 // a re-report keeps the index/IP and refreshes endpoint/port/peers; a changed
-// pubkey swaps the guard. Returns store.ErrAgentWireguardPubkeyInUse when the
+// pubkey swaps the guard. arg.PreserveEstablishedPeers holds the stored peer set
+// back from an overwrite when the agent could not observe it this tick.
+// Returns store.ErrAgentWireguardPubkeyInUse when the
 // reported pubkey is held by a different node, store.ErrOverlaySupernetExhausted
 // when the supernet has no free host address.
 //
@@ -99,7 +101,12 @@ func (s *Store) UpsertAgentWireguard(ctx context.Context, arg store.UpsertAgentW
 	rec := existing
 	rec.Endpoint = arg.Endpoint
 	rec.ListenPort = arg.ListenPort
-	rec.EstablishedPeers = arg.EstablishedPeers
+	if !arg.PreserveEstablishedPeers {
+		// Skipping this one field (and only this one) when the agent could not
+		// observe its peer set leaves the last known set in place while endpoint,
+		// port and reconciliation status still converge.
+		rec.EstablishedPeers = arg.EstablishedPeers
+	}
 	rec.ReconciliationStatus = arg.ReconciliationStatus
 	rec.ReconciliationError = arg.ReconciliationError
 	rec.UpdatedAt = now

@@ -16,7 +16,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/otherix/otherix/internal/api/agentclient"
 	"github.com/otherix/otherix/internal/api/response"
+	"github.com/otherix/otherix/internal/auth"
 	"github.com/otherix/otherix/internal/store"
 	"github.com/otherix/otherix/internal/wskeepalive"
 )
@@ -29,11 +31,13 @@ import (
 // VM-name enumeration oracle.
 const consoleSessionRejectedMsg = "invalid or expired console session"
 
-// consoleNode is the resolved owning node for a console session: the
-// node id (to detect a cutover flip), the scheme-stripped host (to dial
-// the agent console-stream via buildAgentConsoleURL), and the full
-// advertised endpoint (to mint a fresh token via IssueConsoleToken on
-// re-attach).
+// consoleNode is the resolved owning node for a console session: the node id
+// (to detect a cutover flip), the node's cluster-CA identity SAN
+// (auth.NodeIdentitySAN, the host buildAgentConsoleURL dials the agent
+// console-stream at through the shared geo transport), and the identity
+// DialURL (agentclient.DialURL, the endpoint IssueConsoleToken is minted
+// against on re-attach). Both drive the geo route resolver, so a NAT'd node
+// splices through a gateway exactly as the control path does.
 type consoleNode struct {
 	id       uuid.UUID
 	host     string
@@ -42,7 +46,9 @@ type consoleNode struct {
 
 // resolveConsoleNode resolves vm -> owning node -> {id, host, endpoint}.
 // It prefers PinnedNodeID (flipped by the cutover Txn), falling back to
-// the storage pool's node via resolveNodeForVM.
+// the storage pool's node via resolveNodeForVM. host is the node's identity
+// SAN and endpoint is its identity DialURL - the same dial the control
+// handlers use, not the raw AdvertisedEndpoint.
 func (h *Handler) resolveConsoleNode(ctx context.Context, vm store.VM) (consoleNode, error) {
 	nodeID, err := h.resolveNodeForVM(ctx, vm)
 	if err != nil {
@@ -52,11 +58,11 @@ func (h *Handler) resolveConsoleNode(ctx context.Context, vm store.VM) (consoleN
 	if err != nil {
 		return consoleNode{}, fmt.Errorf("load node: %w", err)
 	}
-	host, err := stripScheme(node.AdvertisedEndpoint)
-	if err != nil {
-		return consoleNode{}, fmt.Errorf("agent endpoint malformed: %w", err)
-	}
-	return consoleNode{id: nodeID, host: host, endpoint: node.AdvertisedEndpoint}, nil
+	return consoleNode{
+		id:       nodeID,
+		host:     auth.NodeIdentitySAN(node.Name),
+		endpoint: agentclient.DialURL(node.Name),
+	}, nil
 }
 
 // ConsoleStream implements GET /v1/vms/{id}/console-stream — the

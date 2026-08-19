@@ -1,0 +1,12 @@
+# Overlay network for the geo-nat smoke. Fixed name; the smoke does a
+# best-effort delete-first so a stale leftover from a prior run is cleared.
+# The create API derives the bridge/mtu/vlan and allocates the VNI, so only
+# type + subnet appear here. The VXLAN this overlay rides is carried between the
+# two NAT'd nodes hub-and-spoke through the gateway (no direct tunnel).
+apiVersion: otherix/v1
+kind: Network
+metadata:
+  name: geonat-smoke
+spec:
+  type: overlay
+  subnet: 10.72.0.0/24

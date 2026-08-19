@@ -6,6 +6,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -29,6 +30,71 @@ func TestNewWireGuard_RejectsNilFabric(t *testing.T) {
 	_, err := NewWireGuard(nil, mustKey(t), config.WireGuardConfig{}, discardLogger(), 0)
 	if !errors.Is(err, ErrNilFabric) {
 		t.Errorf("err = %v, want ErrNilFabric", err)
+	}
+}
+
+func TestIsKnownNodeOverlayIP(t *testing.T) {
+	r, err := NewWireGuard(&netfabric.FakeFabric{}, mustKey(t), config.WireGuardConfig{}, discardLogger(), 0)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+
+	// Fail closed before any heartbeat populates the peer set.
+	if r.IsKnownNodeOverlayIP(netip.MustParseAddr("10.0.0.9")) {
+		t.Error("IsKnownNodeOverlayIP before first heartbeat = true, want false (fail closed)")
+	}
+
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredWireGuardPeers: []heartbeat.DeclaredWireGuardPeer{
+			{NodeID: "n9", PublicKey: "p9", OverlayIP: "10.0.0.9"},
+			{NodeID: "n-empty", PublicKey: "pe", OverlayIP: ""}, // skipped
+		},
+	})
+
+	if !r.IsKnownNodeOverlayIP(netip.MustParseAddr("10.0.0.9")) {
+		t.Error("declared peer overlay IP = false, want true")
+	}
+	// An empty/zero target must never match: it exercises the empty-peer skip
+	// (the "n-empty" fixture above) and the empty-target no-match path.
+	if r.IsKnownNodeOverlayIP(netip.Addr{}) {
+		t.Error("empty target = true, want false")
+	}
+	// A guest/unknown IP and the anycast service IP must not be known.
+	if r.IsKnownNodeOverlayIP(netip.MustParseAddr("10.0.0.50")) {
+		t.Error("unknown IP = true, want false")
+	}
+	if r.IsKnownNodeOverlayIP(netip.MustParseAddr("169.254.1.1")) {
+		t.Error("anycast IP = true, want false")
+	}
+}
+
+func TestSelfOverlayIP(t *testing.T) {
+	r, err := NewWireGuard(&netfabric.FakeFabric{}, mustKey(t), config.WireGuardConfig{}, discardLogger(), 0)
+	if err != nil {
+		t.Fatalf("NewWireGuard: %v", err)
+	}
+
+	// Fail closed before any heartbeat delivers self_overlay_ip.
+	if ip, ok := r.SelfOverlayIP(); ok {
+		t.Errorf("SelfOverlayIP before first heartbeat = (%v, true), want (_, false)", ip)
+	}
+
+	cidr := "10.42.0.7/16"
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &cidr})
+
+	got, ok := r.SelfOverlayIP()
+	if !ok {
+		t.Fatal("SelfOverlayIP after heartbeat: ok = false, want true")
+	}
+	if got != netip.MustParseAddr("10.42.0.7") {
+		t.Errorf("SelfOverlayIP() = %v, want 10.42.0.7", got)
+	}
+
+	// A malformed delivered value fails closed (mirrors the reconcile skip).
+	bad := "not-a-prefix"
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{SelfOverlayIP: &bad})
+	if ip, ok := r.SelfOverlayIP(); ok {
+		t.Errorf("SelfOverlayIP with malformed value = (%v, true), want (_, false)", ip)
 	}
 }
 
@@ -172,8 +238,14 @@ func TestWireGuardReportEstablishedStaleAndZero(t *testing.T) {
 			{NodeID: "zero", PublicKey: zeroPeer.PublicKey().String()},
 		},
 	})
-	if got := r.WireGuardReport().EstablishedPeers; len(got) != 0 {
+	rep := r.WireGuardReport()
+	if got := rep.EstablishedPeers; len(got) != 0 {
 		t.Errorf("EstablishedPeers = %v, want none (stale + zero excluded)", got)
+	}
+	// The declared peer set is known, so an empty result is a genuine observation:
+	// the CP must be free to clear the stored set.
+	if rep.PeersUnavailable {
+		t.Errorf("PeersUnavailable = true, want false (the declared peer set is known)")
 	}
 }
 
@@ -188,6 +260,35 @@ func TestWireGuardReportEstablishedFabricError(t *testing.T) {
 	}
 	if len(rep.EstablishedPeers) != 0 {
 		t.Errorf("EstablishedPeers = %v, want none on fabric error", rep.EstablishedPeers)
+	}
+	// A fabric read error means "unknown", not "none": the flag tells the CP to
+	// preserve the stored set instead of clearing it.
+	if !rep.PeersUnavailable {
+		t.Errorf("PeersUnavailable = false, want true on a fabric read error")
+	}
+}
+
+func TestWireGuardReportPeersUnavailableBeforeFirstResponse(t *testing.T) {
+	// The pubkey -> node-id map arrives only in a heartbeat RESPONSE, so the very
+	// first REQUEST after an agent start has no snapshot to map handshakes with -
+	// even though otwg0 and its kernel peers survived the restart. Reporting an
+	// empty set there would look like "this node reaches nobody"; the flag marks
+	// it unknown so the CP preserves what it has.
+	key, _ := wgtypes.GeneratePrivateKey()
+	peerKey, _ := wgtypes.GeneratePrivateKey()
+	r, _ := NewWireGuard(&netfabric.FakeFabric{
+		WireGuardPeerHandshakesResult: []netfabric.WGPeerHandshake{
+			{PublicKey: peerKey.PublicKey(), LastHandshake: time.Unix(1000, 0)},
+		},
+	}, key, config.WireGuardConfig{}, discardLogger(), time.Second)
+	r.now = func() time.Time { return time.Unix(1100, 0) }
+
+	rep := r.WireGuardReport()
+	if !rep.PeersUnavailable {
+		t.Errorf("PeersUnavailable = false, want true before the first heartbeat response")
+	}
+	if len(rep.EstablishedPeers) != 0 {
+		t.Errorf("EstablishedPeers = %v, want none with no declared peer set", rep.EstablishedPeers)
 	}
 }
 
