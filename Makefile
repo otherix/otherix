@@ -219,6 +219,10 @@ smoke-published-port: ## Published-LB-port traffic smoke: a raw peer client reac
 smoke-vm-create-redelivery: ## VM create-redelivery smoke: agent restart + vm.create redelivery does not clobber a live VM and reconciles to success (audit R2-M1/M2; run after local-dev-start)
 	bash dev/smoke/vm-create-redelivery/run.sh
 
+.PHONY: smoke-vm-tombstone
+smoke-vm-tombstone: ## VM-tombstone smoke: a VM deleted while its node was down is torn down on the agent when it returns, stays gone across restarts, and the teardown signal stops (run after local-dev-start)
+	bash dev/smoke/vm-tombstone/run.sh
+
 .PHONY: smoke-node-drain
 smoke-node-drain: ## Node-drain smoke: `otherix node drain` evacuates a node's VMs to other nodes (task success) and leaves a stuck VM running on timeout (task failed); run after local-dev-start
 	bash dev/smoke/node-drain/run.sh
@@ -361,7 +365,7 @@ smoke-unpinned-peer-pull: ## Unpinned peer-pull smoke: a VM from an UNPINNED --i
 # separately.
 .PHONY: smoke-all
 smoke-all: ## Run all stack-dependent smokes in sequence (run after local-dev-start; excludes smoke-ha)
-	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-migration vm-migration-live vm-network-config ingress-grant; do \
+	@for s in networking wireguard-mesh overlay-vm manifests vm-lifecycle vm-migration vm-migration-live vm-network-config ingress-grant vm-tombstone; do \
 	  echo ">> smoke: $$s"; \
 	  bash dev/smoke/$$s/run.sh || { echo "✗ smoke-$$s failed"; exit 1; }; \
 	done
