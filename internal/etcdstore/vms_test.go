@@ -88,7 +88,7 @@ func TestVMByNameAndByID(t *testing.T) {
 // trigger cannot be satisfied by an absence: a live row and a missing row both
 // report false, and only a row that exists with DeletedAt set reports true.
 func TestVMSoftDeleted_TrueOnlyForAPositiveReadOfADeletedRow(t *testing.T) {
-	s, _ := startStore(t)
+	s, cli := startStore(t)
 	ctx := context.Background()
 
 	liveID, _, _, _ := seedCreatedVM(t, s)
@@ -130,6 +130,16 @@ func TestVMSoftDeleted_TrueOnlyForAPositiveReadOfADeletedRow(t *testing.T) {
 				t.Errorf("VMSoftDeleted(%v) = (%v, %q), want (%v, %q)", tt.id, gotDeleted, gotName, tt.wantDeleted, tt.wantName)
 			}
 		})
+	}
+
+	// An unreadable row must surface as an error, never as a clean false: the
+	// caller tears the VM down irreversibly, so a failed read cannot answer.
+	poisonID := uuid.New()
+	if _, err := cli.Raw().Put(ctx, etcd.Key("vms", poisonID.String()), "not json"); err != nil {
+		t.Fatalf("seed poison key: %v", err)
+	}
+	if gotDeleted, _, err := s.VMSoftDeleted(ctx, poisonID); err == nil || gotDeleted {
+		t.Errorf("VMSoftDeleted(unreadable row) = (%v, err %v), want (false, non-nil error)", gotDeleted, err)
 	}
 }
 
