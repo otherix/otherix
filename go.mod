@@ -1,6 +1,6 @@
 module github.com/otherix/otherix
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/coder/websocket v1.8.14
@@ -21,9 +21,9 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
-	go.etcd.io/etcd/api/v3 v3.6.11
-	go.etcd.io/etcd/client/v3 v3.6.11
-	go.etcd.io/etcd/server/v3 v3.6.11
+	go.etcd.io/etcd/api/v3 v3.6.14
+	go.etcd.io/etcd/client/v3 v3.6.14
+	go.etcd.io/etcd/server/v3 v3.6.14
 	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.55.0
@@ -97,17 +97,17 @@ require (
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/xiang90/probing v0.0.0-20190116061207-43a291ad63a2 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
-	go.etcd.io/etcd/client/pkg/v3 v3.6.11 // indirect
-	go.etcd.io/etcd/pkg/v3 v3.6.11 // indirect
+	go.etcd.io/etcd/client/pkg/v3 v3.6.14 // indirect
+	go.etcd.io/etcd/pkg/v3 v3.6.14 // indirect
 	go.etcd.io/raft/v3 v3.6.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0 // indirect
-	go.opentelemetry.io/otel v1.43.0 // indirect
+	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.34.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.34.0 // indirect
-	go.opentelemetry.io/otel/metric v1.43.0 // indirect
+	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
-	go.opentelemetry.io/otel/trace v1.43.0 // indirect
+	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.5.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
@@ -118,7 +118,7 @@ require (
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260523011958-0a33c5d7ca68 // indirect
-	google.golang.org/grpc v1.80.0 // indirect
+	google.golang.org/grpc v1.82.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	sigs.k8s.io/json v0.0.0-20211020170558-c049b76a60c6 // indirect
