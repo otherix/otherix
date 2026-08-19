@@ -6,7 +6,7 @@
 # alongside qemu and KVM device access; this image is suitable only for
 # dev / CI / packaging — a containerised agent cannot operate VMs without
 # host privileges and qemu binaries that are not in this image.
-ARG GO_VERSION=1.26.5
+ARG GO_VERSION=1.26.6
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 ARG TARGETOS
