@@ -2,11 +2,33 @@
 # host-varying input). Names, nodes, and overlay IPs are fixed; the cloud-config
 # shell variables ($IF, $SC, $i, $(seq ...)) are literal and untouched.
 #
-# VM-A (node-1, 10.72.0.10) TCP-probes VM-B's sshd over the overlay and emits
-# OVERLAY_PING_OK to its serial console; VM-B (node-2, 10.72.0.11) is passive.
-# node-1 and node-2 are both NAT'd (no direct WireGuard tunnel), so a successful
-# probe proves the guest VXLAN was RELAYED through the gateway. Both attach one
-# NIC to geonat-smoke and resolve to the cluster default pool.
+# VM-A (node-1, 10.72.0.10) TCP-probes a listener VM-B serves over the overlay
+# and emits OVERLAY_PING_OK to its serial console; VM-B (node-2, 10.72.0.11)
+# serves that listener and announces itself with SMOKE_NET. node-1 and node-2
+# are both NAT'd (no direct WireGuard tunnel), so a successful probe proves the
+# guest VXLAN was RELAYED through the gateway. Both attach one NIC to
+# geonat-smoke and resolve to the cluster default pool.
+#
+# Two delivery choices worth keeping:
+#
+#   networkConfig, not a write_files netplan drop-in. The NoCloud network-config
+#   channel is consumed in cloud-init's LOCAL stage, before systemd-networkd
+#   starts, so the guest comes up already addressed. A netplan file written by
+#   write_files lands in the init stage instead - by then networkd has started
+#   on the image default (DHCP), and with no DHCP server on this overlay
+#   systemd-networkd-wait-online blocks the boot for about two minutes.
+#
+#   runcmd, not a written-out systemd unit. A unit file (plus its
+#   multi-user.target.wants entry) dropped in by write_files does NOT start on
+#   the boot that writes it: systemd computed its job set long before cloud-init
+#   reached the init stage, so the unit would first run one boot later. runcmd
+#   being a per-instance module is fine here because every run creates the VMs
+#   fresh, so the disk has never seen this instance-id.
+#
+# VM-B's listener is launched with systemd-run so it outlives cloud-final; a
+# process merely backgrounded from runcmd dies with the cloud-init cgroup. The
+# probe targets that listener rather than sshd, so a refused connect means one
+# thing only - the packet did not arrive.
 apiVersion: otherix/v1
 kind: VM
 metadata:
@@ -18,6 +40,16 @@ spec:
   arch: "@@ARCH@@"
   vcpus: 2
   memoryMib: 2048
+  networkConfig: |
+    version: 2
+    ethernets:
+      overlay-nic:
+        match:
+          name: "en*"
+        dhcp4: false
+        dhcp6: false
+        optional: true
+        addresses: [10.72.0.10/24]
   userData: |
     #cloud-config
     users:
@@ -30,23 +62,7 @@ spec:
     chpasswd:
       expire: false
     ssh_pwauth: true
-    write_files:
-      - path: /etc/netplan/50-cloud-init.yaml
-        permissions: '0600'
-        content: |
-          network:
-            version: 2
-            ethernets:
-              overlay-nic:
-                match:
-                  name: "en*"
-                dhcp4: false
-                dhcp6: false
-                optional: true
-                addresses: [10.72.0.10/24]
     runcmd:
-      - netplan apply || true
-      - sleep 2
       - |
         SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
         IF=$(ls /sys/class/net | grep -E '^en' | head -1)
@@ -57,11 +73,11 @@ spec:
       - |
         SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
         for i in $(seq 1 150); do
-          if timeout 3 bash -c "echo > /dev/tcp/10.72.0.11/22" 2>/dev/null; then
+          if timeout 3 bash -c "echo > /dev/tcp/10.72.0.11/18080" 2>/dev/null; then
             echo "OVERLAY_PING_OK 10.72.0.10->10.72.0.11" > "$SC"
             break
           fi
-          echo "SMOKE_PROBE 10.72.0.10->10.72.0.11:22 attempt $i failed" > "$SC"
+          echo "SMOKE_PROBE 10.72.0.10->10.72.0.11:18080 attempt $i failed" > "$SC"
           sleep 2
         done
 ---
@@ -76,6 +92,16 @@ spec:
   arch: "@@ARCH@@"
   vcpus: 2
   memoryMib: 2048
+  networkConfig: |
+    version: 2
+    ethernets:
+      overlay-nic:
+        match:
+          name: "en*"
+        dhcp4: false
+        dhcp6: false
+        optional: true
+        addresses: [10.72.0.11/24]
   userData: |
     #cloud-config
     users:
@@ -88,27 +114,13 @@ spec:
     chpasswd:
       expire: false
     ssh_pwauth: true
-    write_files:
-      - path: /etc/netplan/50-cloud-init.yaml
-        permissions: '0600'
-        content: |
-          network:
-            version: 2
-            ethernets:
-              overlay-nic:
-                match:
-                  name: "en*"
-                dhcp4: false
-                dhcp6: false
-                optional: true
-                addresses: [10.72.0.11/24]
     runcmd:
-      - netplan apply || true
-      - sleep 2
       - |
         SC=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && SC=/dev/ttyAMA0
         IF=$(ls /sys/class/net | grep -E '^en' | head -1)
         ip addr replace 10.72.0.11/24 dev "$IF" 2>/dev/null || true
         ip link set "$IF" up 2>/dev/null || true
+        systemd-run --unit=otherix-smoke-listener --collect \
+          python3 -m http.server 18080 --bind 0.0.0.0 >/dev/null 2>&1 || true
         sleep 2
         { echo "SMOKE_NET if=$IF serial=$SC"; ip -br addr show; } > "$SC" 2>&1 || true

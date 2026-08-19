@@ -12,10 +12,10 @@
 #   2. cross-site GUEST overlay traffic RELAYED hub-and-spoke through the gateway
 #      (the two NAT'd nodes have NO direct WireGuard tunnel, so VM-A on node-1
 #      reaching VM-B on node-2 can only go through node-3);
-#   3. CP-mediated serial streaming (otherix vm logs) proxied through the splice
-#      to a NAT'd node - kubectl-style CLI -> CP -> NAT'd agent, never a direct
-#      node dial (the same bytes step 2's guest wrote, read back through the CP);
-#   4. the down-path schedulability gate excluding a NAT'd node when its gateway
+#      That guest sentinel is read back with `otherix vm logs`, so the same step
+#      also proves CP-mediated serial streaming through the splice - kubectl
+#      style CLI -> CP -> NAT'd agent, never a direct node dial;
+#   3. the down-path schedulability gate excluding a NAT'd node when its gateway
 #      goes away, while the node's own status stays "ready".
 #
 # NAT emulation without netns: WireGuard cannot form a direct tunnel between two
@@ -39,7 +39,7 @@
 #   make smoke-geo-nat         # or: bash dev/smoke/geo-nat/run.sh
 #
 # The smoke reconfigures the live stack into the geo topology and restores it on
-# exit (configs, gateway role, and the etcd patch are reverted); a
+# exit (agent configs and the gateway role are reverted); a
 # local-dev-cleanrestart returns to a pristine public stack in any case.
 
 set -euo pipefail
@@ -56,6 +56,7 @@ IMAGE_URL="${IMAGE_URL:-${SMOKE_IMAGE_URL}}"
 ARCH="${ARCH:-${SMOKE_ARCH}}"
 GW_INGRESS_PORT="9444"                         # co-located gateway ingress listener port
 
+NODE_READY_WAIT="${NODE_READY_WAIT:-120}"      # nodes to report ready after a redeploy
 CONVERGE_WAIT="${CONVERGE_WAIT:-180}"          # mesh + relay wiring
 RELAY_PING_WAIT="${RELAY_PING_WAIT:-60}"       # node-level overlay ping through the relay
 VM_WAIT="${VM_WAIT:-420}"                       # per-VM create (incl. cold image fetch)
@@ -133,9 +134,24 @@ echo "=== geo-nat smoke: preconditions ==="
 [ "${SMOKE_PLATFORM}" = "lima" ] || fail "geo-nat smoke is Lima-only (NAT emulation relies on the Lima topology); netns CGNAT is a separate CI smoke"
 command -v jq >/dev/null || fail "jq is required"
 cp_ready || fail "CP not up on :8080 (run make local-dev-deploy)"
-for n in "$NODE1" "$NODE2" "$GW"; do
-  [ "$(node_status "$n")" = "ready" ] || fail "$n not ready; run make local-dev-deploy"
+# Reap first: a VM left running by an earlier force-delete holds vCPU the
+# scheduler will not re-allocate (a pinned create then silently stays pending)
+# and collides by name with the VMs below. Nothing has been created yet, so a VM
+# the CP does not know is unambiguously stale.
+smoke_reap_orphan_vms
+# A node reports ready only on its first heartbeat AFTER the CP is serving, so a
+# run started straight from a redeploy finds the CP up and the nodes not yet
+# reporting. Wait that window out rather than failing a healthy stack.
+deadline=$(( SECONDS + NODE_READY_WAIT )); ready=0
+while (( SECONDS < deadline )); do
+  ready=1
+  for n in "$NODE1" "$NODE2" "$GW"; do
+    [ "$(node_status "$n")" = "ready" ] || { ready=0; break; }
+  done
+  (( ready == 1 )) && break
+  sleep 5
 done
+(( ready == 1 )) || fail "$NODE1/$NODE2/$GW not all ready within ${NODE_READY_WAIT}s; run make local-dev-deploy"
 pass "CP up ($(cp_version)); $NODE1, $NODE2, $GW ready"
 
 # --- step 1: reconfigure into the geo topology -------------------------
@@ -192,45 +208,36 @@ sed -e "s|@@IMAGE_URL@@|${IMAGE_URL}|g" -e "s|@@ARCH@@|${ARCH}|g" \
   || fail "VM create did not reach running on both NAT'd nodes (control splice failed)"
 pass "both VMs reached running on NAT'd nodes - CP->NAT'd control splice works on $NODE1 AND $NODE2"
 
-VMID_A="$(otx vm get "${NET}-a" --output json | jq -r '.id')"
-info "VM-A id=$VMID_A (probes VM-B across the relay)"
-
-# --- step 4: guest cross-site reachability through the relay ------------
-echo "=== step 4: guest VM-A ($NODE1) -> VM-B ($NODE2) over the relayed overlay ==="
-SERIAL_A="${SMOKE_STATE_1}/vms/${VMID_A}/serial.log"
-info "watching $SERIAL_A for OVERLAY_PING_OK (<= ${PING_WAIT}s)"
+# --- step 4: guest cross-site reachability, read the operator way -------
+# Both assertions come from `otherix vm logs`, which is the authoritative
+# source and the operator path in one: the agent's serial multiplexer owns the
+# console and serves it over the logs endpoint, so the on-node serial.log file
+# is a rotating artefact of that multiplexer and lags it - grepping the file
+# over ssh races the rotation and can miss a sentinel the guest really emitted.
+# Reading through the CLI also proves the CP-mediated (kubectl-style) path:
+# both nodes are NAT'd, so bytes can only have reached the CP through the
+# gateway splice - a direct CP->node dial has no route. Capture-then-grep keeps
+# pipefail plus an early `grep -q` SIGPIPE from masking a real match.
+echo "=== step 4: guest VM-A ($NODE1) -> VM-B ($NODE2) over the relayed overlay, via otherix vm logs ==="
+info "otherix vm logs ${NET}-a: waiting for OVERLAY_PING_OK (<= ${PING_WAIT}s)"
 deadline=$(( SECONDS + PING_WAIT )); seen=0
 while (( SECONDS < deadline )); do
-  if invm1 sudo grep -q "OVERLAY_PING_OK" "$SERIAL_A" 2>/dev/null; then seen=1; break; fi
+  logs_a="$(otx vm logs "${NET}-a" 2>/dev/null || true)"
+  if printf '%s\n' "$logs_a" | grep -q "OVERLAY_PING_OK"; then seen=1; break; fi
   sleep 5
 done
 if (( seen != 1 )); then
-  echo "--- VM-A serial tail ---"; invm1 sudo tail -30 "$SERIAL_A" 2>/dev/null || true
+  echo "--- VM-A log tail ---"; printf '%s\n' "${logs_a:-}" | tail -30
   fail "no OVERLAY_PING_OK - guest cross-site relay reachability did not succeed"
 fi
-pass "OVERLAY_PING_OK: guest on $NODE1 reached guest on $NODE2 hub-and-spoke through $GW"
+pass "OVERLAY_PING_OK through the CP: guest on $NODE1 reached guest on $NODE2 hub-and-spoke through $GW"
 
-# --- step 4b: the SAME serial, but CP-mediated (kubectl-style) ----------
-# step 4 read serial.log directly on the node; this proves the OPERATOR path:
-# `otherix vm logs` -> CP -> NAT'd agent over the gateway splice returns the same
-# bytes. Both nodes are NAT'd, so a successful dump can only have traversed the
-# splice - a direct CP->node dial has no route. Capture-then-grep so pipefail +
-# an early grep -q SIGPIPE cannot mask a real match.
-echo "=== step 4b: otherix vm logs through the CP splice (NAT'd nodes, kubectl-style) ==="
-info "otherix vm logs ${NET}-a: CP -> $NODE1 (NAT'd) over the splice, must return the guest serial"
-la_deadline=$(( SECONDS + 45 )); la_ok=0
-while (( SECONDS < la_deadline )); do
-  logs_a="$(otx vm logs "${NET}-a" 2>/dev/null || true)"
-  if printf '%s\n' "$logs_a" | grep -q "OVERLAY_PING_OK"; then la_ok=1; break; fi
-  sleep 3
-done
-(( la_ok == 1 )) || fail "otherix vm logs ${NET}-a returned no OVERLAY_PING_OK - CP-mediated logs to a NAT'd node is broken"
 info "otherix vm logs ${NET}-b: CP -> $NODE2 (NAT'd) over the splice"
-lb_deadline=$(( SECONDS + 45 )); lb_ok=0
+lb_deadline=$(( SECONDS + 120 )); lb_ok=0
 while (( SECONDS < lb_deadline )); do
   logs_b="$(otx vm logs "${NET}-b" 2>/dev/null || true)"
   if printf '%s\n' "$logs_b" | grep -q "SMOKE_NET"; then lb_ok=1; break; fi
-  sleep 3
+  sleep 5
 done
 (( lb_ok == 1 )) || fail "otherix vm logs ${NET}-b returned no serial - CP-mediated logs to a NAT'd node is broken"
 pass "otherix vm logs relayed BOTH NAT'd nodes' serial through the CP splice (kubectl-style, no direct node access)"
