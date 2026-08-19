@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -42,10 +41,6 @@ func (s *vmDeleteExecutorSpy) Execute(_ context.Context, args vms.DeleteArgs) (v
 // tombstoneStaleGrace is the heartbeat-staleness window the worker handlers are
 // built with in these tests, matching the production default.
 const tombstoneStaleGrace = 5 * time.Minute
-
-func quietLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
 
 // seedPinnedVM writes a scheduled VM pinned to nodeID, plus the pinned-node
 // index the node-delete evacuation reads. It is the shape a committed bind
@@ -218,7 +213,7 @@ func TestVMDeleteOnStaleNode_YieldsTombstoneOnNextHeartbeat(t *testing.T) {
 	}
 
 	spy := &vmDeleteExecutorSpy{}
-	handler := vms.DeleteHandler(h.store, spy, quietLogger(), tombstoneStaleGrace)
+	handler := vms.DeleteHandler(h.store, spy, scheduleLogger(), tombstoneStaleGrace)
 	if err := handler(ctx, pendingJobArgs(t, h.store, "vm.delete")); err != nil {
 		t.Fatalf("vm.delete handler: %v", err)
 	}
@@ -340,8 +335,10 @@ func TestDeleteUnscheduledVMRefusesAScheduledVM(t *testing.T) {
 	}
 }
 
-// TestRollbackToUnscheduledMakesAMaterialisedVMHardDeletable documents a gap in
-// the teardown signal, not a property worth having. `node delete --force` rolls
+// TestKnownGap_RollbackToUnscheduledMakesAMaterialisedVMHardDeletable documents
+// a gap in the teardown signal, not a property worth having. The name carries
+// the KnownGap prefix so `go test -v` output cannot read as a contract worth
+// preserving. `node delete --force` rolls
 // a pinned-but-unobserved VM back to unscheduled, aborting only when its create
 // task is running - so a VM whose agent-side create succeeded but whose result
 // never got projected is rolled back, becomes hard-deletable, and once its row
@@ -352,7 +349,7 @@ func TestDeleteUnscheduledVMRefusesAScheduledVM(t *testing.T) {
 // visible instead of being rediscovered. Closing it changes name-reuse
 // semantics and needs its own design; this test is expected to be rewritten,
 // not merely re-run, when that happens.
-func TestRollbackToUnscheduledMakesAMaterialisedVMHardDeletable(t *testing.T) {
+func TestKnownGap_RollbackToUnscheduledMakesAMaterialisedVMHardDeletable(t *testing.T) {
 	h := newE2E(t)
 	ctx := context.Background()
 	_, opID := loginAs(t, h, auth.RoleOperator)
