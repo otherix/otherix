@@ -30,6 +30,10 @@ type fakeVMManager struct {
 	deletes     []string
 	deletesByID []uuid.UUID
 
+	// calls records method names in invocation order, so a test can assert the
+	// relative order of two manager calls within one reconcile pass.
+	calls []string
+
 	startErr      error
 	stopErr       error
 	delErr        error
@@ -89,6 +93,7 @@ func (f *fakeVMManager) Delete(_ context.Context, vmID uuid.UUID) (*vm.AgentTask
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deletesByID = append(f.deletesByID, vmID)
+	f.calls = append(f.calls, "Delete")
 	if f.deleteByIDErr != nil {
 		return nil, f.deleteByIDErr
 	}
@@ -111,6 +116,7 @@ func (f *fakeVMManager) HasActiveMigration(vmID uuid.UUID) bool {
 func (f *fakeVMManager) GuestMemUsedMiB(_ string) *int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "GuestMemUsedMiB")
 	return f.memUsedMiB
 }
 
@@ -589,6 +595,31 @@ func TestReconcile_UndeclaredVMWithoutTombstoneIsNeverTornDown(t *testing.T) {
 	reports := r.VMReports()
 	if len(reports) != 1 || reports[0].VMUUID != v.ID {
 		t.Errorf("VMReports = %v, want the surviving VM %v reported", reports, v.ID)
+	}
+}
+
+// TestReconcile_TeardownRunsBeforeTheObservedStateSweep pins the ordering inside
+// one reconcile pass: teardown of a tombstoned VM is dispatched BEFORE the loop
+// that reads guest memory stats. That loop does a QMP round trip per running VM,
+// so on a hung socket it can stall the whole pass; a destructive correction the
+// control plane has already committed must not queue behind an unrelated stats
+// read. Moving the teardown call below the reports loop would leave every other
+// assertion in this file green, so the order needs its own guard.
+func TestReconcile_TeardownRunsBeforeTheObservedStateSweep(t *testing.T) {
+	v := makeVM("doomed", vm.StatusRunning)
+	mgr := newFakeVMManager(v)
+	r := newVMsForTest(t, mgr)
+
+	handleAndReconcile(t, r, &heartbeat.Response{
+		VMTombstones: []heartbeat.VMTombstone{{VMID: v.ID, VMName: "doomed"}},
+	})
+
+	mgr.mu.Lock()
+	got := append([]string(nil), mgr.calls...)
+	mgr.mu.Unlock()
+	want := []string{"Delete", "GuestMemUsedMiB"}
+	if !sliceEqual(got, want) {
+		t.Errorf("manager call order = %v, want %v (teardown must not queue behind the stats read)", got, want)
 	}
 }
 
