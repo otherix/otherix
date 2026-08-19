@@ -75,11 +75,44 @@ NAME    ROLES               ARCH   STATUS  CORDONED  AGE
 node-1  hypervisor,gateway  arm64  ready   no        3d
 ```
 
-The control plane then places gateway memberships for `node-1` on every
-ingress-active overlay within a heartbeat cycle; overlay VMs become reachable
-through it with no further action.
+The node's agent must also be configured to serve the ingress plane: its
+`agent.yaml` needs a `gateway:` block with a `listen` address and an
+`advertised_endpoint` (the same two settings `otherix-agent bootstrap --gateway`
+writes for a standalone gateway, described below). The agent reports that
+endpoint on every heartbeat, and the control plane treats it as the proof that
+the plane is actually up - a node carrying the role bit but no such config is
+skipped for ingress, for relaying, and for placement decisions that depend on it.
+Restart the agent after editing the config.
+
+With both halves in place the control plane places gateway memberships for
+`node-1` on every ingress-active overlay within a heartbeat cycle; overlay VMs
+become reachable through it with no further action.
 
 To take the role away again, see [Remove or drain a gateway](#remove-or-drain-a-gateway).
+
+### What the gateway role costs the host
+
+A gateway forwards traffic on behalf of other machines, so enabling the role
+widens the host's exposure in two ways worth deciding on deliberately.
+
+**Host-global IPv4 forwarding.** The agent enables `net.ipv4.ip_forward` on a
+gateway host and installs no `FORWARD` filter of its own, so the host will route
+between any interfaces it holds, not only the overlay ones. Do not put a gateway
+host on an untrusted management LAN, and if the host straddles networks you would
+not want bridged, add your own `FORWARD` policy before enabling the role. The
+setting does not survive a reboot on its own - the agent reapplies it on every
+reconciliation pass, so a rebooted gateway forwards again once the agent is up.
+
+**A relay gateway sees the guest traffic it relays.** When nodes cannot reach
+each other directly (typically because they sit behind NAT), the control plane
+relays their overlay traffic hub-and-spoke through a gateway. WireGuard is
+point-to-point, so the gateway decrypts each spoke's traffic and re-encrypts it
+toward the other: it can observe and inject the guest traffic of every pair it
+relays for. Treat a relay gateway as inside the trust boundary for that traffic
+and site it accordingly. Control-plane-to-agent traffic is not exposed - the
+control plane runs its own end-to-end TLS through the gateway, which forwards
+those bytes without terminating them - and live migration and blob transfer carry
+their own TLS as well.
 
 ## Provision a standalone gateway host
 
