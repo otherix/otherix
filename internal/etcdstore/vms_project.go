@@ -128,15 +128,18 @@ func digestOpFromVM(vm store.VM, imageSHA256 []byte, now time.Time) (*clientv3.O
 
 // ProjectVMLifecycleSuccess writes the VM's desired_phase (when non-empty), its
 // observed runtime phase, and finalizes the lifecycle task - all in one
-// transaction. Every write here is idempotent, so no compare is needed; the
-// transaction only groups them so a poll never sees a half-applied terminal.
-// An empty desiredPhase skips the vms write (reboot leaves user intent unchanged).
+// transaction, with the desired_phase put guarded by a compare on the VM row's
+// ModRevision. The transaction groups the writes so a poll never sees a
+// half-applied terminal; the compare keeps a concurrent `vm delete` from being
+// overwritten by a lifecycle op holding a stale snapshot, which would clear the
+// row's deletion stamp and strand the guest (a resurrected row is neither
+// declared on a node nor tombstoned). An empty desiredPhase skips the vms write
+// entirely (reboot leaves user intent unchanged).
 func (s *Store) ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, desiredPhase store.VMDesiredPhase, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error {
-	now := time.Now().UTC()
-	var ops []clientv3.Op
-
+	var vm *store.VM
+	var vmRev int64
 	if desiredPhase != "" {
-		vm, err := s.VMByID(ctx, vmID)
+		v, rev, err := s.vmWithRev(ctx, vmID)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			// Matches the SQL `where deleted_at is null` no-op: a deleted VM's
@@ -144,15 +147,33 @@ func (s *Store) ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, d
 		case err != nil:
 			return err
 		default:
-			vm.DesiredPhase = desiredPhase
-			vm.UpdatedAt = now
-			val, merr := etcd.Marshal(vm)
-			if merr != nil {
-				return merr
-			}
-			ops = append(ops, clientv3.OpPut(vmKey(vmID), string(val)))
+			v.DesiredPhase = desiredPhase
+			vm, vmRev = &v, rev
 		}
 	}
+	return s.projectVMLifecycle(ctx, vmID, vm, vmRev, runtimePhase, fin)
+}
+
+// projectVMLifecycle commits the lifecycle writes from the VM snapshot the
+// caller read at vmRev: the desired_phase put (skipped when vm is nil), the
+// observed runtime phase, and the task finalize. Split out from
+// ProjectVMLifecycleSuccess so the read-to-commit window - where a concurrent
+// `vm delete` makes the snapshot stale - is reachable from a test.
+func (s *Store) projectVMLifecycle(ctx context.Context, vmID uuid.UUID, vm *store.VM, vmRev int64, runtimePhase store.VMPhase, fin store.UpdateTaskFinalizedParams) error {
+	now := time.Now().UTC()
+	var vmOp *clientv3.Op
+	if vm != nil {
+		vm.UpdatedAt = now
+		val, err := etcd.Marshal(*vm)
+		if err != nil {
+			return err
+		}
+		op := clientv3.OpPut(vmKey(vmID), string(val))
+		vmOp = &op
+	}
+
+	// ops are the unconditional writes: they commit in both branches below.
+	var ops []clientv3.Op
 
 	// vm_runtime.phase: a missing runtime row is a no-op (the SQL update
 	// affects zero rows), so the projection still finalizes the task.
@@ -177,7 +198,22 @@ func (s *Store) ProjectVMLifecycleSuccess(ctx context.Context, vmID uuid.UUID, d
 	}
 	ops = append(ops, clientv3.OpPut(taskKey(fin.ID), string(taskVal)))
 
-	if _, err := s.c.Raw().Txn(ctx).Then(ops...).Commit(); err != nil {
+	txn := s.c.Raw().Txn(ctx)
+	if vmOp != nil {
+		// Compare on the VM row's ModRevision the snapshot was read at: a
+		// `vm delete` soft-deleting the row between the read and this commit
+		// bumps the rev, so the stale desired_phase put loses and is dropped,
+		// leaving the deletion stamp intact. Closes the read-then-put TOCTOU.
+		// Only that put is conditional - the runtime and task writes ride both
+		// branches, so a lost compare never leaves the lifecycle task hanging
+		// in running with no reaper to settle it.
+		txn = txn.If(clientv3.Compare(clientv3.ModRevision(vmKey(vmID)), "=", vmRev)).
+			Then(append([]clientv3.Op{*vmOp}, ops...)...).
+			Else(ops...)
+	} else {
+		txn = txn.Then(ops...)
+	}
+	if _, err := txn.Commit(); err != nil {
 		return fmt.Errorf("project vm lifecycle txn: %v", err)
 	}
 	return nil
