@@ -146,7 +146,7 @@ func (h *Handler) ConsoleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mux := h.manager.GetMux(name)
+	mux := h.manager.GetMux(v.ID)
 	if mux == nil {
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeVMNotRunning,

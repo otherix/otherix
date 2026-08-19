@@ -87,7 +87,7 @@ func TestManager_New_ReattachesMuxForRunningVM(t *testing.T) {
 		}
 	}()
 
-	writeMeta := func(name string, status Status, sock string) {
+	writeMeta := func(name string, status Status, sock string) uuid.UUID {
 		t.Helper()
 		id := uuid.New()
 		if werr := state.WriteMeta(filepath.Join(cfg.StatePath, id.String()), &state.VMMeta{
@@ -104,20 +104,21 @@ func TestManager_New_ReattachesMuxForRunningVM(t *testing.T) {
 		}); werr != nil {
 			t.Fatalf("WriteMeta(%s): %v", name, werr)
 		}
+		return id
 	}
 
-	writeMeta("live-vm", StatusRunning, sockPath)
-	writeMeta("idle-vm", StatusStopped, filepath.Join(sockDir, "absent.sock"))
+	liveID := writeMeta("live-vm", StatusRunning, sockPath)
+	idleID := writeMeta("idle-vm", StatusStopped, filepath.Join(sockDir, "absent.sock"))
 
 	m, err := New(cfg, &netfabric.FakeFabric{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	if m.GetMux("live-vm") == nil {
+	if m.GetMux(liveID) == nil {
 		t.Error("GetMux(live-vm) = nil, want a re-attached multiplexer for the running VM")
 	}
-	if m.GetMux("idle-vm") != nil {
+	if m.GetMux(idleID) != nil {
 		t.Error("GetMux(idle-vm) != nil, want no multiplexer for a stopped VM")
 	}
 }

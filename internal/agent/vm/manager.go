@@ -4,6 +4,7 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -158,7 +159,7 @@ type Manager struct {
 	// state to the reconciler so it can skip enqueuing duplicates.
 	inFlight sync.Map
 
-	// muxes maps a running VM's name to its serial console
+	// muxes maps a running VM's id to its serial console
 	// multiplexer. An entry exists from the moment
 	// Start finishes attachMux until Delete tears it down. Stop /
 	// Poweroff intentionally do not remove the entry: the multiplexer
@@ -166,8 +167,15 @@ type Manager struct {
 	// VM's state directory. Agent restart leaves entries empty
 	// even for VMs that survived in-place; a subsequent reboot
 	// re-attaches via reconnectMux's fallback.
+	//
+	// Keyed by id, not name: two locally-known VMs can carry the same
+	// name (the agent still runs an orphan the control plane force-deleted
+	// while an operator recreates a VM under that name), and a name key
+	// would collapse them onto one entry - the second VM's attach would
+	// close the first one's multiplexer and console / logs would serve
+	// whichever VM last won the slot.
 	muxesMu sync.Mutex
-	muxes   map[string]*serialmux.Multiplexer
+	muxes   map[uuid.UUID]*serialmux.Multiplexer
 
 	// migrations holds the agent's in-memory migration records (target
 	// and source side); migPorts hands out migration ingress ports for
@@ -475,7 +483,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		vms:              map[uuid.UUID]*VM{},
 		tasks:            NewTaskStore(),
 		createTasks:      map[uuid.UUID]uuid.UUID{},
-		muxes:            map[string]*serialmux.Multiplexer{},
+		muxes:            map[uuid.UUID]*serialmux.Multiplexer{},
 		snapshotInFlight: map[snapshotInFlightKey]*AgentTask{},
 	}
 	m.diskCapturer = qmpDiskCapturer{}
@@ -729,15 +737,23 @@ func (m *Manager) Get(id uuid.UUID) (*VM, error) {
 // agent's wire surface addresses VMs by name; this is the resolver
 // the handlers hit on every name-keyed request. Returns ErrNotFound
 // when no live (non-deleted) entry matches.
+//
+// A name can match more than one locally-known VM: force-deleting a VM
+// on the control plane leaves the agent running an orphan the control
+// plane no longer declares, and an operator may then recreate a VM
+// under that name. ByName resolves to the newest match (ties broken on
+// the VM id so the answer never varies between calls): the recreated VM
+// is the operator's current intent, and no legitimate flow addresses
+// the orphan by name.
 func (m *Manager) ByName(name string) (*VM, error) {
 	m.mu.Lock()
 	var found *VM
 	for _, v := range m.vms {
-		if v.Name == name {
-			cp := *v
-			found = &cp
-			break
+		if v.Name != name || !newerThan(v, found) {
+			continue
 		}
+		cp := *v
+		found = &cp
 	}
 	m.mu.Unlock()
 	if found == nil {
@@ -745,6 +761,20 @@ func (m *Manager) ByName(name string) (*VM, error) {
 	}
 	found.Status = m.observedStatus(found)
 	return found, nil
+}
+
+// newerThan reports whether v should displace best as ByName's pick: a
+// nil best loses, a later CreatedAt wins, and an identical timestamp
+// falls back to the larger VM id so the comparison is a total order and
+// the resolved VM cannot vary with map iteration order.
+func newerThan(v, best *VM) bool {
+	if best == nil {
+		return true
+	}
+	if !v.CreatedAt.Equal(best.CreatedAt) {
+		return v.CreatedAt.After(best.CreatedAt)
+	}
+	return bytes.Compare(v.ID[:], best.ID[:]) > 0
 }
 
 // GuestMemUsedMiB returns the guest's in-use memory (MiB) read from its
@@ -1978,10 +2008,9 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 	}
 
 	// Tear down the multiplexer before removing the state directory so
-	// its log file handle is closed first. detachMux is
-	// keyed on VM name; the entry may already be absent (Stop /
-	// Poweroff do not remove it but agent restart would).
-	m.detachMux(v.Name)
+	// its log file handle is closed first. The entry may already be
+	// absent (Stop / Poweroff do not remove it but agent restart would).
+	m.detachMux(v.ID)
 
 	// Tear down host taps for each NIC. Best-effort — a failed DeleteTap
 	// is logged and does not abort the delete (the in-memory VM and its
@@ -2005,20 +2034,22 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 	log.Info("vm deleted")
 }
 
-// GetMux returns the registered serial multiplexer for the named VM,
-// or nil when no multiplexer is currently registered (the VM is
-// stopped/deleted, or the agent restarted while the VM was running
+// GetMux returns the registered serial multiplexer for the VM with the
+// given id, or nil when no multiplexer is currently registered (the VM
+// is stopped/deleted, or the agent restarted while the VM was running
 // and Start/Reboot have not yet re-attached one). Console and logs
-// handlers call this to attach subscribers.
-func (m *Manager) GetMux(name string) *serialmux.Multiplexer {
+// handlers resolve the request's VM name to a VM first, then call this
+// with that VM's id.
+func (m *Manager) GetMux(vmID uuid.UUID) *serialmux.Multiplexer {
 	m.muxesMu.Lock()
 	defer m.muxesMu.Unlock()
-	return m.muxes[name]
+	return m.muxes[vmID]
 }
 
 // attachMux opens a serial multiplexer for v and registers it under
-// v.Name. A pre-existing entry (e.g. left behind by a failed Start)
-// is Close'd before the new one is installed.
+// v.ID. A pre-existing entry for that same VM (e.g. left behind by a
+// failed Start) is Close'd before the new one is installed; a
+// same-named other VM's multiplexer is untouched.
 //
 // A multiplexer dial failure is fatal: callers tear the
 // freshly-spawned QEMU down (via killQEMU) and fail the lifecycle
@@ -2031,10 +2062,10 @@ func (m *Manager) attachMux(log *slog.Logger, v *VM) error {
 		return err
 	}
 	m.muxesMu.Lock()
-	if prior := m.muxes[v.Name]; prior != nil {
+	if prior := m.muxes[v.ID]; prior != nil {
 		_ = prior.Close()
 	}
-	m.muxes[v.Name] = mux
+	m.muxes[v.ID] = mux
 	m.muxesMu.Unlock()
 	return nil
 }
@@ -2046,7 +2077,7 @@ func (m *Manager) attachMux(log *slog.Logger, v *VM) error {
 // the failed instance see Done() and reconnect to the fresh one.
 func (m *Manager) reconnectMux(log *slog.Logger, v *VM) error {
 	m.muxesMu.Lock()
-	prior := m.muxes[v.Name]
+	prior := m.muxes[v.ID]
 	m.muxesMu.Unlock()
 	if prior == nil {
 		return m.attachMux(log, v)
@@ -2054,7 +2085,7 @@ func (m *Manager) reconnectMux(log *slog.Logger, v *VM) error {
 	if err := prior.Reconnect(); err != nil {
 		_ = prior.Close()
 		m.muxesMu.Lock()
-		delete(m.muxes, v.Name)
+		delete(m.muxes, v.ID)
 		m.muxesMu.Unlock()
 		if attachErr := m.attachMux(log, v); attachErr != nil {
 			return fmt.Errorf("multiplexer reconnect failed (%v); fresh attach also failed: %v", err, attachErr)
@@ -2063,12 +2094,12 @@ func (m *Manager) reconnectMux(log *slog.Logger, v *VM) error {
 	return nil
 }
 
-// detachMux closes the multiplexer registered under name (if any) and
-// drops the registry entry. Idempotent.
-func (m *Manager) detachMux(name string) {
+// detachMux closes the multiplexer registered for the VM with the given
+// id (if any) and drops the registry entry. Idempotent.
+func (m *Manager) detachMux(vmID uuid.UUID) {
 	m.muxesMu.Lock()
-	mux := m.muxes[name]
-	delete(m.muxes, name)
+	mux := m.muxes[vmID]
+	delete(m.muxes, vmID)
 	m.muxesMu.Unlock()
 	if mux != nil {
 		_ = mux.Close()

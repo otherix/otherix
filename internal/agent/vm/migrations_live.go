@@ -434,7 +434,7 @@ func (m *Manager) failIncomingResume(taskID, migrationID, vmID uuid.UUID, msg st
 		// pre-attachMux invariant against a future change that streams during
 		// resume. Idempotent - a no-op when no mux is registered. Mirrors the
 		// teardownDepartedSource fix on the source side.
-		m.detachMux(v.Name)
+		m.detachMux(v.ID)
 	}
 	m.transitionVM(vmID, StatusFailed, msg)
 	_ = m.persistVM(vmID)
@@ -627,7 +627,7 @@ func (m *Manager) teardownDepartedSource(v *VM) {
 	// dead source mux. Also releases the pump goroutine + log file handle that
 	// would otherwise leak on every live migration. Before removeAdoptedVM so
 	// the log file is closed before its state dir is removed.
-	m.detachMux(v.Name)
+	m.detachMux(v.ID)
 	m.removeAdoptedVM(v.ID)
 }
 

@@ -1029,7 +1029,7 @@ func TestTeardownDepartedSource_ClosesMux(t *testing.T) {
 	if err := m.attachMux(discardLogger(), v); err != nil {
 		t.Fatalf("attachMux: %v", err)
 	}
-	mux := m.GetMux("ex")
+	mux := m.GetMux(vmID)
 	if mux == nil {
 		t.Fatal("GetMux(ex) = nil after attachMux")
 	}
@@ -1042,7 +1042,7 @@ func TestTeardownDepartedSource_ClosesMux(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("subscriber Done() did not fire: teardownDepartedSource left the mux open (logs/console hang after migration)")
 	}
-	if m.GetMux("ex") != nil {
+	if m.GetMux(vmID) != nil {
 		t.Error("GetMux(ex) != nil after teardownDepartedSource: mux not detached")
 	}
 }
