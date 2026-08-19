@@ -47,6 +47,9 @@ func mkGatewayNodeNoPool(t *testing.T, s *etcdstore.Store, prefix string) uuid.U
 	ctx := context.Background()
 	np := nodeParams(uniqueNodeName(prefix))
 	np.Gateway = true
+	// A gateway the CP may route through also reports an ingress endpoint - the
+	// agent-side signal that its gateway plane is actually serving.
+	np.IngressAdvertisedEndpoint = "https://" + np.Name + ".example:9444"
 	if _, err := s.CreateNode(ctx, np); err != nil {
 		t.Fatalf("CreateNode(gateway-no-pool): %v", err)
 	}

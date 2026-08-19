@@ -939,11 +939,17 @@ func (h *Handler) loadDeclaredWireGuardPeers(ctx context.Context, hp store.Heart
 			return nil, fmt.Errorf("load node %s for wireguard peer: %v", r.NodeID, err)
 		}
 		rn := routingNode{
-			NodeID:           r.NodeID,
-			PublicKey:        r.PublicKey,
-			OverlayIP:        r.OverlayIP,
-			Endpoint:         r.Endpoint,
-			IsGateway:        node.GatewayRole,
+			NodeID:    r.NodeID,
+			PublicKey: r.PublicKey,
+			OverlayIP: r.OverlayIP,
+			Endpoint:  r.Endpoint,
+			// A node counts as a gateway for routing only when it also serves the
+			// gateway plane. The role is a CP-side bit; the reported ingress endpoint
+			// is the agent's signal that the plane is up (and with it the IP
+			// forwarding a relay needs). Relaying through a role-only node would drop
+			// every transit packet silently and suppress the no-common-gateway
+			// warning below.
+			IsGateway:        node.GatewayRole && node.IngressAdvertisedEndpoint != "",
 			EstablishedPeers: establishedPeerSet(r.EstablishedPeers),
 		}
 		if r.NodeID == selfNodeID {

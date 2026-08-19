@@ -172,3 +172,28 @@ func TestDownPathGate_PublicNodeReachable(t *testing.T) {
 		t.Errorf("public node %v must be a placement candidate", pub)
 	}
 }
+
+// TestDownPathGate_GatewayWithoutIngressEndpoint is the drift teeth: the gateway
+// ROLE is a CP-side bit an operator can set on a node whose agent does not serve
+// the gateway plane at all. Such a node advertises no ingress endpoint, cannot
+// splice a CP connection and never enables forwarding, so a NAT'd node that
+// reaches only it has no drive path and must not be a placement candidate.
+func TestDownPathGate_GatewayWithoutIngressEndpoint(t *testing.T) {
+	s, _ := startStore(t)
+	ctx := context.Background()
+	poolName := uniquePoolName("downpath-noingress")
+	natd := mkKindNode(t, s, "natd", store.NodeKindNode, poolName)
+	gwp := nodeParams(uniqueNodeName("gw"))
+	gwp.Gateway = true // role bit set, but the agent reports no ingress endpoint
+	if _, err := s.CreateNode(ctx, gwp); err != nil {
+		t.Fatalf("CreateNode(gateway): %v", err)
+	}
+	if _, err := s.UncordonNode(ctx, gwp.ID); err != nil {
+		t.Fatalf("UncordonNode(gateway): %v", err)
+	}
+	seedWG(t, s, natd, "", []string{gwp.ID.String()})
+
+	if eligibleIDs(t, s, poolName)[natd] {
+		t.Errorf("NAT'd node %v reaching only a gateway that serves no gateway plane must not be a placement candidate", natd)
+	}
+}

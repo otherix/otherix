@@ -136,8 +136,8 @@ func TestResolve_UnknownNode_ZeroRoute(t *testing.T) {
 func TestResolve_NATd_RoutesThroughLowestUUIDGateway(t *testing.T) {
 	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443"}
 	// Two reachable gateways; the lower-UUID one must win.
-	gwHi := store.Node{ID: uuid.MustParse("ffffffff-0000-0000-0000-000000000000"), Name: "gw-hi", GatewayRole: true, AdvertisedEndpoint: "https://hi.gw:9443"}
-	gwLo := store.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Name: "gw-lo", GatewayRole: true, AdvertisedEndpoint: "https://lo.gw:9443"}
+	gwHi := store.Node{ID: uuid.MustParse("ffffffff-0000-0000-0000-000000000000"), Name: "gw-hi", GatewayRole: true, AdvertisedEndpoint: "https://hi.gw:9443", IngressAdvertisedEndpoint: "https://hi.gw:9444"}
+	gwLo := store.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Name: "gw-lo", GatewayRole: true, AdvertisedEndpoint: "https://lo.gw:9443", IngressAdvertisedEndpoint: "https://lo.gw:9444"}
 	f := newReader(natd, gwHi, gwLo)
 	f.wg[natd.ID] = store.AgentWireguard{
 		NodeID:           natd.ID,
@@ -163,7 +163,7 @@ func TestResolve_NATd_RoutesThroughLowestUUIDGateway(t *testing.T) {
 func TestResolve_NATd_UnreachedGateway_NotSelected(t *testing.T) {
 	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443"}
 	// Gateway exists but the NAT'd node does not currently reach it.
-	gw := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:9443"}
+	gw := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:9443", IngressAdvertisedEndpoint: "https://gw:9444"}
 	f := newReader(natd, gw)
 	f.wg[natd.ID] = store.AgentWireguard{
 		NodeID:           natd.ID,
@@ -190,5 +190,26 @@ func TestResolve_NATd_NonGatewayPeer_NotSelected(t *testing.T) {
 
 	if _, err := agentroute.New(f).Resolve("edge"); err == nil {
 		t.Error("Resolve(NAT'd reaching only a non-gateway) = nil error, want error")
+	}
+}
+
+func TestResolve_NATd_GatewayNotServingItsPlane_NotSelected(t *testing.T) {
+	// The gateway ROLE is a CP-side bit; whether the node actually serves the
+	// gateway plane is decided agent-side and surfaces as its reported ingress
+	// endpoint. A role-only node never mounted the splice route and never enabled
+	// forwarding, so routing through it would 404 every CP call and blackhole
+	// relayed guest traffic. Fail loudly instead.
+	natd := store.Node{ID: uuid.New(), Name: "edge", AdvertisedEndpoint: "https://10.0.0.9:9443"}
+	roleOnly := store.Node{ID: uuid.New(), Name: "gw", GatewayRole: true, AdvertisedEndpoint: "https://gw:9443"}
+	f := newReader(natd, roleOnly)
+	f.wg[natd.ID] = store.AgentWireguard{
+		NodeID:           natd.ID,
+		Endpoint:         "",
+		OverlayIP:        netip.MustParseAddr("10.100.0.9"),
+		EstablishedPeers: []string{roleOnly.ID.String()},
+	}
+
+	if got, err := agentroute.New(f).Resolve("edge"); err == nil {
+		t.Errorf("Resolve(edge) = %+v, nil error; want an error (the gateway serves no gateway plane)", got)
 	}
 }

@@ -95,7 +95,15 @@ func (r *Resolver) Resolve(nodeName string) (agentclient.AgentRoute, error) {
 
 // selectGateway picks the lowest-UUID gateway-role node the NAT'd node currently
 // reaches (in its EstablishedPeers) that the CP can dial (has an advertised
-// endpoint). Empty intersection => (_, false): no route is wired.
+// endpoint) and that actually serves the gateway plane. Empty intersection =>
+// (_, false): no route is wired.
+//
+// The gateway role is a CP-side bit an operator can set on any node; whether the
+// node's agent serves the gateway plane is decided from its own config, and the
+// reported ingress endpoint is the signal for it (an agent reports one only when
+// the plane is up). Without that check the CP would splice to a node that never
+// mounted the splice route - a permanent 404 on every call to the NAT'd nodes
+// behind it. Skipping such a node instead makes the failure loud and localised.
 func (r *Resolver) selectGateway(ctx context.Context, wg store.AgentWireguard) (store.Node, bool) {
 	reached := make(map[uuid.UUID]bool, len(wg.EstablishedPeers))
 	for _, s := range wg.EstablishedPeers {
@@ -113,7 +121,7 @@ func (r *Resolver) selectGateway(ctx context.Context, wg store.AgentWireguard) (
 	var best store.Node
 	found := false
 	for _, n := range nodes {
-		if !n.GatewayRole || n.AdvertisedEndpoint == "" || !reached[n.ID] {
+		if !n.GatewayRole || n.AdvertisedEndpoint == "" || n.IngressAdvertisedEndpoint == "" || !reached[n.ID] {
 			continue
 		}
 		if !found || bytes.Compare(n.ID[:], best.ID[:]) < 0 {

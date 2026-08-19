@@ -445,7 +445,12 @@ func (s *Store) downPathReachability(ctx context.Context) (map[uuid.UUID]store.A
 	}
 	publicGateways := make(map[uuid.UUID]bool)
 	for _, n := range nodes {
-		if n.HasRole(store.NodeRoleGateway) && n.AdvertisedEndpoint != "" {
+		// The ingress endpoint is the agent's signal that it actually serves the
+		// gateway plane; the role alone is a CP-side bit that can be set on a node
+		// whose agent never mounts the splice route. Requiring both keeps this
+		// predicate aligned with the resolver, so the gate cannot report a node
+		// schedulable that the CP has no way to drive.
+		if n.HasRole(store.NodeRoleGateway) && n.AdvertisedEndpoint != "" && n.IngressAdvertisedEndpoint != "" {
 			publicGateways[n.ID] = true
 		}
 	}

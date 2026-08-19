@@ -106,6 +106,7 @@ func TestLoadDeclaredWireGuardPeers_RelaysNATdPairThroughGateway(t *testing.T) {
 	mustCreateNode(t, s, natA, "nat-a", false)
 	mustCreateNode(t, s, natB, "nat-b", false)
 	mustCreateNode(t, s, gw, "gw", true)
+	mustSetIngressEndpoint(t, s, gw, "https://gw.example:9444")
 
 	mustUpsertWG(t, s, natA, "pk-a", "", []string{gw.String()})
 	mustUpsertWG(t, s, natB, "pk-b", "", []string{gw.String()})
@@ -309,5 +310,40 @@ func mustSetIngressEndpoint(t *testing.T, s *etcdstore.Store, id uuid.UUID, endp
 		})
 	}); err != nil {
 		t.Fatalf("set ingress endpoint on %s: %v", id, err)
+	}
+}
+
+// TestLoadDeclaredWireGuardPeers_GatewayNotServingItsPlane_NoRelay covers the
+// config-drift case: an operator enables the gateway role on a node whose agent
+// does not run the gateway plane. Such a node advertises no ingress endpoint,
+// never enables IP forwarding and would silently drop every relayed packet, so
+// the routing producer must not pick it as a relay hub - it omits the peer
+// instead, which surfaces the black hole in the log rather than hiding it.
+func TestLoadDeclaredWireGuardPeers_GatewayNotServingItsPlane_NoRelay(t *testing.T) {
+	s := freshStore(t)
+	ctx := context.Background()
+
+	natA, natB, gw := uuid.New(), uuid.New(), uuid.New()
+	mustCreateNode(t, s, natA, "nat-a", false)
+	mustCreateNode(t, s, natB, "nat-b", false)
+	mustCreateNode(t, s, gw, "gw", true) // role bit only; no ingress endpoint reported
+
+	mustUpsertWG(t, s, natA, "pk-a", "", []string{gw.String()})
+	mustUpsertWG(t, s, natB, "pk-b", "", []string{gw.String()})
+	mustUpsertWG(t, s, gw, "pk-gw", "9.9.9.9:51820", []string{natA.String(), natB.String()})
+	overlayB := netip.PrefixFrom(mustOverlayIP(t, s, natB), 32).String()
+
+	h := &Handler{log: discardLogger()}
+	var gotA []declaredWireGuardPeer
+	if err := s.RunHeartbeatProjection(ctx, func(hp store.HeartbeatProjection) error {
+		var e error
+		gotA, e = h.loadDeclaredWireGuardPeers(ctx, hp, natA)
+		return e
+	}); err != nil {
+		t.Fatalf("run projection: %v", err)
+	}
+
+	if e := findPeer(gotA, "pk-gw"); e != nil && hasAllowed(e, overlayB) {
+		t.Errorf("nat-a relays %s through a gateway that serves no gateway plane: %+v", overlayB, e)
 	}
 }
