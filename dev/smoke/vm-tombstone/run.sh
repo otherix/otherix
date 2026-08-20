@@ -74,6 +74,10 @@ API_LOG="${API_LOG:-.local/run/otherix-api.log}"
 STATE1="$(smoke_state 1)"
 H1="${SMOKE_HANDLE_1}"
 
+# Set to yes once a created VM's pool disk dir has actually been observed on the
+# node; see torn_down.
+POOL_SEEN="no"
+
 # --- helpers -----------------------------------------------------------
 RED=$'\033[31m'; GREEN=$'\033[32m'; YEL=$'\033[33m'; NC=$'\033[0m'
 pass() { echo "${GREEN}PASS${NC} $*"; }
@@ -115,11 +119,24 @@ wait_node_ready() {
   fail "$NODE1 did not return to ready within ${READY_WAIT}s"
 }
 
-# torn_down UUID -> 0 when no qemu, no state dir and no pool disk dir remain
+# torn_down UUID -> 0 when no qemu, no state dir and - when the pool disk dir was
+# visible from here in the first place - no pool disk dir remain.
+#
+# Every leg below reports "gone" when the channel to the node breaks: a failed
+# `run_on` yields no qemu lines and a failing `test -d`. So the predicate starts
+# with a path that is always there, and a broken channel FAILS the assertion
+# instead of satisfying it - without that probe one flaky invocation is a green
+# run of the very step this smoke exists for.
 torn_down() {
+  [[ "$(dir_exists "$STATE1")" == "yes" ]] || return 1
   [[ "$(qemu_count "$1")" == "0" ]] || return 1
   [[ "$(dir_exists "$(state_dir "$1")")" == "no" ]] || return 1
-  [[ "$(dir_exists "$(pool_dir "$1")")" == "no" ]] || return 1
+  # The pool root is a private mount on the netns stack, where run_on enters only
+  # the netns and never sees it. Requiring a dir that was never observable would
+  # assert nothing, so this leg counts only when the create step saw it.
+  if [[ "$POOL_SEEN" == "yes" ]]; then
+    [[ "$(dir_exists "$(pool_dir "$1")")" == "no" ]] || return 1
+  fi
   return 0
 }
 
@@ -202,7 +219,8 @@ LIVE_ID="$(otx vm get "$VM_LIVE" --output json | jq -r '.id')"
 [[ "$LIVE_ID" =~ ^[0-9a-f-]{36}$ ]] || fail "could not resolve the id of $VM_LIVE (got '$LIVE_ID')"
 [[ "$(qemu_count "$LIVE_ID")" == "1" ]] || fail "$VM_LIVE: want exactly 1 qemu for $LIVE_ID after create, found $(qemu_count "$LIVE_ID")"
 [[ "$(dir_exists "$(state_dir "$LIVE_ID")")" == "yes" ]] || fail "$VM_LIVE: no state dir after create"
-pass "$VM_LIVE running on $NODE1 (id=$LIVE_ID, qemu up, state dir present)"
+POOL_SEEN="$(dir_exists "$(pool_dir "$LIVE_ID")")"
+pass "$VM_LIVE running on $NODE1 (id=$LIVE_ID, qemu up, state dir present, pool disk dir visible=$POOL_SEEN)"
 
 info "stopping the agent on $NODE1 and waiting ${STALE_WAIT}s past the staleness window"
 agent_stop
@@ -256,7 +274,8 @@ otx vm create "$VM_CRASH" \
 CRASH_ID="$(otx vm get "$VM_CRASH" --output json | jq -r '.id')"
 [[ "$CRASH_ID" =~ ^[0-9a-f-]{36}$ ]] || fail "could not resolve the id of $VM_CRASH (got '$CRASH_ID')"
 [[ "$(qemu_count "$CRASH_ID")" == "1" ]] || fail "$VM_CRASH: want exactly 1 qemu for $CRASH_ID after create, found $(qemu_count "$CRASH_ID")"
-pass "$VM_CRASH running on $NODE1 (id=$CRASH_ID)"
+POOL_SEEN="$(dir_exists "$(pool_dir "$CRASH_ID")")"
+pass "$VM_CRASH running on $NODE1 (id=$CRASH_ID, pool disk dir visible=$POOL_SEEN)"
 
 agent_stop
 sleep "$STALE_WAIT"
