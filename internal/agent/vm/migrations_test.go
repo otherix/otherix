@@ -64,3 +64,68 @@ func TestRemoveAdoptedVM_RemovesDiskDir(t *testing.T) {
 		t.Errorf("disk dir still present after removeAdoptedVM: stat err = %v", err)
 	}
 }
+
+// TestCancelMigrationOfflineTargetIsIdempotent pins the observable contract the
+// control plane now depends on: an offline TARGET record is reaped exactly once,
+// however many times the cancel arrives. Both the operator cancel path
+// (propagateCancel) and the worker's terminal-outcome reap (reapTargetIncoming)
+// call the agent, and nothing serialises them, so a repeated cancel is ordinary
+// traffic rather than an edge case.
+//
+// The second cancel must leave the record's terminal stamp untouched and must
+// NOT free a port that a later migration has since taken.
+func TestCancelMigrationOfflineTargetIsIdempotent(t *testing.T) {
+	m := newTestManager(t)
+	migID := uuid.New()
+	port, err := m.migPorts.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve(): %v", err)
+	}
+	m.Migrations().Put(&migration.Record{
+		MigrationID: migID, VMID: uuid.New(), VMName: "demo",
+		Role: migration.RoleTarget, Mode: migration.ModeOffline,
+		Phase: migration.PhaseSetup, Port: port,
+	})
+
+	if _, ok := m.CancelMigration(migID); !ok {
+		t.Fatalf("first CancelMigration returned ok=false")
+	}
+	first, ok := m.Migrations().Get(migID)
+	if !ok {
+		t.Fatalf("record absent after first cancel")
+	}
+	if first.Phase != migration.PhaseCancelled {
+		t.Fatalf("phase after first cancel = %q, want %q", first.Phase, migration.PhaseCancelled)
+	}
+
+	// A later migration takes the freed port. A second cancel of the ALREADY
+	// terminal record must not hand this port back to the pool.
+	reclaimed, err := m.migPorts.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve() after cancel: %v", err)
+	}
+	if reclaimed != port {
+		t.Fatalf("reclaimed port = %d, want the freed %d", reclaimed, port)
+	}
+
+	if _, ok := m.CancelMigration(migID); !ok {
+		t.Fatalf("second CancelMigration returned ok=false")
+	}
+	second, ok := m.Migrations().Get(migID)
+	if !ok {
+		t.Fatalf("record absent after second cancel")
+	}
+	if !second.CompletedAt.Equal(first.CompletedAt) {
+		t.Errorf("CompletedAt restamped by the second cancel: %v -> %v", first.CompletedAt, second.CompletedAt)
+	}
+
+	// The port the later migration holds must still be reserved: reserving again
+	// has to yield a DIFFERENT port.
+	next, err := m.migPorts.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve() after second cancel: %v", err)
+	}
+	if next == reclaimed {
+		t.Errorf("second cancel freed port %d, which a later migration holds", reclaimed)
+	}
+}

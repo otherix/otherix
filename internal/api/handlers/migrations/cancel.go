@@ -121,9 +121,13 @@ func (h *Handler) propagateCancel(ctx context.Context, m store.Migration, vm sto
 		}
 	}
 
-	// Only a LIVE target has an autonomous incoming-resume goroutine to unblock; an
-	// offline target has nothing to reap on a pre-cutover cancel.
-	if m.Live && m.TargetNodeID != nil {
+	// Both modes: an offline target is not "nothing to reap". It holds a qemu-nbd
+	// server owning the destination disk's write lock, a reserved migration port,
+	// and a migration record that nothing else ever makes terminal - and that
+	// record keeps the agent's HasActiveForVM true, blocking tombstone teardown of
+	// the VM for the life of the agent process. See reapTargetIncoming in run.go
+	// for the safety invariant this rests on.
+	if m.TargetNodeID != nil {
 		if target, err := h.store.NodeByID(abortCtx, *m.TargetNodeID); err != nil {
 			h.log.WarnContext(ctx, "migrations.cancel: resolve target node for propagation",
 				"migration_id", m.ID.String(), "target_node_id", m.TargetNodeID.String(), "error", err)

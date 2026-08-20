@@ -529,20 +529,34 @@ func (m *Manager) CancelMigration(id uuid.UUID) (MigrationView, bool) {
 		return m.cancelLive(id, rec)
 	}
 	if !rec.Terminal() {
+		// Killing a child twice is harmless (the pid is already reaped), so the
+		// kills run on the snapshot. The PORT is different: releasing it twice can
+		// hand back a port a LATER migration has since re-reserved, giving two
+		// migrations the same ingress port. So release only if this call WINS the
+		// non-terminal -> terminal transition, which the store applies under its
+		// mutex - exactly as teardownIncomingTarget and failIncomingResume do on
+		// the live side. Fails toward inaction: a loser leaks the allocator entry
+		// (recoverable; the kills above already dropped the OS-level binding)
+		// rather than freeing a live migration's port.
 		if rec.NBDPid > 0 {
 			_ = qemu.Kill(rec.NBDPid)
 		}
 		if rec.ConvertPid > 0 {
 			_ = qemu.Kill(rec.ConvertPid)
 		}
-		if rec.Port > 0 {
-			m.migPorts.Release(rec.Port)
-		}
+		won := false
 		m.migrations.Update(id, func(r *migration.Record) {
+			if r.Terminal() {
+				return
+			}
+			won = true
 			r.Phase = migration.PhaseCancelled
 			r.ErrorMessage = "cancelled"
 			r.CompletedAt = time.Now().UTC()
 		})
+		if won && rec.Port > 0 {
+			m.migPorts.Release(rec.Port)
+		}
 	}
 	return m.GetMigration(id)
 }

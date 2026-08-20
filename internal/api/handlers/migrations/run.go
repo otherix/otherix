@@ -601,13 +601,17 @@ func reconcileVanishedSourceTask(ctx context.Context, st MigrationWorkerStore, a
 	}
 }
 
-// cancelTargetIncoming best-effort tells the bound TARGET to reap its live-migration
-// incoming setup when the migration ends pre-cutover (source-task failure / cancel).
-// Only for live migrations with a bound target; offline targets have no autonomous
-// resume goroutine to unblock. A failure degrades to the target's own 30-minute
-// incoming timeout backstop and must NOT change the migration outcome.
+// cancelTargetIncoming best-effort tells the bound TARGET to reap its incoming
+// setup when the migration ends pre-cutover (source-task failure / cancel). A
+// failure degrades to the target's own backstop and must NOT change the migration
+// outcome.
+//
+// Both modes are reaped, for the reasons and under the invariant spelled out on
+// reapTargetIncoming: an offline target leaks a qemu-nbd holding the destination
+// disk's write lock, a reserved port, and a permanently non-terminal migration
+// record that blocks the agent's tombstone teardown.
 func cancelTargetIncoming(ctx context.Context, agent MigrationAgentClient, log *slog.Logger, m store.Migration, vm store.VM, target store.Node) {
-	if !m.Live || m.TargetNodeID == nil {
+	if m.TargetNodeID == nil {
 		return
 	}
 	if _, err := agent.CancelMigration(ctx, agentclient.DialURL(target.Name), vm.Name, m.ID.String()); err != nil {
@@ -1141,13 +1145,29 @@ func reconcileCancelledNoAgentTask(ctx context.Context, st MigrationWorkerStore,
 	}
 }
 
-// reapTargetIncoming best-effort tells the bound TARGET to reap its live-migration
-// incoming setup for a pre-cutover terminal outcome (failed / source-aborted
-// cancel). NOT called on a completed migration (the target IS the running VM) nor
-// on uncertainty (the target could be the only live copy). A failure degrades to
-// the agent's own incoming-timeout backstop and never fails the reconcile.
+// reapTargetIncoming best-effort tells the bound TARGET to reap its incoming
+// setup for a pre-cutover terminal outcome (failed / source-aborted cancel). NOT
+// called on a completed migration (the target IS the running VM) nor on
+// uncertainty (the target could be the only live copy). A failure degrades to the
+// agent's own backstop and never fails the reconcile.
+//
+// Both modes are reaped. An offline target is not "nothing to reap": it holds a
+// qemu-nbd server owning the destination disk's write lock, a reserved migration
+// port, and a migration record that stays non-terminal forever, since nothing
+// advances a target-side offline record after StartIncoming publishes it. That
+// record keeps the agent's HasActiveForVM true, which blocks tombstone teardown
+// of the VM for the life of the agent process. The agent cannot reap this on a
+// deadline - a target-side offline record sits at phase=setup for the whole of a
+// perfectly healthy push, so no timeout can tell an abandoned setup from a slow
+// one - but the control plane knows the migration is terminal, so it says so.
+//
+// Safe for offline by the same invariant that makes it safe for live, and more
+// strongly: every caller has confirmed the source still holds the guest, and an
+// offline target adopts a STOPPED copy the CP starts only in convergePostCutover
+// after a committed cutover, over an intact source disk. The offline destination
+// disk is therefore never the only copy here.
 func reapTargetIncoming(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, m store.Migration) {
-	if !m.Live || m.TargetNodeID == nil {
+	if m.TargetNodeID == nil {
 		return
 	}
 	target, err := st.NodeByID(ctx, *m.TargetNodeID)
