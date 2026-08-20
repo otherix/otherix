@@ -108,7 +108,11 @@ VM between them - `make smoke-vm-migration-live` (live cutover with console
 heartbeat continuity), plus `smoke-vm-migration-live-logs`,
 `smoke-vm-migration-live-console`, `smoke-vm-migration-live-overlay`,
 `smoke-vm-migration-live-bridge`, `smoke-vm-migration-live-stats`, and
-`smoke-vm-migration-cancel`.
+`smoke-vm-migration-cancel`. Cancelling an offline migration has its own smoke,
+`make smoke-vm-migration-cancel-offline`: an offline target has no agent-side
+timeout to fall back on, so it asserts the control plane reaps the target's
+qemu-nbd and ingress port promptly rather than leaving them for the life of the
+agent process.
 
 ## Smoke: overlay egress (manual, static-addressed VM)
 

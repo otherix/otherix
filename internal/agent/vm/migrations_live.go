@@ -145,11 +145,18 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 	// transport (NBD export + RAM channel) over QMP. The launched qemu keeps
 	// running; the setup conn is closed once setup completes (it only carries
 	// the monitoring socket, not the qemu process).
+	// Set before the attempt, not after it: launchIncomingQemu can fail AFTER
+	// qemu.Spawn already forked a process - its QMP-reachability deadline loop is
+	// past the spawn - and on that arm a post-hoc flag would skip killQEMU while
+	// removeAdoptedVM deletes the process's state directory, orphaning it. The flag
+	// therefore tracks "a process may exist", and killQEMU is a safe no-op when
+	// none does (it returns on an unreadable pidfile or a cmdline that does not
+	// carry this VM's uuid).
+	launched = true
 	if err := m.migLaunchIncoming(ctx, v, ls); err != nil {
 		cleanup()
 		return IncomingResult{}, fmt.Errorf("launch incoming qemu: %v", err)
 	}
-	launched = true
 	if err := m.dialAndSetupIncoming(v, ls); err != nil {
 		cleanup()
 		return IncomingResult{}, err

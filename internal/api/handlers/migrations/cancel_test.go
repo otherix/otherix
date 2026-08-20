@@ -84,92 +84,77 @@ func seedBoundLiveMigration(t *testing.T, s *etcdstore.Store, vmID, source, targ
 }
 
 // TestMigrationCancel_PropagatesToSourceAndTarget pins the feature: a fresh
-// cancel of a bound LIVE migration tells BOTH the source and the target agent to
+// cancel of a bound migration tells BOTH the source and the target agent to
 // abort, with the right (vmName, migrationID). The migration is already
 // cancelled in the store (fail-safe state) before the agents are ever contacted.
+//
+// Both modes propagate. An earlier revision skipped the target for offline
+// migrations on the premise that an offline target has nothing to reap; that is
+// false - it holds a qemu-nbd owning the destination disk's write lock, a
+// reserved migration port, and a migration record nothing else ever makes
+// terminal, which blocks the agent's tombstone teardown of that VM.
 func TestMigrationCancel_PropagatesToSourceAndTarget(t *testing.T) {
-	s, cli := freshStore(t)
-	const srcEndpoint = "https://node-a:9443"
-	const tgtEndpoint = "https://node-b:9443"
-	nodeA := seedReadyNode(t, s, "node-a", srcEndpoint)
-	nodeB := seedReadyNode(t, s, "node-b", tgtEndpoint)
-	owner := uuid.New()
-	vm := ownedVM(t, cli, nodeA.ID, owner)
-	m := seedBoundLiveMigration(t, s, vm.ID, nodeA.ID, nodeB.ID)
+	tests := []struct {
+		name string
+		live bool
+	}{
+		{name: "live", live: true},
+		{name: "offline", live: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, cli := freshStore(t)
+			const srcEndpoint = "https://node-a:9443"
+			const tgtEndpoint = "https://node-b:9443"
+			nodeA := seedReadyNode(t, s, "node-a", srcEndpoint)
+			nodeB := seedReadyNode(t, s, "node-b", tgtEndpoint)
+			owner := uuid.New()
+			vm := ownedVM(t, cli, nodeA.ID, owner)
+			m, _ := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", tc.live)
 
-	agent := &recordingCancelClient{}
-	h := newHandlerWithAgent(s, agent)
-	rec := httptest.NewRecorder()
-	h.Cancel(rec, cancelRequest(operator(owner), m.ID.String()))
+			agent := &recordingCancelClient{}
+			h := newHandlerWithAgent(s, agent)
+			rec := httptest.NewRecorder()
+			h.Cancel(rec, cancelRequest(operator(owner), m.ID.String()))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
-	}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+			}
 
-	// Migration is cancelled (authoritative state set first).
-	got, err := s.MigrationByID(context.Background(), m.ID)
-	if err != nil {
-		t.Fatalf("MigrationByID: %v", err)
-	}
-	if got.Phase != store.MigrationPhaseCancelled {
-		t.Errorf("migration phase = %q, want cancelled", got.Phase)
-	}
+			// Migration is cancelled (authoritative state set first).
+			got, err := s.MigrationByID(context.Background(), m.ID)
+			if err != nil {
+				t.Fatalf("MigrationByID: %v", err)
+			}
+			if got.Phase != store.MigrationPhaseCancelled {
+				t.Errorf("migration phase = %q, want cancelled", got.Phase)
+			}
 
-	calls := agent.recorded()
-	if len(calls) != 2 {
-		t.Fatalf("cancel calls = %v, want 2 (source + target)", calls)
-	}
-	byEndpoint := map[string]cancelCall{}
-	for _, c := range calls {
-		byEndpoint[c.endpoint] = c
-	}
-	// The worker dials each agent by its identity URL (DialURL(node.Name)).
-	srcDial, tgtDial := agentclient.DialURL(nodeA.Name), agentclient.DialURL(nodeB.Name)
-	src, ok := byEndpoint[srcDial]
-	if !ok {
-		t.Fatalf("no cancel call to source %q (calls=%v)", srcDial, calls)
-	}
-	if src.vmName != vm.Name || src.migID != m.ID.String() {
-		t.Errorf("source cancel = %+v, want vmName %q migID %q", src, vm.Name, m.ID)
-	}
-	tgt, ok := byEndpoint[tgtDial]
-	if !ok {
-		t.Fatalf("no cancel call to target %q (calls=%v)", tgtDial, calls)
-	}
-	if tgt.vmName != vm.Name || tgt.migID != m.ID.String() {
-		t.Errorf("target cancel = %+v, want vmName %q migID %q", tgt, vm.Name, m.ID)
-	}
-}
-
-// TestMigrationCancel_OfflineSkipsTargetPropagation pins that an OFFLINE
-// migration tells ONLY the source to abort - an offline target has no
-// autonomous incoming resume goroutine to unblock (mirrors cancelTargetIncoming
-// in the worker). The migration is still cancelled at 200.
-func TestMigrationCancel_OfflineSkipsTargetPropagation(t *testing.T) {
-	s, cli := freshStore(t)
-	const srcEndpoint = "https://node-a:9443"
-	const tgtEndpoint = "https://node-b:9443"
-	nodeA := seedReadyNode(t, s, "node-a", srcEndpoint)
-	nodeB := seedReadyNode(t, s, "node-b", tgtEndpoint)
-	owner := uuid.New()
-	vm := ownedVM(t, cli, nodeA.ID, owner)
-	// Offline (live=false) explicit-target migration.
-	m, _ := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
-
-	agent := &recordingCancelClient{}
-	h := newHandlerWithAgent(s, agent)
-	rec := httptest.NewRecorder()
-	h.Cancel(rec, cancelRequest(operator(owner), m.ID.String()))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
-	}
-	calls := agent.recorded()
-	if len(calls) != 1 {
-		t.Fatalf("cancel calls = %v, want 1 (source only - offline target has no resume goroutine)", calls)
-	}
-	if want := agentclient.DialURL(nodeA.Name); calls[0].endpoint != want {
-		t.Errorf("cancel endpoint = %q, want source %q", calls[0].endpoint, want)
+			calls := agent.recorded()
+			if len(calls) != 2 {
+				t.Fatalf("cancel calls = %v, want 2 (source + target)", calls)
+			}
+			byEndpoint := map[string]cancelCall{}
+			for _, c := range calls {
+				byEndpoint[c.endpoint] = c
+			}
+			// The worker dials each agent by its identity URL (DialURL(node.Name)).
+			srcDial, tgtDial := agentclient.DialURL(nodeA.Name), agentclient.DialURL(nodeB.Name)
+			src, ok := byEndpoint[srcDial]
+			if !ok {
+				t.Fatalf("no cancel call to source %q (calls=%v)", srcDial, calls)
+			}
+			if src.vmName != vm.Name || src.migID != m.ID.String() {
+				t.Errorf("source cancel = %+v, want vmName %q migID %q", src, vm.Name, m.ID)
+			}
+			tgt, ok := byEndpoint[tgtDial]
+			if !ok {
+				t.Fatalf("no cancel call to target %q (calls=%v)", tgtDial, calls)
+			}
+			if tgt.vmName != vm.Name || tgt.migID != m.ID.String() {
+				t.Errorf("target cancel = %+v, want vmName %q migID %q", tgt, vm.Name, m.ID)
+			}
+		})
 	}
 }
 

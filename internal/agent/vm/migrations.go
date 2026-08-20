@@ -156,7 +156,19 @@ func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
 	// Free BOTH ports of the pair (offline records carry NBDPort==0, which
 	// ReleasePair ignores). Releasing only rec.Port leaked the NBD port on the
 	// cold-live edge.
-	m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
+	//
+	// Only for a NON-terminal record. TakeTargetByVM matches on role alone, so it
+	// also hands back records some other finalizer already stamped terminal - and
+	// every one of those released the ports as it stamped (runIncomingResume,
+	// failIncomingResume, teardownIncomingTarget, CancelMigration). Releasing
+	// again would return a port a LATER migration has since reserved, giving two
+	// incoming migrations the same ingress port. Fails toward inaction, like the
+	// other three: a terminal record whose ports somehow were not released leaks
+	// an allocator entry (recoverable, self-heals on agent restart) rather than
+	// freeing a live migration's port.
+	if !rec.Terminal() {
+		m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
+	}
 }
 
 // IncomingSpec parameterizes target-side migration preparation.
@@ -221,6 +233,38 @@ type IncomingResult struct {
 // partial is GC'd. No migration record is stored until every step succeeds,
 // so an early failure leaves nothing in m.migrations to delete.
 func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingResult, error) {
+	// Hold the per-name lifecycle slot for the whole of setup, on both incoming
+	// paths. Between AdoptForMigration and the migration record's publication the
+	// VM is in m.vms - so the reconciler observes it and a control-plane tombstone
+	// can target it - while HasActiveForVM is still false and the observed status
+	// is tearable (an offline target adopts at StatusStopped; a live target's
+	// StatusMigratingIncoming downgrades to StatusFailed while its -incoming qemu
+	// has not launched). The slot closes that window at both layers the teardown
+	// passes through: the reconciler skips a VM with HasInFlight, and Manager.Delete
+	// itself refuses the slot it cannot acquire.
+	//
+	// The handoff is gapless: the completing migrations.Put runs before this
+	// function returns, and the deferred release fires on that return, so
+	// HasActiveForVM is already true the instant the slot frees.
+	//
+	// Taken BEFORE the idempotent-resume guards below (and in startIncomingLive),
+	// not after, so one acquire covers both paths and a redelivered task is
+	// serialised against the attempt it is replaying rather than racing it. The
+	// cost is that a replay arriving while any other lifecycle op holds the name
+	// gets ErrInFlight instead of the cached endpoints; that is a retryable 409 the
+	// CP re-drives, not a lost result.
+	//
+	// An empty name must be rejected rather than passed through: inFlightAcquire("")
+	// returns a no-op release and ok=true, which would silently acquire nothing.
+	if s.VMName == "" {
+		return IncomingResult{}, fmt.Errorf("migration %s: incoming spec carries no vm name", s.MigrationID)
+	}
+	release, ok := m.inFlightAcquire(s.VMName)
+	if !ok {
+		return IncomingResult{}, ErrInFlight
+	}
+	defer release()
+
 	if migration.Mode(s.Mode) == migration.ModeLive {
 		return m.startIncomingLive(ctx, s)
 	}
@@ -529,20 +573,43 @@ func (m *Manager) CancelMigration(id uuid.UUID) (MigrationView, bool) {
 		return m.cancelLive(id, rec)
 	}
 	if !rec.Terminal() {
+		// Killing a child twice is harmless (the pid is already reaped), so the
+		// kills run on the snapshot. The PORT is different: releasing it twice can
+		// hand back a port a LATER migration has since re-reserved, giving two
+		// migrations the same ingress port. So release only if this call WINS the
+		// non-terminal -> terminal transition, which the store applies under its
+		// mutex - exactly as teardownIncomingTarget and failIncomingResume do on
+		// the live side. Fails toward inaction: a loser leaks the allocator entry
+		// (recoverable; the kills above already dropped the OS-level binding)
+		// rather than freeing a live migration's port.
 		if rec.NBDPid > 0 {
-			_ = qemu.Kill(rec.NBDPid)
+			// StopNBD, not a bare Kill: it checks the pid is still alive and SIGTERMs
+			// first (so the export closes and flushes), escalating to SIGKILL only on
+			// timeout. A bare SIGKILL of an unverified pid from an in-memory record
+			// could hit an unrelated process after the server died and the pid was
+			// reused - and this arm is now live traffic, since the control plane reaps
+			// offline targets.
+			if err := qemu.StopNBD(rec.NBDPid, 5*time.Second); err != nil {
+				m.log.Warn("cancel migration: stop nbd server failed",
+					"migration_id", id.String(), "pid", rec.NBDPid, "err", err)
+			}
 		}
 		if rec.ConvertPid > 0 {
 			_ = qemu.Kill(rec.ConvertPid)
 		}
-		if rec.Port > 0 {
-			m.migPorts.Release(rec.Port)
-		}
+		won := false
 		m.migrations.Update(id, func(r *migration.Record) {
+			if r.Terminal() {
+				return
+			}
+			won = true
 			r.Phase = migration.PhaseCancelled
 			r.ErrorMessage = "cancelled"
 			r.CompletedAt = time.Now().UTC()
 		})
+		if won && rec.Port > 0 {
+			m.migPorts.Release(rec.Port)
+		}
 	}
 	return m.GetMigration(id)
 }
