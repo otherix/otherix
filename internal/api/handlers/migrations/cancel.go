@@ -86,12 +86,13 @@ func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	// committed under a ModRevision CAS) - that is the fail-safe state and the
 	// client's outcome. Best-effort, accelerate the agents' teardown on top of it:
 	// tell the SOURCE to abort its outgoing push (so its outgoing task goes
-	// terminal and the worker's PollTask unblocks) and, for a live migration with a
-	// bound target, tell the TARGET to reap its incoming setup (so it does not leak
-	// until the agent's 30-minute timeout). A slow / unreachable agent must never
-	// hold the sync 200 hostage, and an agent failure must never change the
-	// migration outcome - the agent's own timeout plus the worker convergence are
-	// the backstops.
+	// terminal and the worker's PollTask unblocks) and, when a target is bound,
+	// tell the TARGET to reap its incoming setup so it does not leak. A slow /
+	// unreachable agent must never hold the sync 200 hostage, and an agent failure
+	// must never change the migration outcome. What backs a failed propagation up
+	// differs by mode: a live target has its own bounded incoming wait, an offline
+	// target has none (see reapTargetIncoming in run.go), and the worker
+	// convergence covers the source either way.
 	h.propagateCancel(r.Context(), updated, vm)
 
 	response.WriteJSON(w, r, http.StatusOK, h.viewWithNames(r.Context(), updated))

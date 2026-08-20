@@ -65,15 +65,19 @@ func TestRemoveAdoptedVM_RemovesDiskDir(t *testing.T) {
 	}
 }
 
-// TestCancelMigrationOfflineTargetIsIdempotent pins the observable contract the
-// control plane now depends on: an offline TARGET record is reaped exactly once,
-// however many times the cancel arrives. Both the operator cancel path
+// TestCancelMigrationOfflineTargetIsIdempotent pins the SEQUENTIAL contract the
+// control plane now depends on: an offline TARGET record is reaped exactly once
+// however many times the cancel arrives, because a later call reads an already
+// terminal record and short-circuits. Both the operator cancel path
 // (propagateCancel) and the worker's terminal-outcome reap (reapTargetIncoming)
-// call the agent, and nothing serialises them, so a repeated cancel is ordinary
-// traffic rather than an edge case.
+// call the agent, so a repeated cancel is ordinary traffic rather than an edge
+// case.
 //
-// The second cancel must leave the record's terminal stamp untouched and must
-// NOT free a port that a later migration has since taken.
+// Scope, so this is not read as more than it is: what this drives is the
+// `!rec.Terminal()` fast path, and it would still pass with the won-gate on the
+// port release removed. That gate exists for the CONCURRENT case - two cancels
+// both reading a non-terminal snapshot before either stamps - and the window
+// between the snapshot read and the stamp has no seam to drive deterministically.
 func TestCancelMigrationOfflineTargetIsIdempotent(t *testing.T) {
 	m := newTestManager(t)
 	migID := uuid.New()
@@ -127,5 +131,60 @@ func TestCancelMigrationOfflineTargetIsIdempotent(t *testing.T) {
 	}
 	if next == reclaimed {
 		t.Errorf("second cancel freed port %d, which a later migration holds", reclaimed)
+	}
+}
+
+// TestReleaseIncomingNBDLeavesTerminalRecordPortsAlone closes the one path that
+// bypasses the "release only if you won the terminal transition" rule the rest of
+// this file follows. TakeTargetByVM matches on role alone, with no terminal
+// filter, so a record whose ports were ALREADY returned by whoever stamped it
+// terminal would have them returned a second time - handing back a port a later
+// migration has since reserved, and giving two incoming migrations the same
+// ingress port.
+//
+// Drives the real sequence: cancel an offline target (which releases its port and
+// stamps the record terminal, leaving it in the store), let a second migration
+// take the freed port, then start the VM - which is what calls
+// releaseIncomingNBD.
+func TestReleaseIncomingNBDLeavesTerminalRecordPortsAlone(t *testing.T) {
+	m := newTestManager(t)
+	vmID := uuid.New()
+	migID := uuid.New()
+
+	port, err := m.migPorts.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve(): %v", err)
+	}
+	m.Migrations().Put(&migration.Record{
+		MigrationID: migID, VMID: vmID, VMName: "demo",
+		Role: migration.RoleTarget, Mode: migration.ModeOffline,
+		Phase: migration.PhaseSetup, Port: port,
+	})
+
+	// The control plane reaps the offline target: the port goes back and the
+	// record is stamped terminal, but it stays in the store.
+	if _, ok := m.CancelMigration(migID); !ok {
+		t.Fatalf("CancelMigration returned ok=false")
+	}
+
+	// A second migration takes the freed port.
+	taken, err := m.migPorts.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve() after cancel: %v", err)
+	}
+	if taken != port {
+		t.Fatalf("second migration reserved %d, want the freed %d", taken, port)
+	}
+
+	// Starting the VM runs releaseIncomingNBD, which must NOT hand back a port it
+	// no longer owns.
+	m.releaseIncomingNBD(vmID)
+
+	next, err := m.migPorts.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve() after releaseIncomingNBD: %v", err)
+	}
+	if next == taken {
+		t.Errorf("releaseIncomingNBD freed port %d, which a live migration holds", taken)
 	}
 }

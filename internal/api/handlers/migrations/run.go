@@ -603,8 +603,8 @@ func reconcileVanishedSourceTask(ctx context.Context, st MigrationWorkerStore, a
 
 // cancelTargetIncoming best-effort tells the bound TARGET to reap its incoming
 // setup when the migration ends pre-cutover (source-task failure / cancel). A
-// failure degrades to the target's own backstop and must NOT change the migration
-// outcome.
+// failure must NOT change the migration outcome; see reapTargetIncoming for how
+// the two modes degrade when it does fail.
 //
 // Both modes are reaped, for the reasons and under the invariant spelled out on
 // reapTargetIncoming: an offline target leaks a qemu-nbd holding the destination
@@ -1148,8 +1148,16 @@ func reconcileCancelledNoAgentTask(ctx context.Context, st MigrationWorkerStore,
 // reapTargetIncoming best-effort tells the bound TARGET to reap its incoming
 // setup for a pre-cutover terminal outcome (failed / source-aborted cancel). NOT
 // called on a completed migration (the target IS the running VM) nor on
-// uncertainty (the target could be the only live copy). A failure degrades to the
-// agent's own backstop and never fails the reconcile.
+// uncertainty (the target could be the only live copy). A failure never fails the
+// reconcile.
+//
+// The two modes degrade differently on a failed reap, and the asymmetry is not
+// symmetric with the reap itself. A LIVE target has its own backstop: the resume
+// goroutine's incoming wait is bounded (liveDefaultIncomingTimeout, 30 minutes)
+// and drives the record terminal on expiry. An OFFLINE target has none, for the
+// very reason given below - so a reap that fails here is not retried and leaves
+// the leak in place. That is still strictly better than never reaping, but it is
+// a one-shot, not a converging loop.
 //
 // Both modes are reaped. An offline target is not "nothing to reap": it holds a
 // qemu-nbd server owning the destination disk's write lock, a reserved migration
