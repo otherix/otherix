@@ -5,7 +5,6 @@ package etcdstore
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -111,16 +110,12 @@ func (s *Store) ListUnscheduledVMs(ctx context.Context, limit int) ([]store.VM, 
 // returns store.ErrNotFound; a lost CAS (the row was deleted or bound between
 // the read and the commit) also returns nil, since the stale reason is dropped.
 func (s *Store) UpdateVMSchedulingReason(ctx context.Context, vmID uuid.UUID, reason, message string, details []byte) error {
-	resp, err := s.c.Raw().Get(ctx, vmKey(vmID))
+	// vmWithRev, not a raw Get: it maps BOTH a missing row and a soft-deleted one
+	// to store.ErrNotFound. The unscheduled delete now soft-deletes, so "the key is
+	// absent" is no longer the delete signal, and a raw read would hand back a
+	// tombstoned row that still reads as unscheduled.
+	vm, rev, err := s.vmWithRev(ctx, vmID)
 	if err != nil {
-		return err
-	}
-	if len(resp.Kvs) == 0 {
-		return store.ErrNotFound
-	}
-	rev := resp.Kvs[0].ModRevision
-	var vm store.VM
-	if err := json.Unmarshal(resp.Kvs[0].Value, &vm); err != nil {
 		return err
 	}
 	if vm.SchedulingStatus != store.VMSchedulingUnscheduled {
@@ -151,13 +146,21 @@ func (s *Store) UpdateVMSchedulingReason(ctx context.Context, vmID uuid.UUID, re
 	return nil
 }
 
-// DeleteUnscheduledVM hard-deletes a VM that is still unscheduled, in one
-// transaction gated by the VM-row ModRevision. Hard delete (not the soft-delete
-// the async path uses) is correct here: an unscheduled VM never reached an agent,
-// so there is no observed runtime state to preserve, and dropping the name guard
-// makes the name reusable immediately. The transaction removes the same guard /
-// index keys CreateUnscheduledVM wrote: the vms row, the name guard, and the
-// owner / firmware indexes (vmIndexDeleteOps), plus the unscheduled index.
+// DeleteUnscheduledVM soft-deletes a VM that is still unscheduled, in one
+// transaction gated by the VM-row ModRevision. It stamps DeletedAt on the row and
+// removes the guard / index keys CreateUnscheduledVM wrote - the name guard, the
+// owner / firmware indexes (vmIndexDeleteOps), and the unscheduled index - which
+// is exactly the shape ProjectVMDeleteSuccess lands for the async path, so the
+// name is reusable immediately here too.
+//
+// This used to hard-delete the row, on the premise that an unscheduled VM never
+// reached an agent. That premise is not maintainable: `node delete --force`
+// returns a pinned-but-unobserved VM to unscheduled, and its routing predicate is
+// a control-plane fact that cannot know whether the agent materialised the guest -
+// the only authority is the node being deleted as dead. A VM whose create reached
+// the agent could therefore land back here, and hard-deleting its row destroyed
+// the soft-deleted row that IS the durable teardown signal, leaving an orphan no
+// signal could ever name again.
 //
 // A missing VM returns store.ErrNotFound. A VM that is no longer unscheduled
 // (bound by the scheduler between the caller's read and this call, or a lost CAS
@@ -165,24 +168,27 @@ func (s *Store) UpdateVMSchedulingReason(ctx context.Context, vmID uuid.UUID, re
 // falls back to the async agent-delete path - never hard-deleting a VM whose
 // agent-side resources are live.
 func (s *Store) DeleteUnscheduledVM(ctx context.Context, vmID uuid.UUID) error {
-	resp, err := s.c.Raw().Get(ctx, vmKey(vmID))
+	// vmWithRev, not a raw Get: it maps BOTH a missing row and a soft-deleted one
+	// to store.ErrNotFound. The unscheduled delete now soft-deletes, so "the key is
+	// absent" is no longer the delete signal, and a raw read would hand back a
+	// tombstoned row that still reads as unscheduled.
+	vm, rev, err := s.vmWithRev(ctx, vmID)
 	if err != nil {
-		return err
-	}
-	if len(resp.Kvs) == 0 {
-		return store.ErrNotFound
-	}
-	rev := resp.Kvs[0].ModRevision
-	var vm store.VM
-	if err := json.Unmarshal(resp.Kvs[0].Value, &vm); err != nil {
 		return err
 	}
 	if vm.SchedulingStatus != store.VMSchedulingUnscheduled {
 		return store.ErrVMNotUnscheduled
 	}
 
+	now := time.Now().UTC()
+	vm.DeletedAt = &now
+	vm.UpdatedAt = now
+	vmVal, err := etcd.Marshal(vm)
+	if err != nil {
+		return err
+	}
 	ops := []clientv3.Op{
-		clientv3.OpDelete(vmKey(vm.ID)),
+		clientv3.OpPut(vmKey(vm.ID), string(vmVal)),
 		clientv3.OpDelete(vmNameGuard(vm.Name)),
 		clientv3.OpDelete(vmUnscheduledIndexKey(vm.ID)),
 	}
@@ -216,16 +222,12 @@ func (s *Store) DeleteUnscheduledVM(ctx context.Context, vmID uuid.UUID) error {
 // MAC-guard collision surfaces as store.ErrVMNicMACConflict (the caller re-mints
 // the MAC and retries). plan's own errors propagate verbatim.
 func (s *Store) BindScheduledVM(ctx context.Context, vmID uuid.UUID, plan func(store.PlacementReader) (store.VMBindWrites, error)) error {
-	resp, err := s.c.Raw().Get(ctx, vmKey(vmID))
+	// vmWithRev, not a raw Get: it maps BOTH a missing row and a soft-deleted one
+	// to store.ErrNotFound. The unscheduled delete now soft-deletes, so "the key is
+	// absent" is no longer the delete signal, and a raw read would hand back a
+	// tombstoned row that still reads as unscheduled.
+	vm, rev, err := s.vmWithRev(ctx, vmID)
 	if err != nil {
-		return err
-	}
-	if len(resp.Kvs) == 0 {
-		return store.ErrNotFound
-	}
-	rev := resp.Kvs[0].ModRevision
-	var vm store.VM
-	if err := json.Unmarshal(resp.Kvs[0].Value, &vm); err != nil {
 		return err
 	}
 	if vm.SchedulingStatus != store.VMSchedulingUnscheduled {
