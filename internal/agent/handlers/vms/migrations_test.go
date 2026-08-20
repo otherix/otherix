@@ -6,6 +6,7 @@ package vms
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/console"
+	"github.com/otherix/otherix/internal/agent/migration"
 	"github.com/otherix/otherix/internal/agent/netfabric"
 	"github.com/otherix/otherix/internal/agent/vm"
 	"github.com/otherix/otherix/internal/agentapi"
@@ -370,6 +372,35 @@ func TestIncomingDisks(t *testing.T) {
 			got := incomingDisks(tc.req, bootSizeBytes)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("incomingDisks(...) mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestMapIncomingErrorStatuses pins the whole StartIncoming error mapping. The
+// case that motivated it is ErrInFlight: a redelivered incoming start arriving
+// while the first is still setting up is transient and retryable, so it must read
+// as 409 rather than falling into the internal-error default - which is what the
+// CP would otherwise log and act on. The other rows are positive controls, so a
+// mapping that collapsed everything to one status still fails here.
+func TestMapIncomingErrorStatuses(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "no free port", err: migration.ErrNoFreePort, want: http.StatusConflict},
+		{name: "operation in flight", err: vm.ErrInFlight, want: http.StatusConflict},
+		{name: "unknown pool", err: vm.ErrPoolUnknown, want: http.StatusBadRequest},
+		{name: "anything else", err: errors.New("boom"), want: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/vms/demo/migrations/incoming", nil)
+			mapIncomingError(rec, req, tc.err)
+			if rec.Code != tc.want {
+				t.Errorf("mapIncomingError(%v) status = %d, want %d (body=%s)", tc.err, rec.Code, tc.want, rec.Body.String())
 			}
 		})
 	}

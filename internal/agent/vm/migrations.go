@@ -221,6 +221,31 @@ type IncomingResult struct {
 // partial is GC'd. No migration record is stored until every step succeeds,
 // so an early failure leaves nothing in m.migrations to delete.
 func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingResult, error) {
+	// Hold the per-name lifecycle slot for the whole of setup, on both incoming
+	// paths. Between AdoptForMigration and the migration record's publication the
+	// VM is in m.vms - so the reconciler observes it and a control-plane tombstone
+	// can target it - while HasActiveForVM is still false and the observed status
+	// is tearable (an offline target adopts at StatusStopped; a live target's
+	// StatusMigratingIncoming downgrades to StatusFailed while its -incoming qemu
+	// has not launched). The slot closes that window at both layers the teardown
+	// passes through: the reconciler skips a VM with HasInFlight, and Manager.Delete
+	// itself refuses the slot it cannot acquire.
+	//
+	// The handoff is gapless: the completing migrations.Put runs before this
+	// function returns, and the deferred release fires on that return, so
+	// HasActiveForVM is already true the instant the slot frees.
+	//
+	// An empty name must be rejected rather than passed through: inFlightAcquire("")
+	// returns a no-op release and ok=true, which would silently acquire nothing.
+	if s.VMName == "" {
+		return IncomingResult{}, fmt.Errorf("migration %s: incoming spec carries no vm name", s.MigrationID)
+	}
+	release, ok := m.inFlightAcquire(s.VMName)
+	if !ok {
+		return IncomingResult{}, ErrInFlight
+	}
+	defer release()
+
 	if migration.Mode(s.Mode) == migration.ModeLive {
 		return m.startIncomingLive(ctx, s)
 	}
