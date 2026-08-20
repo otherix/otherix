@@ -414,6 +414,16 @@ func (s *Store) UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, up
 	if isTerminalMigration(m.Phase) {
 		return store.ErrMigrationTerminal
 	}
+	// Completed means the cutover committed, and CommitMigrationCutover is the only
+	// thing that can say so: it moves the pin, the pinned-node index and the phase in
+	// one transaction. Stamping completed here would produce a completed migration
+	// whose VM is still pinned to the source - a lie that readers key destructive
+	// decisions on (the heartbeat's re-homed teardown reads exactly this phase to
+	// decide whether a pin is a verdict). Refuse rather than let a future caller
+	// open that hole quietly.
+	if upd.Phase != nil && *upd.Phase == store.MigrationPhaseCompleted {
+		return fmt.Errorf("migration %s: completed is committed by the cutover, not by a progress update", migID)
+	}
 
 	now := time.Now().UTC()
 	applyMigrationProgress(&m, upd)
@@ -640,11 +650,16 @@ func (s *Store) ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store
 // first match.
 //
 // Completed is the only phase that means the cutover committed: CommitMigrationCutover
-// re-pins the VM and stamps the migration completed in one transaction, and it
-// refuses to re-pin a failed one. So every other phase leaves the target holding
-// whatever it built while the pin still names the source - state whose fate the
-// migration workers decide, and which nothing else may read the pin as a verdict
-// on.
+// re-pins the VM and stamps the migration completed in one transaction, it refuses
+// to re-pin a failed one, and UpdateMigrationProgress refuses to stamp completed at
+// all. So every other phase leaves the target holding whatever it built while the
+// pin still names the source - state whose fate the migration workers decide, and
+// which nothing else may read the pin as a verdict on.
+//
+// The row is the evidence, so its lifetime bounds this answer: the retention sweep
+// deliberately keeps a non-completed row while its VM is live
+// (migrationRecordsAnUnresolvedIncident), because expiring it would silently flip
+// this to false for a target that is still holding the guest.
 func (s *Store) MigrationTriedToLandOn(ctx context.Context, vmID, nodeID uuid.UUID) (bool, error) {
 	items, err := s.c.Range(ctx, migrationsVMIndexPrefix(vmID))
 	if err != nil {

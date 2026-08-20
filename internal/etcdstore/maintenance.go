@@ -89,6 +89,11 @@ func taskRetentionExpired(t store.Task, arg store.DeleteExpiredTasksParams) bool
 // per-VM history index remain. terminalCleanupOps(m) is appended defensively so an
 // older row that never released those keys is fully cleaned up - every op is a
 // delete, idempotent when the key is already gone.
+//
+// One exception outlives the window: a migration that ended WITHOUT a committed
+// cutover, while its VM is still live, is kept - see
+// migrationRecordsAnUnresolvedIncident. Deleting it would arm a destructive
+// decision elsewhere, so this sweep is not free to treat age as the only input.
 func (s *Store) DeleteExpiredMigrations(ctx context.Context, arg store.DeleteExpiredMigrationsParams) (int64, error) {
 	items, err := s.c.Range(ctx, etcd.Key("migrations")+"/")
 	if err != nil {
@@ -104,6 +109,13 @@ func (s *Store) DeleteExpiredMigrations(ctx context.Context, arg store.DeleteExp
 			continue
 		}
 		if !migrationRetentionExpired(m, arg) {
+			continue
+		}
+		keep, kerr := s.migrationRecordsAnUnresolvedIncident(ctx, m)
+		if kerr != nil {
+			return 0, kerr
+		}
+		if keep {
 			continue
 		}
 		ops = append(ops, clientv3.OpDelete(migrationKey(m.ID)))
@@ -138,6 +150,33 @@ func migrationRetentionExpired(m store.Migration, arg store.DeleteExpiredMigrati
 	default:
 		return false
 	}
+}
+
+// migrationRecordsAnUnresolvedIncident reports whether an otherwise-expired
+// migration must be kept because it is still the record of something that never
+// resolved: it ended WITHOUT a committed cutover while its VM is still live.
+//
+// Such a row is the only durable trace that the target may still be holding
+// state - a resumed guest, or the sole surviving destination disk - which the
+// migration workers deliberately refuse to reap. The heartbeat's re-homed
+// teardown reads it (MigrationTriedToLandOn) to know that the VM's pin is not a
+// verdict about that node. Sweeping it would silently disarm that guard and let
+// the next heartbeat order the surviving copy destroyed, with a retention tick as
+// the only proximate cause.
+//
+// Completed rows are ordinary history and expire normally. Once the VM itself is
+// gone the incident is moot, so the rows expire then too.
+func (s *Store) migrationRecordsAnUnresolvedIncident(ctx context.Context, m store.Migration) (bool, error) {
+	if m.Phase == store.MigrationPhaseCompleted {
+		return false, nil
+	}
+	if _, err := s.VMByID(ctx, m.VmID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("migration retention: read vm %s: %v", m.VmID, err)
+	}
+	return true, nil
 }
 
 // commitInChunks commits the operations in transactions of at most maxTxnOps so
