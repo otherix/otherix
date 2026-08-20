@@ -167,7 +167,7 @@ func TestApplyVMsPlacementGate(t *testing.T) {
 			}
 			spy := &vmRuntimeSpy{existing: tt.existing, pinned: tt.pinned, vmRows: vmRows, vmRev: wantRev}
 			h := newQuietHandler()
-			if err := h.applyVMs(context.Background(), spy, reportingNode, tt.reports); err != nil {
+			if _, err := h.applyVMs(context.Background(), spy, reportingNode, tt.reports); err != nil {
 				t.Fatalf("applyVMs(...) = %v, want nil", err)
 			}
 			if diff := cmp.Diff(tt.want, spy.upserts); diff != "" {
@@ -228,7 +228,7 @@ func TestApplyVMsFreezesCurrentNodeIDDuringMigration(t *testing.T) {
 		ObservedGeneration: &gen,
 		QEMUPID:            &pid,
 	}}
-	if err := h.applyVMs(context.Background(), spy, target, reports); err != nil {
+	if _, err := h.applyVMs(context.Background(), spy, target, reports); err != nil {
 		t.Fatalf("applyVMs(...) = %v, want nil", err)
 	}
 
@@ -268,7 +268,7 @@ func TestApplyVMReportSkipsWhenPinMovedOrDeleted(t *testing.T) {
 			vmRows: map[uuid.UUID]store.VM{vmID: {ID: vmID, PinnedNodeID: &otherNode}},
 		}
 		h := newQuietHandler()
-		if err := h.applyVMs(context.Background(), spy, reportingNode, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
+		if _, err := h.applyVMs(context.Background(), spy, reportingNode, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
 			t.Fatalf("applyVMs(...) = %v, want nil", err)
 		}
 		if len(spy.upserts) != 0 {
@@ -285,7 +285,7 @@ func TestApplyVMReportSkipsWhenPinMovedOrDeleted(t *testing.T) {
 			vmRows: map[uuid.UUID]store.VM{},
 		}
 		h := newQuietHandler()
-		if err := h.applyVMs(context.Background(), spy, reportingNode, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
+		if _, err := h.applyVMs(context.Background(), spy, reportingNode, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
 			t.Fatalf("applyVMs(...) = %v, want nil", err)
 		}
 		if len(spy.upserts) != 0 {
@@ -318,7 +318,7 @@ func TestApplyVMReportClaimAuthorityBranches(t *testing.T) {
 			},
 		}
 		h := newQuietHandler()
-		if err := h.applyVMs(context.Background(), spy, reporting, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
+		if _, err := h.applyVMs(context.Background(), spy, reporting, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
 			t.Fatalf("applyVMs(...) = %v, want nil", err)
 		}
 		want := []store.UpsertVMRuntimeParams{{
@@ -340,7 +340,7 @@ func TestApplyVMReportClaimAuthorityBranches(t *testing.T) {
 			},
 		}
 		h := newQuietHandler()
-		if err := h.applyVMs(context.Background(), spy, target, []vmReport{{VMUUID: vmID, Phase: "migrating"}}); err != nil {
+		if _, err := h.applyVMs(context.Background(), spy, target, []vmReport{{VMUUID: vmID, Phase: "migrating"}}); err != nil {
 			t.Fatalf("applyVMs(...) = %v, want nil", err)
 		}
 		if len(spy.upserts) != 0 {
@@ -360,11 +360,17 @@ func TestApplyVMReportClaimAuthorityBranches(t *testing.T) {
 			},
 		}
 		h := newQuietHandler()
-		if err := h.applyVMs(context.Background(), spy, bystander, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
+		if _, err := h.applyVMs(context.Background(), spy, bystander, []vmReport{{VMUUID: vmID, Phase: "running"}}); err != nil {
 			t.Fatalf("applyVMs(...) = %v, want nil", err)
 		}
 		if len(spy.upserts) != 0 {
 			t.Errorf("applyVMs upserted %d rows for a non-target reporter; want 0 (skip)", len(spy.upserts))
 		}
 	})
+}
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (s *vmRuntimeSpy) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
 }

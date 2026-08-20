@@ -7,7 +7,34 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
+
+// TestValidateVMsBoundsTheReportedList asserts the per-VM report array is
+// bounded: every entry costs the projection store reads, so an oversized list
+// must be refused at the edge instead of amplifying into them. A list at the
+// limit still passes, so the bound never rejects a plausible node.
+func TestValidateVMsBoundsTheReportedList(t *testing.T) {
+	reports := func(n int) []vmReport {
+		out := make([]vmReport, n)
+		for i := range out {
+			out[i] = vmReport{VMUUID: uuid.New(), Phase: "running"}
+		}
+		return out
+	}
+
+	if v := validateVMs(reports(maxVMReports)); v != nil {
+		t.Errorf("validateVMs(%d reports) = %+v, want nil", maxVMReports, v)
+	}
+	v := validateVMs(reports(maxVMReports + 1))
+	if v == nil {
+		t.Fatalf("validateVMs(%d reports) = nil, want a failure", maxVMReports+1)
+	}
+	if v.field != "vms" {
+		t.Errorf("field = %q, want %q", v.field, "vms")
+	}
+}
 
 func TestBuildCapabilitiesJSONIncludesCompressedSwap(t *testing.T) {
 	c := nodeCapabilitiesReport{

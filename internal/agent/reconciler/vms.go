@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/otherix/otherix/internal/agent/heartbeat"
 	"github.com/otherix/otherix/internal/agent/vm"
 )
@@ -28,6 +30,13 @@ type VMManager interface {
 	Start(ctx context.Context, name string) (*vm.AgentTask, error)
 	Stop(ctx context.Context, name string) (*vm.AgentTask, error)
 	DeleteByName(ctx context.Context, name string) (*vm.AgentTask, error)
+	// Delete tears a VM down by UUID. UUID-keyed by requirement: a tombstone
+	// names a VM whose CP-side name guard is already released, so the name may
+	// belong to a different VM by now.
+	Delete(ctx context.Context, vmID uuid.UUID) (*vm.AgentTask, error)
+	// HasActiveMigration reports whether a non-terminal migration names this
+	// VM, in either role. Teardown must not race the migration state machine.
+	HasActiveMigration(vmID uuid.UUID) bool
 }
 
 // VMs is the per-resource reconciler for VMs. Single instance per
@@ -44,12 +53,25 @@ type VMs struct {
 	manager VMManager
 	tick    time.Duration
 
-	desired atomic.Pointer[[]heartbeat.DeclaredVM]
-	trigger chan struct{}
+	desired    atomic.Pointer[[]heartbeat.DeclaredVM]
+	tombstones atomic.Pointer[[]heartbeat.VMTombstone]
+	trigger    chan struct{}
 
 	mu      sync.Mutex
 	reports map[string]heartbeat.VMReport
+
+	teardownMu      sync.Mutex
+	lastTeardownTry map[uuid.UUID]time.Time
 }
+
+// teardownRetryInterval is the minimum spacing between teardown attempts for
+// one tombstoned VM. Without it a teardown that fails leaves the VM at
+// StatusFailed with its in-flight slot released, so every tick would re-enter
+// Manager.Delete - a permanent SIGKILL loop plus a meta.json rewrite per tick
+// on a genuinely stuck pid. It must never become "never retry": the CP
+// re-sends the tombstone every heartbeat precisely so a transient failure
+// self-heals once the stuck pid is reaped.
+const teardownRetryInterval = time.Minute
 
 // ErrNilVMManager guards nil-injection at construction time.
 var ErrNilVMManager = errors.New("reconciler: VMManager is required")
@@ -64,23 +86,27 @@ func NewVMs(manager VMManager, log *slog.Logger, tick time.Duration) (*VMs, erro
 		tick = DefaultTickInterval
 	}
 	return &VMs{
-		log:     log,
-		manager: manager,
-		tick:    tick,
-		trigger: make(chan struct{}, 1),
-		reports: map[string]heartbeat.VMReport{},
+		log:             log,
+		manager:         manager,
+		tick:            tick,
+		trigger:         make(chan struct{}, 1),
+		reports:         map[string]heartbeat.VMReport{},
+		lastTeardownTry: map[uuid.UUID]time.Time{},
 	}, nil
 }
 
 // HandleHeartbeatResponse implements heartbeat.ResponseHandler. Copies
-// the declared_vms slice (the sender's response struct may be
-// reused) and nudges the reconciler. Nil response is a no-op.
+// the declared_vms and vm_tombstones slices (the sender's response
+// struct may be reused) and nudges the reconciler. Nil response is a
+// no-op.
 func (r *VMs) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Response) {
 	if resp == nil {
 		return
 	}
 	vms := append([]heartbeat.DeclaredVM(nil), resp.DeclaredVMs...)
 	r.desired.Store(&vms)
+	ts := append([]heartbeat.VMTombstone(nil), resp.VMTombstones...)
+	r.tombstones.Store(&ts)
 	select {
 	case r.trigger <- struct{}{}:
 	default:
@@ -129,9 +155,10 @@ func (r *VMs) Run(ctx context.Context) error {
 	}
 }
 
-// reconcile is one pass over the (desired, observed) diff. Builds the
-// reports map from Manager.List() and dispatches corrective lifecycle
-// ops:
+// reconcile is one pass. It first tears down every VM the CP has
+// tombstoned (see reconcileTombstones), then walks the (desired,
+// observed) diff: builds the reports map from Manager.List() and
+// dispatches corrective lifecycle ops:
 //
 //   - desired_phase=running, observed=stopped → Start
 //   - desired_phase=stopped, observed=running → Stop (graceful)
@@ -148,6 +175,12 @@ func (r *VMs) reconcile(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	observed := r.manager.List()
+	// Tombstones first: the reports loop below does a QMP round-trip per
+	// running VM, and a destructive correction must not queue behind an
+	// unrelated stats read on a hung socket.
+	r.reconcileTombstones(ctx, observed)
+
 	desiredPtr := r.desired.Load()
 	var desired []heartbeat.DeclaredVM
 	if desiredPtr != nil {
@@ -158,7 +191,6 @@ func (r *VMs) reconcile(ctx context.Context) {
 		desiredByName[d.Name] = d
 	}
 
-	observed := r.manager.List()
 	nextReports := make(map[string]heartbeat.VMReport, len(observed))
 	for _, v := range observed {
 		var memUsed *int64
@@ -184,6 +216,122 @@ func (r *VMs) reconcile(ctx context.Context) {
 	r.mu.Lock()
 	r.reports = nextReports
 	r.mu.Unlock()
+}
+
+// reconcileTombstones tears down every VM the control plane has tombstoned.
+//
+// A tombstone is the ONLY teardown trigger: the reconciler never destroys a VM
+// because the CP stopped declaring it (declared_vms is fail-open and is nil on
+// every agent boot before the first response lands).
+//
+// Teardown is asynchronous and is never awaited. While this agent still holds
+// the VM it keeps reporting it, so the CP keeps re-sending the tombstone, and
+// the signal stops the tick after the VM is gone.
+func (r *VMs) reconcileTombstones(ctx context.Context, observed []*vm.VM) {
+	tsPtr := r.tombstones.Load()
+	if tsPtr == nil {
+		return
+	}
+	r.pruneTeardownAttempts(*tsPtr)
+
+	// List returns copies, so these are snapshots: read ID / Name / Status
+	// only, never mutate through them.
+	byID := make(map[uuid.UUID]*vm.VM, len(observed))
+	for _, v := range observed {
+		byID[v.ID] = v
+	}
+	for _, ts := range *tsPtr {
+		v, known := byID[ts.VMID]
+		if !known {
+			// Nothing to tear down. The CP stops sending the tombstone once
+			// this node stops reporting the VM.
+			continue
+		}
+		if r.manager.HasActiveMigration(ts.VMID) {
+			r.log.InfoContext(ctx, "tombstoned vm has an active migration; deferring teardown",
+				slog.String("vm_id", ts.VMID.String()), slog.String("vm_name", ts.VMName))
+			continue
+		}
+		if !teardownAllowedFor(v.Status) {
+			r.log.InfoContext(ctx, "tombstoned vm is not in a tearable state; deferring teardown",
+				slog.String("vm_id", ts.VMID.String()), slog.String("vm_name", ts.VMName),
+				slog.String("status", string(v.Status)))
+			continue
+		}
+		if r.manager.HasInFlight(v.Name) {
+			continue
+		}
+		if !r.markTeardownAttempt(ts.VMID) {
+			continue
+		}
+		if _, err := r.manager.Delete(ctx, ts.VMID); err != nil {
+			r.log.WarnContext(ctx, "tombstoned vm teardown failed; will retry",
+				slog.String("vm_id", ts.VMID.String()), slog.String("vm_name", ts.VMName),
+				slog.String("err", err.Error()))
+			continue
+		}
+		r.log.InfoContext(ctx, "tearing down tombstoned vm",
+			slog.String("vm_id", ts.VMID.String()), slog.String("vm_name", ts.VMName))
+	}
+}
+
+// teardownAllowedFor enumerates every vm.Status (spec.go) against the teardown
+// decision, deliberately instead of a coarse "transitional" predicate:
+//
+//   - migrating_incoming: NO. The target holds an incoming guest whose dest
+//     disk may be the only copy; killing it is irreversible.
+//   - deleting: YES. That is a teardown this agent crashed part-way through -
+//     the exact wedge a tombstone exists to re-drive. Manager.Delete is
+//     idempotent and self-heals a stuck pid.
+//   - failed: YES. A failed VM still owns a qemu process and disk images.
+//   - pending / creating / running / paused / stopping / stopped: YES, the
+//     ordinary path.
+//
+// A status added later lands in the default arm and is NOT torn down: an
+// irreversible action fails toward inaction until this switch is revisited.
+func teardownAllowedFor(s vm.Status) bool {
+	switch s {
+	case vm.StatusPending, vm.StatusCreating, vm.StatusRunning, vm.StatusPaused,
+		vm.StatusStopping, vm.StatusStopped, vm.StatusFailed, vm.StatusDeleting:
+		return true
+	case vm.StatusMigratingIncoming:
+		return false
+	default:
+		return false
+	}
+}
+
+// markTeardownAttempt records a teardown attempt for vmID and reports whether
+// the caller may proceed. False means the previous attempt is still inside
+// teardownRetryInterval.
+func (r *VMs) markTeardownAttempt(vmID uuid.UUID) bool {
+	r.teardownMu.Lock()
+	defer r.teardownMu.Unlock()
+	now := time.Now()
+	if last, ok := r.lastTeardownTry[vmID]; ok && now.Sub(last) < teardownRetryInterval {
+		return false
+	}
+	r.lastTeardownTry[vmID] = now
+	return true
+}
+
+// pruneTeardownAttempts drops attempt records for VMs the current tombstone
+// list no longer names, so the map cannot grow without bound.
+func (r *VMs) pruneTeardownAttempts(tombstones []heartbeat.VMTombstone) {
+	r.teardownMu.Lock()
+	defer r.teardownMu.Unlock()
+	if len(r.lastTeardownTry) == 0 {
+		return
+	}
+	live := make(map[uuid.UUID]struct{}, len(tombstones))
+	for _, ts := range tombstones {
+		live[ts.VMID] = struct{}{}
+	}
+	for id := range r.lastTeardownTry {
+		if _, ok := live[id]; !ok {
+			delete(r.lastTeardownTry, id)
+		}
+	}
 }
 
 // dispatch handles one observed-vs-declared pair. Side-effect: may

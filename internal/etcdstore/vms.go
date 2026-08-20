@@ -49,6 +49,28 @@ func (s *Store) VMByID(ctx context.Context, id uuid.UUID) (store.VM, error) {
 	return v, nil
 }
 
+// VMSoftDeleted reports whether a VM row exists and carries a deletion stamp,
+// returning its name for logging. It is the teardown trigger for the heartbeat
+// tombstone path, and it is deliberately a POSITIVE read: true means "this row
+// is here and the user deleted it", never "I could not find it". An absent row
+// and a live row both report false, and any read or unmarshal failure is
+// returned as an error so the caller emits nothing rather than inferring a
+// delete from a failure.
+//
+// VMByID cannot serve this: it maps a soft-deleted row to store.ErrNotFound,
+// which would collapse "deleted" and "absent" into the same answer.
+func (s *Store) VMSoftDeleted(ctx context.Context, id uuid.UUID) (bool, string, error) {
+	var v store.VM
+	found, err := s.c.GetJSON(ctx, vmKey(id), &v)
+	if err != nil {
+		return false, "", err
+	}
+	if !found || v.DeletedAt == nil {
+		return false, "", nil
+	}
+	return true, v.Name, nil
+}
+
 // vmWithRev returns the non-deleted VM and its ModRevision, or store.ErrNotFound
 // (missing key or a soft-deleted row). CAS writers guard on the returned rev so a
 // `vm delete` soft-deleting the row after the read bumps the rev and loses the

@@ -80,6 +80,35 @@ func TestStoreUpdateMissing(t *testing.T) {
 	}
 }
 
+func TestHasActiveForVM(t *testing.T) {
+	sourceVM := uuid.New()
+	targetVM := uuid.New()
+	doneVM := uuid.New()
+
+	s := NewStore()
+	s.Put(&Record{MigrationID: uuid.New(), VMID: sourceVM, Role: RoleSource, Phase: PhaseActive})
+	s.Put(&Record{MigrationID: uuid.New(), VMID: targetVM, Role: RoleTarget, Phase: PhaseSetup})
+	s.Put(&Record{MigrationID: uuid.New(), VMID: doneVM, Role: RoleSource, Phase: PhaseCompleted})
+
+	tests := []struct {
+		name string
+		vmID uuid.UUID
+		want bool
+	}{
+		{name: "non-terminal source record", vmID: sourceVM, want: true},
+		{name: "non-terminal target record", vmID: targetVM, want: true},
+		{name: "terminal record", vmID: doneVM, want: false},
+		{name: "unrelated vm", vmID: uuid.New(), want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s.HasActiveForVM(tc.vmID); got != tc.want {
+				t.Errorf("HasActiveForVM(%v) = %v, want %v", tc.vmID, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTakeTargetByVM(t *testing.T) {
 	s := NewStore()
 	targetVM := uuid.New()

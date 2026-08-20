@@ -255,9 +255,18 @@ type vmReport struct {
 // replaces its desired-state cache from declared_pools every heartbeat.
 // declared_vms follows the same pattern for VMs.
 type responseBody struct {
-	ReceivedAt             string                  `json:"received_at"`
-	DeclaredPools          []declaredPool          `json:"declared_pools"`
-	DeclaredVMs            []declaredVM            `json:"declared_vms"`
+	ReceivedAt    string         `json:"received_at"`
+	DeclaredPools []declaredPool `json:"declared_pools"`
+	DeclaredVMs   []declaredVM   `json:"declared_vms"`
+	// VMTombstones names VMs this node reported that the control plane has
+	// deleted: the row is present and carries a deletion stamp. The agent tears
+	// each down by UUID.
+	//
+	// An outstanding-work queue, NOT a declaration: absence from the list means
+	// "nothing to do right now" and never "tear something down". It is re-sent
+	// on every heartbeat for as long as the node keeps reporting the VM, so
+	// there is nothing to acknowledge and a failed teardown simply retries.
+	VMTombstones           []vmTombstone           `json:"vm_tombstones,omitempty"`
 	DeclaredNetworks       []declaredNetwork       `json:"declared_networks"`
 	DeclaredWireGuardPeers []declaredWireGuardPeer `json:"declared_wireguard_peers"`
 	SelfOverlayIP          *string                 `json:"self_overlay_ip"`
@@ -371,6 +380,15 @@ type declaredVM struct {
 	Name         string `json:"name"`
 	DesiredPhase string `json:"desired_phase"`
 	Generation   int64  `json:"generation"`
+}
+
+// vmTombstone is one VM the control plane has deleted that the reporting node
+// still holds. VMName is for operator-legible agent logs only; the agent
+// resolves the teardown target by VMID, because the delete released the VM's
+// name guard and the name may already belong to a different VM.
+type vmTombstone struct {
+	VMID   uuid.UUID `json:"vm_id"`
+	VMName string    `json:"vm_name"`
 }
 
 // declaredNetwork mirrors HeartbeatDeclaredNetwork — one network the CP

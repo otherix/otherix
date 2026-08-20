@@ -221,6 +221,22 @@ type Response struct {
 	// hypervisor node or an older CP. Full-snapshot semantics: the agent binds
 	// exactly the published ports in this list and closes the rest.
 	DeclaredLoadBalancers []DeclaredLoadBalancer `json:"declared_load_balancers"`
+	// VMTombstones names VMs this agent reported that the control plane has
+	// deleted. The VM reconciler tears each down by UUID.
+	//
+	// An outstanding-work queue, NOT a declaration: an empty list means
+	// "nothing to do right now" and never "tear something down". Teardown is
+	// driven only by an entry here - never by a VM's absence from DeclaredVMs,
+	// which is a fail-open producer.
+	VMTombstones []VMTombstone `json:"vm_tombstones,omitempty"`
+}
+
+// VMTombstone is one CP-declared VM teardown. VMName is for logs only: the
+// reconciler resolves the target by VMID, because the CP's delete released the
+// VM's name guard and the name may already belong to a different VM.
+type VMTombstone struct {
+	VMID   uuid.UUID `json:"vm_id"`
+	VMName string    `json:"vm_name"`
 }
 
 // DeclaredLoadBalancer is one published load balancer the CP wants this gateway

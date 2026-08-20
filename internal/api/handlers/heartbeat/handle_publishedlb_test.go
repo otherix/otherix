@@ -150,3 +150,9 @@ func TestLoadDeclaredLoadBalancersNonGateway(t *testing.T) {
 		t.Errorf("ListPublishedLoadBalancerBackends called %d times on non-gateway, want 0", spy.listCalls)
 	}
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (s *publishedLBSpy) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}

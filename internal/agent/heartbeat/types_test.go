@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/uuid"
 )
 
 // TestResponseDecodeDeclaredNetworks verifies a HeartbeatResponse JSON body
@@ -83,9 +84,10 @@ func TestResponseDecodeDeclaredNetworks(t *testing.T) {
 
 // TestResponseDecodeDeclaredNetworkDHCP verifies a declared_networks entry
 // carrying dhcp + reservations decodes into DhcpEnabled + the Reservations
-// slice. The response decoder uses DisallowUnknownFields, so this also guards
-// that the new wire fields exist on the struct (a missing field would fail the
-// decode, not silently drop).
+// slice. The response decoder is a plain json.Unmarshal, so an unknown field is
+// ignored rather than rejected (that is what lets a newer CP talk to an older
+// agent). This test is therefore what guards that the new wire fields really
+// exist on the struct: a missing one would silently drop, not fail the decode.
 func TestResponseDecodeDeclaredNetworkDHCP(t *testing.T) {
 	body := `{
 		"received_at": "2026-06-01T00:00:00Z",
@@ -141,6 +143,35 @@ func TestResponseDecodeDeclaredFDB(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got.DeclaredFDB); diff != "" {
 		t.Errorf("DeclaredFDB mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestResponseDecodeVMTombstones verifies a vm_tombstones entry decodes into
+// the VMTombstone slice the VM reconciler tears down from, and that a response
+// without the field decodes to an empty list (an older control plane, and the
+// ordinary "nothing to do" case).
+func TestResponseDecodeVMTombstones(t *testing.T) {
+	raw := `{"received_at":"t","declared_pools":[],"declared_vms":[],"declared_networks":[],
+	         "declared_wireguard_peers":[],"self_overlay_ip":null,"declared_fdb":[],
+	         "vm_tombstones":[{"vm_id":"44444444-4444-4444-4444-444444444444","vm_name":"doomed"}]}`
+	var got Response
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	want := []VMTombstone{{
+		VMID:   uuid.MustParse("44444444-4444-4444-4444-444444444444"),
+		VMName: "doomed",
+	}}
+	if diff := cmp.Diff(want, got.VMTombstones); diff != "" {
+		t.Errorf("VMTombstones mismatch (-want +got):\n%s", diff)
+	}
+
+	var absent Response
+	if err := json.Unmarshal([]byte(`{"received_at":"t"}`), &absent); err != nil {
+		t.Fatalf("Unmarshal without vm_tombstones: %v", err)
+	}
+	if len(absent.VMTombstones) != 0 {
+		t.Errorf("VMTombstones without the field = %v, want empty", absent.VMTombstones)
 	}
 }
 

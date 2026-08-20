@@ -140,6 +140,22 @@ func (s *Store) Delete(id uuid.UUID) {
 	delete(s.recs, id)
 }
 
+// HasActiveForVM reports whether any non-terminal migration record names vmID,
+// in EITHER role. It is the gate the VM reconciler uses before tearing a VM
+// down: Manager.Delete is not serialised against the migration state machine,
+// and there is no migrating_outgoing status, so a source stays StatusRunning
+// and cannot be recognised from its status alone.
+func (s *Store) HasActiveForVM(vmID uuid.UUID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.recs {
+		if r.VMID == vmID && !r.Terminal() {
+			return true
+		}
+	}
+	return false
+}
+
 // TakeTargetByVM finds and REMOVES the in-flight TARGET migration record for
 // vmID (there is at most one), returning it. Used to release the migration's
 // qemu-nbd when the migrated VM is started on this node.

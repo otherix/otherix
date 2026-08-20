@@ -18,6 +18,16 @@ type validationFailure struct {
 	message string
 }
 
+// maxVMReports bounds the per-VM runtime report array one heartbeat may carry.
+// The array is the only unbounded input on this surface, and every entry costs
+// the projection a store read (the existence filter, the pin filter, and the
+// per-id deletion lookup), so an unbounded list turns one authenticated request
+// into unbounded reads - the router's body cap is far too coarse to hold that
+// down. The limit sits an order of magnitude above what a real hypervisor runs
+// (a node with thousands of guests is bounded by RAM and vCPU long before this),
+// so a legitimate node never reaches it.
+const maxVMReports = 4096
+
 // validateRequest enforces the OpenAPI HeartbeatRequest constraints
 // the schema can express (required fields, enum values, basic
 // ranges). It is intentionally not a full JSON-schema validator;
@@ -81,6 +91,12 @@ func validateResources(r *nodeResourcesReport) *validationFailure {
 }
 
 func validateVMs(reports []vmReport) *validationFailure {
+	if len(reports) > maxVMReports {
+		return &validationFailure{
+			field:   "vms",
+			message: fmt.Sprintf("vms must hold at most %d entries, got %d", maxVMReports, len(reports)),
+		}
+	}
 	for i, vr := range reports {
 		if !validVMPhase(vr.Phase) {
 			return &validationFailure{field: fmt.Sprintf("vms[%d].phase", i), message: fmt.Sprintf("invalid phase %q", vr.Phase)}

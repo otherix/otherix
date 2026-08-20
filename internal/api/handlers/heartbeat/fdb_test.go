@@ -289,3 +289,9 @@ func (f *fakeFDBProjection) NodeByID(_ context.Context, id uuid.UUID) (store.Nod
 func (f *fakeFDBProjection) NodeByIDAtRev(ctx context.Context, id uuid.UUID, _ int64) (store.Node, error) {
 	return f.NodeByID(ctx, id)
 }
+
+// VMSoftDeleted answers "not deleted" for every id: these tests do not drive
+// the heartbeat teardown path. A test that does asserts on its own answer.
+func (f *fakeFDBProjection) VMSoftDeleted(context.Context, uuid.UUID) (bool, string, error) {
+	return false, "", nil
+}

@@ -149,6 +149,14 @@ func (h heartbeatProjection) VMWithRev(ctx context.Context, id uuid.UUID) (store
 	return h.s.vmWithRev(ctx, id)
 }
 
+// VMSoftDeleted reports whether a VM row exists and carries a deletion stamp,
+// and returns its name for logging. It exposes the store's positive
+// soft-deleted read to the heartbeat projection: true means the row is there
+// and deleted, never that it could not be found.
+func (h heartbeatProjection) VMSoftDeleted(ctx context.Context, id uuid.UUID) (bool, string, error) {
+	return h.s.VMSoftDeleted(ctx, id)
+}
+
 // FilterVMIDsPinnedToNode returns the subset of ids whose live vms row is
 // pinned to nodeID, or which have an active (non-terminal) migration whose
 // target is nodeID. The pin is read from the row itself (the field the

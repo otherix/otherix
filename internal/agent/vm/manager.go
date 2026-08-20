@@ -440,6 +440,14 @@ func (m *Manager) HasInFlight(name string) bool {
 	return ok
 }
 
+// HasActiveMigration reports whether a non-terminal migration record names
+// vmID, in either role. The VM reconciler gates teardown on it: Delete is not
+// serialised against the migration state machine, so tearing a VM down here
+// would race a live RAM stream or an incoming guest.
+func (m *Manager) HasActiveMigration(vmID uuid.UUID) bool {
+	return m.migrations.HasActiveForVM(vmID)
+}
+
 // PoolView is the read-only projection of a registered pool. Consumed
 // by the reconciler's diff loop AND by future external introspection
 // (e.g. an admin endpoint listing locally-materialised pools). The
