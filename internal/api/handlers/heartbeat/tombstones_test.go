@@ -54,6 +54,16 @@ func (s *tombstoneSpy) FilterVMIDsPinnedToNode(context.Context, uuid.UUID, []uui
 	return nil, nil
 }
 
+// VMWithRev fails for every id, so the re-homed teardown path (which these tests
+// do not exercise) contributes nothing to their outcomes. It returns a distinctive
+// error rather than ErrNotFound on purpose: applyVMReport reads the same method,
+// so a regression that dropped the placement-authority gate would send a
+// recognised report there and fail the whole projection loudly instead of being
+// absorbed as "no row".
+func (s *tombstoneSpy) VMWithRev(context.Context, uuid.UUID) (store.VM, int64, error) {
+	return store.VM{}, 0, errors.New("tombstoneSpy: VMWithRev is not part of these tests")
+}
+
 func (s *tombstoneSpy) VMSoftDeleted(_ context.Context, id uuid.UUID) (bool, string, error) {
 	s.lookups = append(s.lookups, id)
 	if err, ok := s.readErr[id]; ok {

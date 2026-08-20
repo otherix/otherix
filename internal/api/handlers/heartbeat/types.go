@@ -258,9 +258,10 @@ type responseBody struct {
 	ReceivedAt    string         `json:"received_at"`
 	DeclaredPools []declaredPool `json:"declared_pools"`
 	DeclaredVMs   []declaredVM   `json:"declared_vms"`
-	// VMTombstones names VMs this node reported that the control plane has
-	// deleted: the row is present and carries a deletion stamp. The agent tears
-	// each down by UUID.
+	// VMTombstones names VMs this node reported that it must not be holding:
+	// either the control plane has deleted them (the row is present and carries
+	// a deletion stamp), or they now live on another node. The agent tears each
+	// down by UUID.
 	//
 	// An outstanding-work queue, NOT a declaration: absence from the list means
 	// "nothing to do right now" and never "tear something down". It is re-sent
@@ -382,10 +383,11 @@ type declaredVM struct {
 	Generation   int64  `json:"generation"`
 }
 
-// vmTombstone is one VM the control plane has deleted that the reporting node
-// still holds. VMName is for operator-legible agent logs only; the agent
-// resolves the teardown target by VMID, because the delete released the VM's
-// name guard and the name may already belong to a different VM.
+// vmTombstone is one VM the reporting node still holds but must not: one the
+// control plane has deleted, or one that now lives on another node. VMName is
+// for operator-legible agent logs only; the agent resolves the teardown target
+// by VMID, because a delete releases the VM's name guard and the name may
+// already belong to a different VM.
 type vmTombstone struct {
 	VMID   uuid.UUID `json:"vm_id"`
 	VMName string    `json:"vm_name"`

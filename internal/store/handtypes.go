@@ -97,6 +97,12 @@ type HeartbeatProjection interface {
 	ListOverlayNICPlacementsPinned(ctx context.Context) ([]OverlayNICPlacement, int64, error)
 	// ActiveMigrationForVM returns the non-terminal migration for vmID, if any.
 	ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (Migration, bool, error)
+	// MigrationTriedToLandOn reports whether any migration of vmID named nodeID
+	// as its target and did not reach a committed cutover. The heartbeat's
+	// re-homed teardown reads it to tell a stale duplicate apart from a
+	// migration's leftover state on a target, which only the migration workers
+	// may dispose of.
+	MigrationTriedToLandOn(ctx context.Context, vmID, nodeID uuid.UUID) (bool, error)
 	// ListGatewayMembershipsForGateway returns the overlay networks a gateway node
 	// covers, so the declared-networks projection can attach each network's tenant
 	// IP + unicast MAC for a gateway recipient.
