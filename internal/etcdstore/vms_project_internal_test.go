@@ -7,7 +7,10 @@
 package etcdstore
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +101,53 @@ func TestProjectVMLifecycleDoesNotResurrectADeletedVM(t *testing.T) {
 	}
 	if task.Status != store.TaskStatusSuccess || task.FinishedAt == nil {
 		t.Errorf("stop task = (status %v, finished %v), want success + finished", task.Status, task.FinishedAt)
+	}
+}
+
+// TestProjectVMLifecycleLogsADroppedDesiredPhaseOnAFailedReread drives the
+// read-to-commit window into its third outcome: the compare is lost, so the
+// runtime write and the task finalize commit on the losing branch, and the
+// re-read that would carry the operator's intent onto the fresh row then fails
+// for a reason that is neither "gone" nor "stale". The task is terminal by
+// then, so a redelivery will not re-run the projection and the desired_phase is
+// dropped for good - `vm stop` reports success while the reconciler drives the
+// guest back to running seconds later. That must not happen silently.
+//
+// A row bumped to bytes that are not a VM produces exactly that: the compare
+// loses on the new revision and the re-read fails to decode it.
+func TestProjectVMLifecycleLogsADroppedDesiredPhaseOnAFailedReread(t *testing.T) {
+	s, _ := FreshStore(t)
+	ctx := context.Background()
+	buf := &bytes.Buffer{}
+	s.log = slog.New(slog.NewTextHandler(buf, nil))
+
+	now := time.Now().UTC()
+	vm := store.VM{
+		ID: uuid.New(), OwnerID: uuid.New(), Name: "vm-" + uuid.NewString()[:8],
+		DesiredPhase: store.VmDesiredPhaseRunning, Architecture: store.CpuArchAmd64,
+		CpuCores: 2, MemoryMib: 2048, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.c.PutJSON(ctx, vmKey(vm.ID), vm); err != nil {
+		t.Fatalf("seed vm: %v", err)
+	}
+	stopTask := seedLifecycleTask(t, s, "vm.stop", vm.ID)
+
+	snap, rev, err := s.vmWithRev(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("vmWithRev: %v", err)
+	}
+	if _, err := s.c.Raw().Put(ctx, vmKey(vm.ID), "not a vm"); err != nil {
+		t.Fatalf("bump vm row: %v", err)
+	}
+
+	snap.DesiredPhase = store.VmDesiredPhaseStopped
+	err = s.projectVMLifecycle(ctx, vm.ID, &snap, rev, store.VmPhaseStopped,
+		store.UpdateTaskFinalizedParams{ID: stopTask, Status: store.TaskStatusSuccess})
+	if err == nil {
+		t.Fatalf("projectVMLifecycle = nil, want the re-read error")
+	}
+	if !strings.Contains(buf.String(), "dropped vm desired_phase write") {
+		t.Errorf("logs = %q, want a line reporting the dropped desired_phase write", buf.String())
 	}
 }
 

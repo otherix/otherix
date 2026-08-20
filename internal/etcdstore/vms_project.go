@@ -252,6 +252,14 @@ func (s *Store) projectVMLifecycle(ctx context.Context, vmID uuid.UUID, vm *stor
 			return nil
 		}
 		if err != nil {
+			// The runtime write and the task finalize already committed on the
+			// losing branch, so the task is terminal and a redelivery will not
+			// re-run this projection: the operator's desired_phase is dropped
+			// exactly as on the exhausted path below, and for the same reason it
+			// must not be dropped silently - `vm stop` reported success while the
+			// reconciler keeps driving the guest back to running.
+			s.log.WarnContext(ctx, "dropped vm desired_phase write after the vm-row re-read failed",
+				"vm_id", vmID, "task_id", fin.ID, "desired_phase", desiredPhase, "error", err.Error())
 			return err
 		}
 		row, rowRev = fresh, freshRev
