@@ -86,9 +86,6 @@ fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 
 otx() { "$OTX" "$@"; }
 
-# vm_phase NAME -> CP-observed status.phase ("" once the row is gone)
-vm_phase() { otx vm get "$1" --output json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || true; }
-
 # qemu_count UUID -> number of qemu processes on node-1 whose cmdline names it.
 # The match runs HERE, not on the node: a remote `sh -c 'pgrep ... | grep <uuid>'`
 # also matches that wrapper shell's own command line and over-counts by one.
@@ -177,8 +174,11 @@ delete_vm_expect_success() {
 cleanup() {
   echo "--- cleanup ---"
   run_on "$H1" sudo systemctl start otherix-agent >/dev/null 2>&1 || true
-  otx vm delete "$VM_LIVE" --force --wait >/dev/null 2>&1 || true
-  otx vm delete "$VM_CRASH" --force --wait >/dev/null 2>&1 || true
+  # Bounded: cleanup runs both as the pre-flight and inside a failure path, and
+  # the default wait is five minutes per call - a wedged VM would hang here for
+  # ten before the smoke could even report why it failed.
+  otx vm delete "$VM_LIVE" --force --wait --wait-timeout "${DELETE_WAIT}s" >/dev/null 2>&1 || true
+  otx vm delete "$VM_CRASH" --force --wait --wait-timeout "${DELETE_WAIT}s" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
