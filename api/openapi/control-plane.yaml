@@ -6026,11 +6026,14 @@ components:
         vm_tombstones:
           type: array
           description: |
-            VMs this node reported that the control plane has deleted:
-            the row is present and carries a deletion stamp. The agent
-            tears each one down, resolving the target by `vm_id` - never
-            by `vm_name`, because the delete released the VM's name guard
-            and the name may already belong to a different VM.
+            VMs this node reported that it must not be holding: either
+            the control plane has deleted them (the row is present and
+            carries a deletion stamp), or they now live on another node
+            (the row is pinned to a different node that is up and
+            holding its VMs, so this node's copy is a duplicate). The
+            agent tears each one down, resolving the target by `vm_id` -
+            never by `vm_name`, because a delete releases the VM's name
+            guard and the name may already belong to a different VM.
 
             This is an outstanding-work queue, NOT a declaration: absence
             from the list means "nothing to do right now" and never "tear
@@ -6204,23 +6207,24 @@ components:
     HeartbeatVMTombstone:
       type: object
       description: |
-        One entry in HeartbeatResponse.vm_tombstones - a VM the control
-        plane has deleted that the reporting node still holds.
+        One entry in HeartbeatResponse.vm_tombstones - a VM the
+        reporting node still holds but must not: one the control plane
+        has deleted, or one that now lives on another node.
       required: [vm_id, vm_name]
       properties:
         vm_id:
           type: string
           format: uuid
           description: |
-            The deleted VM's id, and the only field that resolves the
-            teardown target.
+            The VM's id, and the only field that resolves the teardown
+            target.
         vm_name:
           type: string
           description: |
-            The deleted VM's name, carried for operator-legible agent
-            logs only. It is never used to resolve the target: the
-            delete released the VM's name guard, so the name may already
-            belong to a different VM.
+            The VM's name, carried for operator-legible agent logs only.
+            It is never used to resolve the target: a delete releases the
+            VM's name guard, so the name may already belong to a
+            different VM.
 
     HeartbeatDeclaredVM:
       type: object

@@ -1356,8 +1356,10 @@ func resolveMigration(ctx context.Context, hp store.HeartbeatProjection, nodeID 
 	return row.MigrationHost, row.MigrationPortRangeStart, row.MigrationPortRangeEnd, nil
 }
 
-// applyVMs projects the reported VM runtime and returns the teardown
-// tombstones for the VMs this node reported that the control plane has deleted.
+// applyVMs projects the reported VM runtime and returns the teardown tombstones
+// for the VMs this node reported that it must not be holding: the ones the
+// control plane has deleted (resolveVMTombstones) and the ones that now live on
+// another node (resolveRehomedTombstones).
 func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, reports []vmReport) ([]vmTombstone, error) {
 	if len(reports) == 0 {
 		return nil, nil
@@ -1383,7 +1385,7 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 		pinnedSet[id] = struct{}{}
 	}
 
-	var unrecognised []vmReport
+	var unrecognised, notPinned []vmReport
 	for _, r := range reports {
 		if _, ok := knownSet[r.VMUUID]; !ok {
 			h.log.WarnContext(ctx, "heartbeat references unknown vm; skipping",
@@ -1404,13 +1406,15 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 			h.log.WarnContext(ctx, "heartbeat claims a vm not pinned to the reporting node; skipping runtime claim",
 				slog.String("node_id", nodeID.String()),
 				slog.String("vm_uuid", r.VMUUID.String()))
+			notPinned = append(notPinned, r)
 			continue
 		}
 		if err := h.applyVMReport(ctx, hp, nodeID, r); err != nil {
 			return nil, err
 		}
 	}
-	return h.resolveVMTombstones(ctx, hp, nodeID, unrecognised), nil
+	out := h.resolveVMTombstones(ctx, hp, nodeID, unrecognised)
+	return append(out, h.resolveRehomedTombstones(ctx, hp, nodeID, notPinned)...), nil
 }
 
 // resolveVMTombstones turns the reported-but-unrecognised VM ids into teardown
@@ -1457,6 +1461,98 @@ func (h *Handler) resolveVMTombstones(ctx context.Context, hp store.HeartbeatPro
 		out = append(out, vmTombstone{VMID: r.VMUUID, VMName: name})
 	}
 	return out
+}
+
+// resolveRehomedTombstones turns the reports the placement gate rejected into
+// teardown signals for the ones a second node demonstrably owns.
+//
+// One VM can end up materialised on two nodes at once under a single id. A node
+// force-deleted while a bind it never reported was in flight has that bind rolled
+// back, and the scheduler re-binds the VM - same id - elsewhere; if the original
+// host is later rebuilt and readmitted, it replays the guest from its own on-node
+// record and reports it. The same shape follows a completed migration whose source
+// restarts before finishing its own teardown. Both copies are live, both answer to
+// the same name and address, and only one of them is the one the control plane
+// routes to.
+//
+// The trigger is deliberately NOT "reported but not pinned here". That predicate
+// conflates the duplicate above with the case that must be left alone: a node
+// force-deleted while it was RUNNING VMs leaves them pinned to the deleted node
+// row, and when that host returns it holds the ONLY copy of each guest. Tearing
+// those down destroys the last copy - strictly worse than the leak it would fix.
+//
+// So the signal is a positive one, and every arm of it fails toward inaction: the
+// vms row must be live and name a pin that is neither this node nor absent, and
+// that pin must resolve to a live node row whose status says it is holding its
+// VMs. Anything else - a read failure, a soft-deleted or unreachable home, an
+// unscheduled VM - emits nothing and leaves the guest running.
+//
+// The pin is re-read here rather than inferred from the batch gate: a bind landing
+// between the two must not order the guest it just placed on this node destroyed.
+// Reports the gate admitted never reach this function at all, which is what keeps
+// an in-flight migration's target (admitted by the gate's migration arm) from
+// being told to destroy the incoming guest.
+func (h *Handler) resolveRehomedTombstones(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, notPinned []vmReport) []vmTombstone {
+	var out []vmTombstone
+	for _, r := range notPinned {
+		vm, _, err := hp.VMWithRev(ctx, r.VMUUID)
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				h.log.WarnContext(ctx, "vm rehomed lookup failed; not signalling teardown",
+					slog.String("node_id", nodeID.String()),
+					slog.String("vm_uuid", r.VMUUID.String()),
+					slog.String("error", err.Error()))
+			}
+			continue
+		}
+		if vm.PinnedNodeID == nil || *vm.PinnedNodeID == nodeID {
+			continue
+		}
+		home, err := hp.NodeByID(ctx, *vm.PinnedNodeID)
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				h.log.WarnContext(ctx, "vm rehomed lookup failed; not signalling teardown",
+					slog.String("node_id", nodeID.String()),
+					slog.String("vm_uuid", r.VMUUID.String()),
+					slog.String("error", err.Error()))
+			}
+			continue
+		}
+		if !nodeHoldsItsVMs(home.Status) {
+			continue
+		}
+		h.log.InfoContext(ctx, "signalling teardown of a vm that now lives on another node",
+			slog.String("node_id", nodeID.String()),
+			slog.String("vm_uuid", r.VMUUID.String()),
+			slog.String("vm_name", vm.Name),
+			slog.String("home_node_id", home.ID.String()))
+		out = append(out, vmTombstone{VMID: vm.ID, VMName: vm.Name})
+	}
+	return out
+}
+
+// nodeHoldsItsVMs reports whether a node's status proves it is up and still
+// running the VMs pinned to it. It enumerates every status deliberately instead
+// of excluding a couple by name, because the answer gates a destructive signal:
+//
+//   - ready / cordoned / draining: YES. All three are reporting nodes; cordon and
+//     drain stop new placement, they do not stop the guests already there.
+//   - unreachable: NO. The node may be dead, in which case whoever else holds the
+//     VM holds the last copy of it.
+//   - pending: NO. The agent has never checked in, so it is not known to hold
+//     anything.
+//
+// A status added later lands in the default arm and answers NO: an irreversible
+// action fails toward inaction until this switch is revisited.
+func nodeHoldsItsVMs(s store.NodeStatus) bool {
+	switch s {
+	case store.NodeStatusReady, store.NodeStatusCordoned, store.NodeStatusDraining:
+		return true
+	case store.NodeStatusPending, store.NodeStatusUnreachable:
+		return false
+	default:
+		return false
+	}
 }
 
 // applyVMReport upserts a single VM runtime row from one heartbeat vmReport. The

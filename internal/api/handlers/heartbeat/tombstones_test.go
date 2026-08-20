@@ -54,6 +54,12 @@ func (s *tombstoneSpy) FilterVMIDsPinnedToNode(context.Context, uuid.UUID, []uui
 	return nil, nil
 }
 
+// VMWithRev reports no live row for every id, so the re-homed teardown path
+// (which these tests do not exercise) contributes nothing to their outcomes.
+func (s *tombstoneSpy) VMWithRev(context.Context, uuid.UUID) (store.VM, int64, error) {
+	return store.VM{}, 0, store.ErrNotFound
+}
+
 func (s *tombstoneSpy) VMSoftDeleted(_ context.Context, id uuid.UUID) (bool, string, error) {
 	s.lookups = append(s.lookups, id)
 	if err, ok := s.readErr[id]; ok {

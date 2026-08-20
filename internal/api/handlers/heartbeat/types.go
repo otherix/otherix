@@ -382,10 +382,11 @@ type declaredVM struct {
 	Generation   int64  `json:"generation"`
 }
 
-// vmTombstone is one VM the control plane has deleted that the reporting node
-// still holds. VMName is for operator-legible agent logs only; the agent
-// resolves the teardown target by VMID, because the delete released the VM's
-// name guard and the name may already belong to a different VM.
+// vmTombstone is one VM the reporting node still holds but must not: one the
+// control plane has deleted, or one that now lives on another node. VMName is
+// for operator-legible agent logs only; the agent resolves the teardown target
+// by VMID, because a delete releases the VM's name guard and the name may
+// already belong to a different VM.
 type vmTombstone struct {
 	VMID   uuid.UUID `json:"vm_id"`
 	VMName string    `json:"vm_name"`
