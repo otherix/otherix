@@ -218,32 +218,31 @@ func TestHeartbeat_TombstoneIsIndependentOfThePinnedNodeGate(t *testing.T) {
 	}
 }
 
-// TestHeartbeat_LookupCapTruncatesAndLogs asserts a node reporting more
-// unrecognised ids than the cap resolves at most the cap and logs the
-// truncation rather than silently covering less than it appears to.
-func TestHeartbeat_LookupCapTruncatesAndLogs(t *testing.T) {
+// TestHeartbeat_EveryUnrecognisedIDIsResolved asserts a large batch is resolved
+// in full rather than by prefix. The agent reports in UUID order, so a
+// per-tick ceiling would let a run of ids the CP has no row for permanently
+// occupy the resolved prefix and starve the deleted VM sorting above them -
+// its guest would then leak forever, which is the failure this signal exists to
+// close. The deleted VM is placed LAST so a prefix-shaped regression fails.
+func TestHeartbeat_EveryUnrecognisedIDIsResolved(t *testing.T) {
 	node := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
-	over := store.VMTombstoneLookupCap + 3
-	ids := make([]uuid.UUID, 0, over)
-	deleted := make(map[uuid.UUID]string, over)
-	for i := range over {
-		id := uuid.New()
-		ids = append(ids, id)
-		deleted[id] = fmt.Sprintf("vm-%d", i)
+	const rowless = 200
+	ids := make([]uuid.UUID, 0, rowless+1)
+	for range rowless {
+		ids = append(ids, uuid.New())
 	}
+	last := uuid.New()
+	ids = append(ids, last)
 
-	spy := &tombstoneSpy{deleted: deleted}
-	buf := &bytes.Buffer{}
-	outcome := runVMReports(t, newCapturingHandler(buf), spy, node, vmReportsFor(ids...))
+	spy := &tombstoneSpy{deleted: map[uuid.UUID]string{last: "gone-1"}}
+	outcome := runVMReports(t, newQuietHandler(), spy, node, vmReportsFor(ids...))
 
-	if len(outcome.vmTombstones) != store.VMTombstoneLookupCap {
-		t.Errorf("tombstones = %d, want %d (the lookup cap)", len(outcome.vmTombstones), store.VMTombstoneLookupCap)
+	want := []vmTombstone{{VMID: last, VMName: "gone-1"}}
+	if diff := cmp.Diff(want, outcome.vmTombstones); diff != "" {
+		t.Errorf("tombstones mismatch (-want +got):\n%s", diff)
 	}
-	if len(spy.lookups) != store.VMTombstoneLookupCap {
-		t.Errorf("VMSoftDeleted lookups = %d, want %d (the lookup cap)", len(spy.lookups), store.VMTombstoneLookupCap)
-	}
-	if !strings.Contains(buf.String(), "tombstone lookup cap") {
-		t.Errorf("logs = %q, want a line reporting the truncated pass", buf.String())
+	if len(spy.lookups) != len(ids) {
+		t.Errorf("VMSoftDeleted lookups = %d, want %d (one per reported id)", len(spy.lookups), len(ids))
 	}
 }

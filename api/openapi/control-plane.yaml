@@ -5621,10 +5621,15 @@ components:
           $ref: "#/components/schemas/NodeResourcesReport"
         vms:
           type: array
+          maxItems: 4096
           description: |
             One entry per VM the agent is currently managing on this
             node. **Full snapshot** semantics — VMs absent from this
             list are treated by the reconciler as missing on the node.
+            Bounded at 4096 entries — each one costs the control plane
+            store reads, and the limit sits far above what a node can
+            physically run; an oversized list is rejected with 400
+            `validation_failed`.
           items:
             $ref: "#/components/schemas/HeartbeatVMReport"
         pools:

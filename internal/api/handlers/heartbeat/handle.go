@@ -1426,14 +1426,17 @@ func (h *Handler) applyVMs(ctx context.Context, hp store.HeartbeatProjection, no
 //
 // Any read failure emits nothing and is logged: uncertainty resolves toward
 // leaving the guest running.
+//
+// Every unrecognised id is resolved, with no per-tick ceiling. Capping the pass
+// would starve real tombstones: the agent reports in UUID order, so a node
+// holding rows the CP knows nothing about (an etcd restore, residue from a node
+// the CP force-deleted) permanently occupies the low end of the report and a
+// genuinely deleted VM sorting above it would never be looked up, leaking its
+// qemu forever. The read amplification a ceiling would have bounded is bounded
+// instead where it belongs, on the size of the reported list itself
+// (maxVMReports) - the batch existence filter one step earlier already reads
+// once per reported id regardless.
 func (h *Handler) resolveVMTombstones(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, unknown []vmReport) []vmTombstone {
-	if len(unknown) > store.VMTombstoneLookupCap {
-		h.log.WarnContext(ctx, "reported unknown vm ids exceed the tombstone lookup cap; resolving a prefix this tick",
-			slog.String("node_id", nodeID.String()),
-			slog.Int("reported", len(unknown)),
-			slog.Int("cap", store.VMTombstoneLookupCap))
-		unknown = unknown[:store.VMTombstoneLookupCap]
-	}
 	var out []vmTombstone
 	for _, r := range unknown {
 		deleted, name, err := hp.VMSoftDeleted(ctx, r.VMUUID)
