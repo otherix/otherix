@@ -258,9 +258,10 @@ type responseBody struct {
 	ReceivedAt    string         `json:"received_at"`
 	DeclaredPools []declaredPool `json:"declared_pools"`
 	DeclaredVMs   []declaredVM   `json:"declared_vms"`
-	// VMTombstones names VMs this node reported that the control plane has
-	// deleted: the row is present and carries a deletion stamp. The agent tears
-	// each down by UUID.
+	// VMTombstones names VMs this node reported that it must not be holding:
+	// either the control plane has deleted them (the row is present and carries
+	// a deletion stamp), or they now live on another node. The agent tears each
+	// down by UUID.
 	//
 	// An outstanding-work queue, NOT a declaration: absence from the list means
 	// "nothing to do right now" and never "tear something down". It is re-sent

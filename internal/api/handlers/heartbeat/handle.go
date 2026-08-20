@@ -1482,10 +1482,21 @@ func (h *Handler) resolveVMTombstones(ctx context.Context, hp store.HeartbeatPro
 // those down destroys the last copy - strictly worse than the leak it would fix.
 //
 // So the signal is a positive one, and every arm of it fails toward inaction: the
-// vms row must be live and name a pin that is neither this node nor absent, and
-// that pin must resolve to a live node row whose status says it is holding its
-// VMs. Anything else - a read failure, a soft-deleted or unreachable home, an
-// unscheduled VM - emits nothing and leaves the guest running.
+// vms row must be live and name a pin that is neither this node nor absent, that
+// pin must resolve to a live node row whose status says it is up and running its
+// VMs, and no migration of this VM may have named this node as a target without
+// committing a cutover. Anything else - a read failure, a soft-deleted or
+// unreachable home, an unscheduled VM - emits nothing and leaves the guest
+// running.
+//
+// The last arm is what makes the pin admissible as evidence at all. A pin is a
+// verdict on some other node only when its last mover was a committed transition:
+// a bind, or a cutover, both of which move it in one transaction. A migration that
+// went terminal WITHOUT a cutover leaves the pin at the source while the target may
+// hold a resumed guest or the only surviving destination disk - a state the
+// migration workers explicitly refuse to reap because either could be the last copy
+// (see cancelLive's refusal to reap a target already running the guest). Reading
+// that stale pin as proof would reap it behind their back.
 //
 // The pin is re-read here rather than inferred from the batch gate: a bind landing
 // between the two must not order the guest it just placed on this node destroyed.
@@ -1494,45 +1505,80 @@ func (h *Handler) resolveVMTombstones(ctx context.Context, hp store.HeartbeatPro
 // being told to destroy the incoming guest.
 func (h *Handler) resolveRehomedTombstones(ctx context.Context, hp store.HeartbeatProjection, nodeID uuid.UUID, notPinned []vmReport) []vmTombstone {
 	var out []vmTombstone
+	// A report list may name one VM many times, and many VMs may share a home.
+	// Both caches are per-call, so every heartbeat still decides on fresh reads.
+	resolved := make(map[uuid.UUID]struct{}, len(notPinned))
+	homeHolds := make(map[uuid.UUID]bool)
 	for _, r := range notPinned {
+		if _, done := resolved[r.VMUUID]; done {
+			continue
+		}
+		resolved[r.VMUUID] = struct{}{}
+
 		vm, _, err := hp.VMWithRev(ctx, r.VMUUID)
 		if err != nil {
-			if !errors.Is(err, store.ErrNotFound) {
-				h.log.WarnContext(ctx, "vm rehomed lookup failed; not signalling teardown",
-					slog.String("node_id", nodeID.String()),
-					slog.String("vm_uuid", r.VMUUID.String()),
-					slog.String("error", err.Error()))
-			}
+			h.logRehomedReadFailure(ctx, nodeID, r.VMUUID, "vm", err)
 			continue
 		}
 		if vm.PinnedNodeID == nil || *vm.PinnedNodeID == nodeID {
 			continue
 		}
-		home, err := hp.NodeByID(ctx, *vm.PinnedNodeID)
-		if err != nil {
-			if !errors.Is(err, store.ErrNotFound) {
-				h.log.WarnContext(ctx, "vm rehomed lookup failed; not signalling teardown",
-					slog.String("node_id", nodeID.String()),
-					slog.String("vm_uuid", r.VMUUID.String()),
-					slog.String("error", err.Error()))
+		pin := *vm.PinnedNodeID
+		holds, cached := homeHolds[pin]
+		if !cached {
+			home, herr := hp.NodeByID(ctx, pin)
+			if herr != nil {
+				h.logRehomedReadFailure(ctx, nodeID, r.VMUUID, "node", herr)
+			} else {
+				holds = nodeHoldsItsVMs(home.Status)
 			}
+			homeHolds[pin] = holds
+		}
+		if !holds {
 			continue
 		}
-		if !nodeHoldsItsVMs(home.Status) {
+
+		// The pin is only a verdict on this node when its last mover was a
+		// committed transition. A migration that named this node as its target and
+		// went terminal without a cutover leaves the pin on the source while this
+		// node may be holding a resumed guest or the sole surviving destination
+		// disk - state the migration workers deliberately refuse to reap, and which
+		// this signal must not reap behind their back.
+		landed, err := hp.MigrationTriedToLandOn(ctx, r.VMUUID, nodeID)
+		if err != nil {
+			h.logRehomedReadFailure(ctx, nodeID, r.VMUUID, "migration", err)
 			continue
 		}
+		if landed {
+			continue
+		}
+
 		h.log.InfoContext(ctx, "signalling teardown of a vm that now lives on another node",
 			slog.String("node_id", nodeID.String()),
 			slog.String("vm_uuid", r.VMUUID.String()),
 			slog.String("vm_name", vm.Name),
-			slog.String("home_node_id", home.ID.String()))
+			slog.String("home_node_id", pin.String()))
 		out = append(out, vmTombstone{VMID: vm.ID, VMName: vm.Name})
 	}
 	return out
 }
 
-// nodeHoldsItsVMs reports whether a node's status proves it is up and still
-// running the VMs pinned to it. It enumerates every status deliberately instead
+// logRehomedReadFailure records a read the re-homed teardown decision could not
+// make, naming which one so an operator can tell the three apart. A missing row
+// is not a failure: it is one of the answers, and it means no teardown.
+func (h *Handler) logRehomedReadFailure(ctx context.Context, nodeID, vmID uuid.UUID, read string, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		return
+	}
+	h.log.WarnContext(ctx, "vm rehomed lookup failed; not signalling teardown",
+		slog.String("node_id", nodeID.String()),
+		slog.String("vm_uuid", vmID.String()),
+		slog.String("read", read),
+		slog.String("error", err.Error()))
+}
+
+// nodeHoldsItsVMs reports whether a node's status says it is up and reporting,
+// so the VMs pinned to it are its to run. It enumerates every status deliberately instead
 // of excluding a couple by name, because the answer gates a destructive signal:
 //
 //   - ready / cordoned / draining: YES. All three are reporting nodes; cordon and

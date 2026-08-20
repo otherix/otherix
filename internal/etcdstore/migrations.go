@@ -634,6 +634,42 @@ func (s *Store) ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store
 	return store.Migration{}, false, nil
 }
 
+// MigrationTriedToLandOn reports whether any migration of vmID named nodeID as
+// its target and did not reach a committed cutover. It ranges the per-VM
+// migration index (which retains terminal rows for history) and stops at the
+// first match.
+//
+// Completed is the only phase that means the cutover committed: CommitMigrationCutover
+// re-pins the VM and stamps the migration completed in one transaction, and it
+// refuses to re-pin a failed one. So every other phase leaves the target holding
+// whatever it built while the pin still names the source - state whose fate the
+// migration workers decide, and which nothing else may read the pin as a verdict
+// on.
+func (s *Store) MigrationTriedToLandOn(ctx context.Context, vmID, nodeID uuid.UUID) (bool, error) {
+	items, err := s.c.Range(ctx, migrationsVMIndexPrefix(vmID))
+	if err != nil {
+		return false, err
+	}
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			return false, fmt.Errorf("corrupt migration vm index %q: %v", kv.Key, perr)
+		}
+		var m store.Migration
+		found, gerr := s.c.GetJSON(ctx, migrationKey(id), &m)
+		if gerr != nil {
+			return false, gerr
+		}
+		if !found || m.Phase == store.MigrationPhaseCompleted {
+			continue
+		}
+		if m.TargetNodeID != nil && *m.TargetNodeID == nodeID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // MigrationByID returns the migration row with the given id, or
 // store.ErrNotFound. Migrations have no soft-delete column, so a present row is
 // always visible.

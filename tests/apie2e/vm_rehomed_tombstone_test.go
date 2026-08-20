@@ -7,6 +7,7 @@
 package apie2e
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/uuid"
@@ -65,11 +66,28 @@ func TestReportingAVMWithNoLiveHomeYieldsNoTombstone(t *testing.T) {
 	unreachable := wgSeedAgentWithStatus(t, h, caCert, caKey,
 		"node-rehomed-unreachable", store.NodeStatusUnreachable)
 
-	// Pinned to a node row that no longer exists, the shape a force-delete
-	// leaves behind for a VM it orphaned.
-	orphaned := seedPinnedVM(t, opID, uuid.New())
+	// The force-deleted home, driven through the real DeleteNode rather than a
+	// node id that never existed: a force-delete SOFT-deletes the row and leaves
+	// its status untouched, so the whole safety property rests on NodeByID
+	// hiding soft-deleted rows. Seeding an absent id would exercise a different
+	// branch and leave that one uncovered.
+	// The VM is observed running there first, so the force-delete ORPHANS it
+	// rather than rolling the bind back - the arm that leaves the pin in place.
+	forceDeleted := wgSeedAgent(t, h, caCert, caKey, "node-rehomed-force-deleted")
+	orphaned := seedPinnedVM(t, opID, forceDeleted.nodeID)
+	markVMRunning(t, h, orphaned.ID, forceDeleted.nodeID)
+	if _, err := h.store.DeleteNode(context.Background(), forceDeleted.nodeID, true, opID); err != nil {
+		t.Fatalf("DeleteNode(force): %v", err)
+	}
+	if vm, err := h.store.VMByID(context.Background(), orphaned.ID); err != nil {
+		t.Fatalf("VMByID after force-delete: %v", err)
+	} else if vm.PinnedNodeID == nil || *vm.PinnedNodeID != forceDeleted.nodeID {
+		t.Fatalf("pin after force-delete = %v, want it still on the deleted node %v "+
+			"(the orphan arm must leave it; otherwise this case no longer covers what it claims)",
+			vm.PinnedNodeID, forceDeleted.nodeID)
+	}
 	if got := hbPostReportingVM(t, agentSrv.URL, reporter, orphaned.ID); len(got) != 0 {
-		t.Errorf("vm_tombstones = %+v, want none (the home node row is gone)", got)
+		t.Errorf("vm_tombstones = %+v, want none (the home node row is soft-deleted)", got)
 	}
 
 	partitioned := seedPinnedVM(t, opID, unreachable.nodeID)
@@ -77,3 +95,53 @@ func TestReportingAVMWithNoLiveHomeYieldsNoTombstone(t *testing.T) {
 		t.Errorf("vm_tombstones = %+v, want none (the home node is out of contact)", got)
 	}
 }
+
+// TestReportingAVMFromAFailedMigrationYieldsNoTombstone drives the case the pin
+// alone cannot decide. A migration that ends without a cutover leaves the pin at
+// the source, so its target is indistinguishable from a stale duplicate by pin
+// and node status alone - and yet it may hold the resumed guest, or the only
+// surviving destination disk after the source tore itself down. The migration
+// workers refuse to reap that state precisely because either could be the last
+// copy; this signal must not reap it behind their back.
+func TestReportingAVMFromAFailedMigrationYieldsNoTombstone(t *testing.T) {
+	h := newE2E(t)
+	ctx := context.Background()
+	_, opID := loginAs(t, h, auth.RoleOperator)
+
+	caCert, caKey := wgGenerateCA(t)
+	agentSrv := wgStartAgentTLSServer(t, h, caCert, caKey)
+	source := wgSeedAgent(t, h, caCert, caKey, "node-failedmig-source")
+	target := wgSeedAgent(t, h, caCert, caKey, "node-failedmig-target")
+
+	vm := seedPinnedVM(t, opID, source.nodeID)
+
+	src, tgt := source.nodeID, target.nodeID
+	migID, taskID := uuid.New(), uuid.New()
+	if _, err := h.store.CreateMigration(ctx, store.CreateMigrationParams{
+		ID: migID, VmID: vm.ID, SourceNodeID: &src, TargetNodeID: &tgt,
+		Reason: store.MigrationReasonManual, Live: true,
+		Task: store.CreateTaskParams{
+			ID: taskID, Type: "vm.migrate", Status: store.TaskStatusPending,
+			ResourceType: "migration", MaxAttempts: 3,
+		},
+	}, rehomedJobArgsStub{}); err != nil {
+		t.Fatalf("CreateMigration: %v", err)
+	}
+	failed := store.MigrationPhaseFailed
+	if err := h.store.UpdateMigrationProgress(ctx, migID,
+		store.MigrationProgressUpdate{Phase: &failed}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(failed): %v", err)
+	}
+
+	// The source is up and ready and the pin still names it, so every other arm
+	// of the decision says "duplicate". Only the migration record says otherwise.
+	if got := hbPostReportingVM(t, agentSrv.URL, target, vm.ID); len(got) != 0 {
+		t.Errorf("vm_tombstones = %+v, want none (a migration tried to land this VM here)", got)
+	}
+}
+
+// rehomedJobArgsStub satisfies the job-args payload CreateMigration enqueues
+// with; these tests never run the job.
+type rehomedJobArgsStub struct{}
+
+func (rehomedJobArgsStub) Kind() string { return "vm.migrate" }

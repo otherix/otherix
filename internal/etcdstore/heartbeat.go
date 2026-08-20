@@ -494,6 +494,10 @@ func (h heartbeatProjection) ListOverlayNICPlacementsPinned(ctx context.Context)
 }
 
 // ActiveMigrationForVM returns the non-terminal migration for vmID, if any.
+func (h heartbeatProjection) MigrationTriedToLandOn(ctx context.Context, vmID, nodeID uuid.UUID) (bool, error) {
+	return h.s.MigrationTriedToLandOn(ctx, vmID, nodeID)
+}
+
 func (h heartbeatProjection) ActiveMigrationForVM(ctx context.Context, vmID uuid.UUID) (store.Migration, bool, error) {
 	return h.s.ActiveMigrationForVM(ctx, vmID)
 }

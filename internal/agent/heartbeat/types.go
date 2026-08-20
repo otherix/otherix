@@ -221,8 +221,9 @@ type Response struct {
 	// hypervisor node or an older CP. Full-snapshot semantics: the agent binds
 	// exactly the published ports in this list and closes the rest.
 	DeclaredLoadBalancers []DeclaredLoadBalancer `json:"declared_load_balancers"`
-	// VMTombstones names VMs this agent reported that the control plane has
-	// deleted. The VM reconciler tears each down by UUID.
+	// VMTombstones names VMs this agent reported that it must not be holding:
+	// ones the control plane has deleted, and ones that now live on another
+	// node. The VM reconciler tears each down by UUID.
 	//
 	// An outstanding-work queue, NOT a declaration: an empty list means
 	// "nothing to do right now" and never "tear something down". Teardown is

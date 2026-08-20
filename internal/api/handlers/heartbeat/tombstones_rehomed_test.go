@@ -30,8 +30,27 @@ type rehomedSpy struct {
 	nodeErr map[uuid.UUID]error
 	// pinned is what FilterVMIDsPinnedToNode returns.
 	pinned []uuid.UUID
+	// landedOn maps a VM id to the node ids a migration of it named as target
+	// without committing a cutover.
+	landedOn map[uuid.UUID][]uuid.UUID
+	// landedErr maps a VM id to the error MigrationTriedToLandOn returns for it.
+	landedErr map[uuid.UUID]error
 	// vmLookups records every id VMWithRev was asked about, in order.
 	vmLookups []uuid.UUID
+	// nodeLookups records every id NodeByID was asked about, in order.
+	nodeLookups []uuid.UUID
+}
+
+func (s *rehomedSpy) MigrationTriedToLandOn(_ context.Context, vmID, nodeID uuid.UUID) (bool, error) {
+	if err, ok := s.landedErr[vmID]; ok {
+		return false, err
+	}
+	for _, n := range s.landedOn[vmID] {
+		if n == nodeID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *rehomedSpy) FilterExistingVMIDs(_ context.Context, ids []uuid.UUID) ([]uuid.UUID, error) {
@@ -65,6 +84,7 @@ func (s *rehomedSpy) ActiveMigrationForVM(context.Context, uuid.UUID) (store.Mig
 }
 
 func (s *rehomedSpy) NodeByID(_ context.Context, id uuid.UUID) (store.Node, error) {
+	s.nodeLookups = append(s.nodeLookups, id)
 	if err, ok := s.nodeErr[id]; ok {
 		return store.Node{}, err
 	}
@@ -132,6 +152,108 @@ func TestHeartbeat_RehomedTeardownNeedsALiveHome(t *testing.T) {
 
 	if len(outcome.vmTombstones) != 0 {
 		t.Errorf("tombstones = %v, want none (no proven live home for any of them)", outcome.vmTombstones)
+	}
+}
+
+// TestHeartbeat_RehomedTeardownSparesAMigrationTargetThatNeverCommitted is the
+// second load-bearing safety case. A migration that ends without a cutover
+// leaves the pin at the source, so the target looks exactly like a stale
+// duplicate - but it may hold the only copy there is, which is why the migration
+// workers refuse to reap it. Two shapes, both reachable:
+//
+//   - the target resumed the guest and the source then reported failure. The
+//     target's copy is the live one; the source's is frozen pre-switchover.
+//   - the target failed to resume and kept the destination disk after the source
+//     had already torn itself down. The source is up and empty, and the target's
+//     disk is the last copy of the guest.
+//
+// In both the pin names a live, ready source. Only the migration record tells
+// them apart from a duplicate.
+func TestHeartbeat_RehomedTeardownSparesAMigrationTargetThatNeverCommitted(t *testing.T) {
+	target := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	source := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	resumed := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	strandedDisk := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	duplicate := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+
+	spy := &rehomedSpy{
+		vms: map[uuid.UUID]store.VM{
+			resumed:      {ID: resumed, Name: "resumed-1", PinnedNodeID: &source},
+			strandedDisk: {ID: strandedDisk, Name: "stranded-1", PinnedNodeID: &source},
+			// Never a migration target here: an ordinary re-homed duplicate, kept in
+			// the batch so this test fails if the guard degenerates into "never
+			// tear anything down".
+			duplicate: {ID: duplicate, Name: "web-1", PinnedNodeID: &source},
+		},
+		landedOn: map[uuid.UUID][]uuid.UUID{
+			resumed:      {target},
+			strandedDisk: {target},
+		},
+		nodes: map[uuid.UUID]store.Node{source: {ID: source, Status: store.NodeStatusReady}},
+	}
+	outcome := runVMReports(t, newQuietHandler(), spy, target,
+		vmReportsFor(resumed, strandedDisk, duplicate))
+
+	want := []vmTombstone{{VMID: duplicate, VMName: "web-1"}}
+	if diff := cmp.Diff(want, outcome.vmTombstones); diff != "" {
+		t.Errorf("tombstones mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestHeartbeat_RehomedTeardownSkipsOnAFailedMigrationRead asserts the migration
+// guard fails toward inaction like the rest: if the control plane cannot tell
+// whether a migration tried to land this VM here, it does not order a teardown.
+func TestHeartbeat_RehomedTeardownSkipsOnAFailedMigrationRead(t *testing.T) {
+	reporter := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	home := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	vmID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	spy := &rehomedSpy{
+		vms:       map[uuid.UUID]store.VM{vmID: {ID: vmID, Name: "web-1", PinnedNodeID: &home}},
+		landedErr: map[uuid.UUID]error{vmID: errors.New("boom")},
+		nodes:     map[uuid.UUID]store.Node{home: {ID: home, Status: store.NodeStatusReady}},
+	}
+	buf := &bytes.Buffer{}
+	outcome := runVMReports(t, newCapturingHandler(buf), spy, reporter, vmReportsFor(vmID))
+
+	if len(outcome.vmTombstones) != 0 {
+		t.Errorf("tombstones = %v, want none (the migration read failed)", outcome.vmTombstones)
+	}
+	if !strings.Contains(buf.String(), "read=migration") {
+		t.Errorf("logs = %q, want the failed read named", buf.String())
+	}
+}
+
+// TestHeartbeat_RehomedTeardownResolvesEachVMOnce asserts a report list naming
+// one VM many times costs one decision, not one per entry, and that VMs sharing
+// a home read that home once. The reported list is agent-supplied and capped only
+// by its length, so an unbounded per-entry read pair on the destructive path
+// would be a heartbeat the agent can make arbitrarily expensive.
+func TestHeartbeat_RehomedTeardownResolvesEachVMOnce(t *testing.T) {
+	reporter := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	home := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+	first := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	second := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	spy := &rehomedSpy{
+		vms: map[uuid.UUID]store.VM{
+			first:  {ID: first, Name: "web-1", PinnedNodeID: &home},
+			second: {ID: second, Name: "web-2", PinnedNodeID: &home},
+		},
+		nodes: map[uuid.UUID]store.Node{home: {ID: home, Status: store.NodeStatusReady}},
+	}
+	reports := vmReportsFor(first, second, first, first, second)
+	outcome := runVMReports(t, newQuietHandler(), spy, reporter, reports)
+
+	want := []vmTombstone{{VMID: first, VMName: "web-1"}, {VMID: second, VMName: "web-2"}}
+	if diff := cmp.Diff(want, outcome.vmTombstones); diff != "" {
+		t.Errorf("tombstones mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]uuid.UUID{first, second}, spy.vmLookups); diff != "" {
+		t.Errorf("VMWithRev lookups mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]uuid.UUID{home}, spy.nodeLookups); diff != "" {
+		t.Errorf("NodeByID lookups mismatch (-want +got):\n%s", diff)
 	}
 }
 
