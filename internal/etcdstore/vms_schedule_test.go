@@ -429,3 +429,77 @@ func TestDeleteUnscheduledVM_RejectsScheduled(t *testing.T) {
 		t.Errorf("VMByID after rejected delete err = %v, want nil (row preserved)", err)
 	}
 }
+
+// TestBindScheduledVMRefusesADeletedVM pins the guard that makes the
+// unscheduled delete's soft-delete safe. BindScheduledVM used to read the raw
+// row and treat "the key is absent" as the only delete signal, so once the
+// delete stopped removing the key, a scheduler tick racing a user's delete would
+// bind a VM every reader already 404s.
+//
+// The damage would be unreclaimable rather than merely untidy: the bind commits
+// a boot disk, a NIC with its MAC guard and CP-IPAM IPv4 reservation, a pinned
+// index and a create task, and none of it can be undone afterwards - `vm delete`
+// 404s, so ProjectVMDeleteSuccess never runs, and the leaked per-network NIC
+// index wedges DeleteNetwork forever.
+//
+// The real order matters: the delete lands BEFORE the bind's read, so the
+// ModRevision CAS cannot help - it compares against the post-delete revision and
+// succeeds. Only a DeletedAt check refuses this.
+func TestBindScheduledVMRefusesADeletedVM(t *testing.T) {
+	st, _ := etcdstore.FreshStore(t)
+	ctx := context.Background()
+
+	nodeID, poolID, poolName := schedulingFixture(t, st)
+	vmID, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, "vm-bind-deleted"))
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM: %v", err)
+	}
+	if err := st.DeleteUnscheduledVM(ctx, vmID); err != nil {
+		t.Fatalf("DeleteUnscheduledVM: %v", err)
+	}
+
+	planned := false
+	taskID := uuid.New()
+	err = st.BindScheduledVM(ctx, vmID, func(pr store.PlacementReader) (store.VMBindWrites, error) {
+		planned = true
+		pools, perr := pr.ListEligiblePoolsByName(ctx, poolName)
+		if perr != nil {
+			return store.VMBindWrites{}, perr
+		}
+		if len(pools) == 0 {
+			return store.VMBindWrites{}, fmt.Errorf("no eligible pool")
+		}
+		return store.VMBindWrites{
+			PinnedNodeID: nodeID,
+			Disk: store.CreateVMDiskParams{
+				VmID: vmID, StoragePoolID: poolID, DeviceOrder: 0,
+				Bus: store.DiskBusVirtio, SizeGib: 0, SourceKind: "image",
+				Format: store.ImageFormatQcow2, CacheMode: store.DiskCacheModeWriteback,
+				Discard: store.DiskDiscardUnmap,
+			},
+			Task: store.CreateTaskParams{
+				ID: taskID, Type: "vm.create", Status: store.TaskStatusPending,
+				ResourceType: "vm", ResourceID: &vmID, Args: []byte(`{}`), MaxAttempts: 25,
+			},
+			Job: stubJobArgs{},
+		}, nil
+	})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("BindScheduledVM(deleted vm) = %v, want store.ErrNotFound (the scheduler's clean-skip sentinel)", err)
+	}
+	if planned {
+		t.Errorf("plan() ran for a deleted VM; the guard must refuse before placement")
+	}
+
+	// Nothing was committed on the VM's behalf.
+	disks, err := st.ListVMDisksByVM(ctx, vmID)
+	if err != nil {
+		t.Fatalf("ListVMDisksByVM: %v", err)
+	}
+	if len(disks) != 0 {
+		t.Errorf("disks after a refused bind = %d, want 0", len(disks))
+	}
+	if _, err := st.TaskByID(ctx, taskID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("TaskByID(create) after a refused bind = %v, want ErrNotFound", err)
+	}
+}

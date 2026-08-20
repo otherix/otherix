@@ -298,11 +298,12 @@ func TestDeletedVMRowSurvivesAsSoftDeleted(t *testing.T) {
 	}
 }
 
-// TestDeleteUnscheduledVMRefusesAScheduledVM pins the other half of the same
-// invariant: DeleteUnscheduledVM is the only hard delete of a VM row in the
-// tree, and it stays gated on SchedulingStatus == unscheduled. A VM that reached
-// a node must leave a soft-deleted row behind, because a hard-deleted row can
-// never carry a teardown signal.
+// TestDeleteUnscheduledVMRefusesAScheduledVM pins the scheduling gate:
+// DeleteUnscheduledVM handles only a VM that is still unscheduled, and refuses a
+// scheduled one so the delete falls back to the async agent path that tears the
+// guest down. Both outcomes now leave a soft-deleted row - the durable teardown
+// signal - so the gate is about which delete path runs, not about whether the
+// row survives.
 func TestDeleteUnscheduledVMRefusesAScheduledVM(t *testing.T) {
 	h := newE2E(t)
 	ctx := context.Background()
@@ -318,8 +319,8 @@ func TestDeleteUnscheduledVMRefusesAScheduledVM(t *testing.T) {
 		t.Errorf("VMByID after refused hard delete = %v, want the row intact", err)
 	}
 
-	// The gate's other side: an unscheduled VM never reached an agent, so
-	// hard-deleting it is correct and the row does go away.
+	// The gate's other side: an unscheduled VM is accepted, and it too leaves a
+	// stamped row behind, so a guest that did reach an agent can still be named.
 	vm.SchedulingStatus = store.VMSchedulingUnscheduled
 	vm.PinnedNodeID = nil
 	seedVMRow(t, vm)
@@ -330,26 +331,26 @@ func TestDeleteUnscheduledVMRefusesAScheduledVM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VMSoftDeleted: %v", err)
 	}
-	if deleted {
-		t.Errorf("VMSoftDeleted after an unscheduled hard delete = true, want false (the row is gone)")
+	if !deleted {
+		t.Errorf("VMSoftDeleted after the unscheduled delete = false, want true (the teardown signal must survive)")
 	}
 }
 
-// TestKnownGap_RollbackToUnscheduledMakesAMaterialisedVMHardDeletable documents
-// a gap in the teardown signal, not a property worth having. The name carries
-// the KnownGap prefix so `go test -v` output cannot read as a contract worth
-// preserving. `node delete --force` rolls
-// a pinned-but-unobserved VM back to unscheduled, aborting only when its create
-// task is running - so a VM whose agent-side create succeeded but whose result
-// never got projected is rolled back, becomes hard-deletable, and once its row
-// is gone no teardown signal can ever name it. The guest keeps running on a node
-// the control plane no longer knows about.
+// TestRollbackToUnscheduledKeepsTheTeardownSignal drives the sequence that used
+// to destroy it. `node delete --force` returns a pinned-but-unobserved VM to
+// unscheduled, aborting only when its create task is running - so a VM whose
+// agent-side create reached the agent but whose result never got projected comes
+// back as unscheduled. Deleting it then took the unscheduled path, which
+// hard-deleted the row, and with the row went the only thing a teardown signal
+// can be built from: the guest kept running on a node the control plane no
+// longer knew about, unreachable by any mechanism.
 //
-// The assertions below describe what the code does today so the gap stays
-// visible instead of being rediscovered. Closing it changes name-reuse
-// semantics and needs its own design; this test is expected to be rewritten,
-// not merely re-run, when that happens.
-func TestKnownGap_RollbackToUnscheduledMakesAMaterialisedVMHardDeletable(t *testing.T) {
+// The delete now stamps the row instead, so the signal survives the round trip.
+// This was previously a TestKnownGap_ test asserting the opposite; its doc also
+// claimed closing the gap would change name-reuse semantics, which is wrong -
+// the stamping delete drops the name guard exactly as ProjectVMDeleteSuccess
+// does, so the name is free either way.
+func TestRollbackToUnscheduledKeepsTheTeardownSignal(t *testing.T) {
 	h := newE2E(t)
 	ctx := context.Background()
 	_, opID := loginAs(t, h, auth.RoleOperator)
@@ -386,18 +387,20 @@ func TestKnownGap_RollbackToUnscheduledMakesAMaterialisedVMHardDeletable(t *test
 			rolled.SchedulingStatus, rolled.PinnedNodeID)
 	}
 
-	// Unscheduled again, so the hard-delete gate now admits it - even though a
-	// guest for this id may still be running on the deleted node.
+	// Unscheduled again, so the delete takes the unscheduled path.
 	if err := h.store.DeleteUnscheduledVM(ctx, vm.ID); err != nil {
-		t.Fatalf("DeleteUnscheduledVM after rollback = %v, want nil (this is the gap)", err)
+		t.Fatalf("DeleteUnscheduledVM after rollback = %v, want nil", err)
 	}
 	deleted, _, err := h.store.VMSoftDeleted(ctx, vm.ID)
 	if err != nil {
 		t.Fatalf("VMSoftDeleted: %v", err)
 	}
-	if deleted {
-		t.Fatalf("VMSoftDeleted = true, want false: the row was hard-deleted")
+	if !deleted {
+		t.Fatalf("VMSoftDeleted = false, want true: the row must keep a deletion stamp, or a guest for this id can never be named")
 	}
-	// No row, no deletion stamp, no tombstone - the node can report this VM
-	// forever and the control plane will never signal a teardown for it.
+	// The row is invisible to every reader, so the name is free and the VM 404s,
+	// while the stamp remains readable by the tombstone path.
+	if _, err := h.store.VMByID(ctx, vm.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("VMByID after delete = %v, want ErrNotFound", err)
+	}
 }
