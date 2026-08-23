@@ -6,6 +6,7 @@ package vm
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -33,7 +34,12 @@ func newListCommand() *cobra.Command {
 node (name or uuid — filters by the agent-reported current location,
 not by pinned intent), status (creating/running/migrating/paused/stopped/
 error/gone/orphaned). The next page's cursor lives in the JSON envelope's
-meta.next_cursor and is opaque — re-pass with --cursor.`,
+meta.next_cursor and is opaque — re-pass with --cursor.
+
+A VM reads orphaned when the node holding it was force-deleted: the guest
+and its disk stayed on that host, so nothing here can start, move, or reach
+them. Deleting the record is the only exit, and it tears the guest down if
+that host ever rejoins the cluster.`,
 		RunE: runList,
 	}
 
@@ -150,9 +156,77 @@ func printVMTable(cmd *cobra.Command, vms cpclient.VMList, showIDs bool) {
 		}
 	}
 	_ = tw.Flush()
+	printOrphanHint(cmd, vms)
 	if vms.Meta.NextCursor != nil {
 		printNextCursor(cmd, *vms.Meta.NextCursor)
 	}
+}
+
+// maxOrphanHintNames bounds how many VM names the orphan hint spells out before
+// it falls back to a counter. A force-deleted node orphans every VM it held, and
+// a forty-name footnote buries the sentence it is attached to.
+const maxOrphanHintNames = 3
+
+// printOrphanHint explains the `orphaned` status below the table when the page
+// carries one, and prints nothing otherwise.
+//
+// The bare word in the STATUS column answers none of the three questions an
+// operator has. What happened: the node holding the VM was force-deleted (the
+// only producer of this phase). Where the data went: pools are node-local, so
+// the guest and its disk stayed on that host and nothing here can start, move,
+// or reach them. And what the exit costs: deleting the record is the only one
+// there is, but a returning host that reports a deleted VM is answered with a
+// teardown signal - so the guest dies when its hardware comes back. That last
+// point is a real decision, not a formality, and the operator cannot weigh it
+// from a nine-letter status.
+func printOrphanHint(cmd *cobra.Command, vms cpclient.VMList) {
+	var names []string
+	for _, vm := range vms.Data {
+		if vm.Status.Phase == "orphaned" {
+			names = append(names, vm.Name)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+
+	// Singular and plural are spelled out rather than assembled from parts:
+	// every clause below carries number, and threading six agreement points
+	// through one format string reads worse than two paragraphs.
+	if len(names) == 1 {
+		printf(cmd, "\n1 VM is orphaned (%s): its node was force-deleted, so the guest and\n"+
+			"its disk stayed on that host and cannot be started, moved, or reached from\n"+
+			"here. Deleting the record is the only exit - and it tears the guest down if\n"+
+			"that host ever rejoins the cluster:\n"+
+			"  %s delete %s\n", names[0], vmCommandPath(cmd), names[0])
+		return
+	}
+	printf(cmd, "\n%d VMs are orphaned (%s): their nodes were\n"+
+		"force-deleted, so the guests and their disks stayed on those hosts and cannot\n"+
+		"be started, moved, or reached from here. Deleting a record is the only exit -\n"+
+		"and it tears that guest down if its host ever rejoins the cluster:\n"+
+		"  %s delete <name>\n", len(names), renderOrphanNames(names), vmCommandPath(cmd))
+}
+
+// renderOrphanNames lists up to maxOrphanHintNames names, summarising the rest
+// as a counter.
+func renderOrphanNames(names []string) string {
+	if len(names) <= maxOrphanHintNames {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more",
+		strings.Join(names[:maxOrphanHintNames], ", "), len(names)-maxOrphanHintNames)
+}
+
+// vmCommandPath returns the path of the `vm` command group, so a hint can name
+// a sibling subcommand under whatever binary name the caller invoked. Falls back
+// to the shipped name for a parentless command (the table renderer is unit-tested
+// against a bare cobra.Command).
+func vmCommandPath(cmd *cobra.Command) string {
+	if cmd.Parent() != nil {
+		return cmd.Parent().CommandPath()
+	}
+	return "otherix vm"
 }
 
 // renderVMNetwork formats the NETWORK column from the VM's ordered

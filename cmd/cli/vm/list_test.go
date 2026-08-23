@@ -124,3 +124,81 @@ func TestPrintVMTableNilNode(t *testing.T) {
 		t.Errorf("row = %v, want %v", row, want)
 	}
 }
+
+// TestPrintVMTableOrphanHint covers the footnote that explains the `orphaned`
+// status. The bare word in the STATUS column tells an operator nothing about
+// what happened, where the data went, or what deleting the record costs, so the
+// hint carries all three - and only when the page actually holds an orphan.
+func TestPrintVMTableOrphanHint(t *testing.T) {
+	node := "node-1"
+	healthy := cpclient.VM{
+		Name: "vm-live", Status: cpclient.VMStatus{Phase: "running"},
+		Architecture: "arm64", Node: &node, Pool: "default",
+	}
+	orphan := func(name string) cpclient.VM {
+		return cpclient.VM{
+			Name: name, Status: cpclient.VMStatus{Phase: "orphaned"},
+			Architecture: "arm64", Pool: "default",
+		}
+	}
+
+	t.Run("no orphan prints no hint", func(t *testing.T) {
+		out := renderVMTable(t, cpclient.VMList{Data: []cpclient.VM{healthy}})
+		if strings.Contains(out, "orphaned") {
+			t.Errorf("table = %q, want no orphan hint for a page without one", out)
+		}
+	})
+
+	t.Run("one orphan names it and the exit", func(t *testing.T) {
+		out := renderVMTable(t, cpclient.VMList{Data: []cpclient.VM{healthy, orphan("web-3")}})
+		for _, want := range []string{
+			"1 VM is orphaned (web-3)",
+			"its node was force-deleted",
+			"otherix vm delete web-3",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("table = %q, want it to contain %q", out, want)
+			}
+		}
+	})
+
+	t.Run("many orphans cap the names", func(t *testing.T) {
+		list := cpclient.VMList{Data: []cpclient.VM{
+			orphan("web-3"), orphan("db-2"), orphan("cache-1"), orphan("api-9"), orphan("job-4"),
+		}}
+		out := orphanHintOf(t, renderVMTable(t, list))
+		for _, want := range []string{
+			"5 VMs are orphaned (web-3, db-2, cache-1 and 2 more)",
+			"their nodes were",
+			"otherix vm delete <name>",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("table = %q, want it to contain %q", out, want)
+			}
+		}
+		if strings.Contains(out, "api-9") || strings.Contains(out, "job-4") {
+			t.Errorf("hint = %q, want the capped names absent from it", out)
+		}
+	})
+}
+
+// orphanHintOf returns the footnote that follows the table, so a name-capping
+// assertion cannot be satisfied by the table rows above it.
+func orphanHintOf(t *testing.T, out string) string {
+	t.Helper()
+	_, hint, ok := strings.Cut(out, "\n\n")
+	if !ok {
+		t.Fatalf("output = %q, want a footnote after the table", out)
+	}
+	return hint
+}
+
+// renderVMTable renders one table to a buffer and returns it.
+func renderVMTable(t *testing.T, list cpclient.VMList) string {
+	t.Helper()
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	printVMTable(cmd, list, false)
+	return buf.String()
+}
