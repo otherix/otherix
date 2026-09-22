@@ -587,6 +587,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 			CidataPath:    meta.CidataPath,
 			NICs:          metaToNICs(meta.NICs),
 			Migrated:      meta.Migrated,
+			AdoptedBy:     meta.AdoptedBy,
 		}
 		m.vms[v.ID] = v
 
@@ -1047,10 +1048,23 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 	if _, exists := m.vms[vmID]; exists {
 		origTaskID, hasTask := m.createTasks[vmID]
 		var reloadedStatus Status
+		var claimed bool
 		if !hasTask {
-			reloadedStatus = m.vms[vmID].Status
+			existing := m.vms[vmID]
+			reloadedStatus = existing.Status
+			// The create path claiming the VM makes this copy the node's own;
+			// it must never be set aside as an abandoned migration copy.
+			if existing.AdoptedBy != uuid.Nil {
+				existing.AdoptedBy = uuid.Nil
+				claimed = true
+			}
 		}
 		m.mu.Unlock()
+		if claimed {
+			if err := m.persistVM(vmID); err != nil {
+				m.log.Warn("persist claimed adopted vm", "vm_id", vmID, "err", err.Error())
+			}
+		}
 		if hasTask {
 			// In-process resumption: echo the ORIGINAL create task so the CP
 			// resumes against the same agent_task_id, leaving the live VM and
@@ -2227,6 +2241,7 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 		UpdatedAt:     v.UpdatedAt,
 		NICs:          nicsToMeta(v.NICs),
 		Migrated:      v.Migrated,
+		AdoptedBy:     v.AdoptedBy,
 	}
 	return state.WriteMeta(filepath.Join(m.stateDir, v.ID.String()), meta)
 }

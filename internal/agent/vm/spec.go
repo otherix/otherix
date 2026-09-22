@@ -85,6 +85,12 @@ type VM struct {
 	// migration. The create flow must NOT re-clone it from the base image
 	// on first start; the disk is already the authoritative copy.
 	Migrated bool
+	// AdoptedBy is the migration that adopted this copy onto the node; zero for
+	// a VM created here, for a copy adopted before this field existed, and once
+	// the node's create path has claimed the VM as its own. A copy whose adopting
+	// migration the control plane lists as abandoned may be moved aside when the
+	// VM is migrated here again.
+	AdoptedBy uuid.UUID
 	// ArrivedAt is when this VM arrived on this node by migration, on the
 	// monotonic clock; zero for a VM created here or replayed after a restart.
 	// In memory only (meta.json does not carry it). The VM reconciler takes no

@@ -40,6 +40,8 @@ type AdoptSpec struct {
 	// VM materializes its host taps (and the resumed guest later sources a
 	// gratuitous ARP) on this node.
 	NICs []netfabric.NIC
+	// MigrationID is the migration adopting the VM; recorded as VM.AdoptedBy.
+	MigrationID uuid.UUID
 }
 
 // AdoptForMigration registers a Migrated VM on this (target) node and
@@ -75,6 +77,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		ConsoleSocket: console,
 		PIDFile:       pid,
 		Migrated:      true,
+		AdoptedBy:     spec.MigrationID,
 		NICs:          spec.NICs,
 		ArrivedAt:     time.Now(),
 	}
@@ -338,6 +341,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	v, err := m.AdoptForMigration(AdoptSpec{
 		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMib: s.MemoryMib,
 		PoolName: s.PoolName, Architecture: s.Architecture,
+		MigrationID: s.MigrationID,
 	})
 	if err != nil {
 		cleanup()

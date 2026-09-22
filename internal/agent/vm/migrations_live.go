@@ -108,6 +108,7 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		PoolName: s.PoolName, Architecture: s.Architecture,
 		InitialStatus: StatusMigratingIncoming,
 		NICs:          s.NICs,
+		MigrationID:   s.MigrationID,
 	})
 	if err != nil {
 		cleanup()
