@@ -41,7 +41,7 @@ func (m *Manager) setAsideAbandonedCopy(s IncomingSpec) error {
 	poolRoot := filepath.Dir(filepath.Dir(src)) // <pool>
 	// Fail closed on an unexpected layout: never guess where to move a disk.
 	if !filepath.IsAbs(src) || filepath.Base(src) != v.ID.String() || filepath.Base(filepath.Dir(src)) != "vms" {
-		return fmt.Errorf("abandoned copy of vm %s: unexpected disk path %s; not moving it", v.ID, v.DiskPath)
+		return fmt.Errorf("%w: vm %s: unexpected disk path %s; inspect and clear the node's copy of the vm to migrate it here again", ErrAbandonedCopyUnmovable, v.ID, v.DiskPath)
 	}
 	abandonedDir := filepath.Join(poolRoot, "abandoned")
 	dst := filepath.Join(abandonedDir, v.ID.String()+"-"+v.AdoptedBy.String())
@@ -59,12 +59,37 @@ func (m *Manager) setAsideAbandonedCopy(s IncomingSpec) error {
 		}
 	}
 
+	if !m.dropSetAsideRecord(cur, v.AdoptedBy) {
+		// The create path claimed the entry after the rename. The disk is safe in
+		// abandoned/; the record is the VM's own now and stays, and the adopt
+		// that follows refuses the VM as before.
+		m.log.Warn("abandoned migration copy moved aside but its record was claimed meanwhile; keeping the record",
+			"vm_id", v.ID.String(), "adopted_by", v.AdoptedBy.String(), "path", dst)
+		return nil
+	}
 	m.detachMux(v.ID)
 	m.teardownNICs(v.NICs)
-	m.dropAdoptedRecord(v.ID)
 	m.log.Warn("moved an abandoned migration copy aside",
 		"vm_id", v.ID.String(), "adopted_by", v.AdoptedBy.String(), "path", dst)
 	return nil
+}
+
+// dropSetAsideRecord drops the record of a copy that was moved aside, and its
+// state dir, only while the VM entry is still cur and still adopted by
+// adoptedBy. The create path can claim the entry without the lifecycle slot, so
+// it is re-checked under m.mu; a changed entry is left alone and false returned.
+func (m *Manager) dropSetAsideRecord(cur *VM, adoptedBy uuid.UUID) bool {
+	m.mu.Lock()
+	if m.vms[cur.ID] != cur || cur.AdoptedBy != adoptedBy {
+		m.mu.Unlock()
+		return false
+	}
+	delete(m.vms, cur.ID)
+	m.mu.Unlock()
+	if err := os.RemoveAll(filepath.Join(m.stateDir, cur.ID.String())); err != nil {
+		m.log.Warn("dropSetAsideRecord: remove agent state dir", "vm_id", cur.ID.String(), "err", err)
+	}
+	return true
 }
 
 // abandonedCopy returns the VM entry for s.VMUUID and a snapshot of it when it
@@ -100,7 +125,8 @@ func (m *Manager) abandonedCopy(s IncomingSpec) (*VM, VM, bool) {
 // moveCopyAside renames the copy's disk dir src to dst, or finds it already
 // there from an earlier attempt, and reports whether the copy now sits at dst.
 // It refuses with ErrAbandonedCopyKept while another abandoned copy of the VM is
-// kept in the same abandoned/ dir, and aborts when the copy is at neither place.
+// kept in the same abandoned/ dir, and with ErrAbandonedCopyUnmovable when the
+// copy is at neither place.
 func (m *Manager) moveCopyAside(cur *VM, v VM, src, dst string) (bool, error) {
 	abandonedDir := filepath.Dir(dst)
 	_, srcErr := os.Stat(src)
@@ -122,7 +148,10 @@ func (m *Manager) moveCopyAside(cur *VM, v VM, src, dst string) (bool, error) {
 		// A previous attempt already moved it.
 		return true, nil
 	default:
-		return false, fmt.Errorf("abandoned copy of vm %s: disk dir %s not found and not already moved to %s", v.ID, src, dst)
+		// Refuse rather than drop the record: the agent does not vouch for a copy
+		// whose disk it cannot find.
+		return false, fmt.Errorf("%w: vm %s: disk dir %s not found and not already moved to %s; inspect and clear the node's copy of the vm to migrate it here again",
+			ErrAbandonedCopyUnmovable, v.ID, src, dst)
 	}
 }
 

@@ -418,8 +418,9 @@ func TestSetAsideAbortsWhenTheCopyIsNowhere(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	if _, err := f.m.StartIncoming(context.Background(), f.spec(f.old)); err == nil {
-		t.Fatalf("StartIncoming = nil, want an abort")
+	_, err := f.m.StartIncoming(context.Background(), f.spec(f.old))
+	if !errors.Is(err, ErrAbandonedCopyUnmovable) || !strings.Contains(err.Error(), f.vmID.String()) || !strings.Contains(err.Error(), filepath.Dir(f.disk)) {
+		t.Fatalf("StartIncoming = %v, want ErrAbandonedCopyUnmovable naming the vm and %s", err, filepath.Dir(f.disk))
 	}
 	if v, err := f.m.Get(f.vmID); err != nil || v.AdoptedBy != f.old {
 		t.Errorf("Get = (%v, %v), want the record unchanged", v.AdoptedBy, err)
@@ -466,8 +467,9 @@ func TestSetAsideRefusesAnUnexpectedLayout(t *testing.T) {
 	f.mutate(func(v *VM) { v.DiskPath = odd })
 	f.disk = odd
 
-	if _, err := f.m.StartIncoming(context.Background(), f.spec(f.old)); err == nil {
-		t.Fatalf("StartIncoming = nil, want an abort on the unexpected layout")
+	_, err := f.m.StartIncoming(context.Background(), f.spec(f.old))
+	if !errors.Is(err, ErrAbandonedCopyUnmovable) || !strings.Contains(err.Error(), odd) {
+		t.Fatalf("StartIncoming = %v, want ErrAbandonedCopyUnmovable naming %s", err, odd)
 	}
 	f.assertNotMoved(t)
 }
@@ -549,8 +551,8 @@ func TestSetAsideKeepsTheRecordWhenMetaJSONCannotBeRead(t *testing.T) {
 	}
 	kept := f.kept(f.m.defaultTestPoolRoot(t))
 
-	if _, err := f.m.StartIncoming(context.Background(), f.spec(f.old)); err == nil {
-		t.Fatalf("StartIncoming with an unreadable meta.json = nil, want an error")
+	if _, err := f.m.StartIncoming(context.Background(), f.spec(f.old)); err == nil || errors.Is(err, ErrAbandonedCopyUnmovable) {
+		t.Fatalf("StartIncoming with an unreadable meta.json = %v, want a retryable error", err)
 	}
 	if v, err := f.m.Get(f.vmID); err != nil || v.AdoptedBy != f.old {
 		t.Errorf("Get = (%v, %v), want the record kept", v.AdoptedBy, err)
@@ -574,5 +576,46 @@ func TestSetAsideKeepsTheRecordWhenMetaJSONCannotBeRead(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(kept, "disk.qcow2")); err != nil || string(got) != abandonedBytes {
 		t.Errorf("kept disk = (%q, %v), want the original bytes", got, err)
+	}
+}
+
+// TestDropSetAsideRecordKeepsAClaimedEntry: the create path can claim the copy
+// (clearing AdoptedBy) or replace its entry after the rename, without the
+// lifecycle slot. The record is then the VM's own and must stay, with its state
+// dir; only the entry the move checked is dropped.
+func TestDropSetAsideRecordKeepsAClaimedEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(f *abandonedFixture)
+		want   bool
+	}{
+		{name: "unchanged", change: func(*abandonedFixture) {}, want: true},
+		{name: "claimed", change: func(f *abandonedFixture) { f.mutate(func(v *VM) { v.AdoptedBy = uuid.Nil }) }, want: false},
+		{name: "replaced", change: func(f *abandonedFixture) {
+			f.m.mu.Lock()
+			defer f.m.mu.Unlock()
+			v := *f.m.vms[f.vmID]
+			f.m.vms[f.vmID] = &v
+		}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAbandonedFixture(t)
+			f.m.mu.Lock()
+			cur := f.m.vms[f.vmID]
+			f.m.mu.Unlock()
+			tc.change(f)
+
+			if got := f.m.dropSetAsideRecord(cur, f.old); got != tc.want {
+				t.Errorf("dropSetAsideRecord() = %v, want %v", got, tc.want)
+			}
+			_, err := f.m.Get(f.vmID)
+			if kept := err == nil; kept == tc.want {
+				t.Errorf("record kept = %v, want %v", kept, !tc.want)
+			}
+			_, err = os.Stat(filepath.Join(f.m.stateDir, f.vmID.String(), state.MetaFileName))
+			if kept := err == nil; kept == tc.want {
+				t.Errorf("meta.json kept = %v (stat err %v), want %v", kept, err, !tc.want)
+			}
+		})
 	}
 }

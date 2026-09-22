@@ -85,6 +85,14 @@ var (
 	// Handlers map it to 409 abandoned_copy_kept; the operator removes the kept
 	// copy to migrate the VM here again.
 	ErrAbandonedCopyKept = errors.New("an abandoned copy of this vm is already kept in the pool")
+
+	// ErrAbandonedCopyUnmovable is returned by an incoming migration that would
+	// move an abandoned copy of the VM aside when the copy cannot be moved: its
+	// disk dir is at an unexpected path, or it is neither in place nor already
+	// moved. No retry changes that, and the agent never guesses where a disk is,
+	// so the migration refuses. Handlers map it to 409 abandoned_copy_unmovable;
+	// the operator inspects and clears the node's copy of the VM.
+	ErrAbandonedCopyUnmovable = errors.New("an abandoned copy of this vm cannot be moved aside")
 )
 
 // shutdownGrace bounds how long Delete and Stop wait for system_powerdown

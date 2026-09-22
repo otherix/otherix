@@ -143,6 +143,13 @@ const (
 	// the agent's message, which names the kept copy to remove.
 	CodeAbandonedCopyKept ErrorCode = "abandoned_copy_kept"
 
+	// CodeAbandonedCopyUnmovable is the agent refusing an incoming migration
+	// because an abandoned copy of the VM cannot be moved aside (its disk is
+	// missing or at an unexpected path). Not retryable: the control plane fails
+	// the migration with the agent's message, which names the VM and the path
+	// to inspect and clear.
+	CodeAbandonedCopyUnmovable ErrorCode = "abandoned_copy_unmovable"
+
 	CodeInternal ErrorCode = "internal"
 )
 

@@ -417,6 +417,7 @@ func TestMapIncomingErrorRefusalCodes(t *testing.T) {
 	}{
 		{err: fmt.Errorf("%w: /pools/p/vms/x", vm.ErrDiskDirExists), code: "disk_dir_exists"},
 		{err: fmt.Errorf("%w: /pools/p/abandoned/x-y; remove it", vm.ErrAbandonedCopyKept), code: "abandoned_copy_kept"},
+		{err: fmt.Errorf("%w: vm x: disk dir /pools/p/vms/x not found", vm.ErrAbandonedCopyUnmovable), code: "abandoned_copy_unmovable"},
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/vms/demo/migrations/incoming", nil)
