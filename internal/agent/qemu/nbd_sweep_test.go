@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -36,6 +39,7 @@ func TestMatchesMigrationNBD(t *testing.T) {
 		{name: "another binary carrying the path", argv: append([]string{"/bin/bash"}, nbdArgv(state)[1:]...)},
 		{name: "qemu-nbd without the creds object", argv: []string{"qemu-nbd", "--persistent", "/pool/disk.qcow2"}},
 		{name: "creds dir that is not a migration id", argv: []string{"qemu-nbd", "--object", "tls-creds-x509,id=migtls,endpoint=server,dir=" + state + "/migrations/not-a-uuid/tls"}},
+		{name: "creds dir under a migration id that is not tls", argv: []string{"qemu-nbd", "--object", "tls-creds-x509,id=migtls,endpoint=server,dir=" + state + "/migrations/" + sweepMigID + "/other"}},
 		{name: "empty argv"},
 	}
 	for _, tc := range tests {
@@ -66,6 +70,13 @@ func TestSweepOrphanNBDStopsOnlyThisAgentsServers(t *testing.T) {
 	writeFakeProc(t, root, 101, nbdArgv(state)...)
 	writeFakeProc(t, root, 102, nbdArgv("/var/lib/otherix/dev/node-10/vms")...)
 	writeFakeProc(t, root, 103, "sleep", "30")
+	// A non-numeric entry is not a process, even with a matching command line.
+	if err := os.MkdirAll(filepath.Join(root, "self"), 0o750); err != nil {
+		t.Fatalf("mkdir self: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "self", "cmdline"), []byte(strings.Join(nbdArgv(state), "\x00")+"\x00"), 0o600); err != nil {
+		t.Fatalf("write self cmdline: %v", err)
+	}
 
 	opened := map[int]*handleSpy{}
 	open := func(pid int) (ProcessHandle, error) {
@@ -76,6 +87,9 @@ func TestSweepOrphanNBDStopsOnlyThisAgentsServers(t *testing.T) {
 
 	if got := SweepOrphanNBD(root, state, open, time.Second, discardSweepLog()); got != 1 {
 		t.Errorf("SweepOrphanNBD stopped %d, want 1", got)
+	}
+	if len(opened) != 1 {
+		t.Errorf("opened %d handles, want only pid 101's", len(opened))
 	}
 	h := opened[101]
 	if h == nil || len(h.signals()) == 0 || h.signals()[0] != syscall.SIGTERM || !h.released {

@@ -27,6 +27,7 @@
 #     4. node-2 runs no qemu-nbd for that migration within seconds.
 #     5. once the migration is terminal, the VM starts wherever it left the VM:
 #        on node-2 if it completed, on node-1 if it failed or was cancelled.
+#     6. node-2 still runs no qemu-nbd for that migration.
 #
 # PREREQUISITES: a seeded dev stack built from the CURRENT tree:
 #   make build && make local-dev-start   (or local-dev-deploy to refresh code)
@@ -84,21 +85,33 @@ migration_phase() { otx migration get "$1" --output json 2>/dev/null | jq -r '.p
 # id). `pgrep -x qemu-nbd` matches on the executable name, so it cannot match the
 # wrapper shell this runs in - a plain `pgrep -f <id>` would, because the id is in
 # the wrapper's own cmdline, and would report a phantom process forever.
+# Succeeds with empty output when the probe ran and found none; fails when the
+# probe could not run on the node, so a broken probe never reads as "no server".
+# The remote script ends in `exit 0`, so a non-zero status can only come from
+# reaching the node.
 nbd_pids_on() {
-  run_on "$1" bash -c "pgrep -x qemu-nbd 2>/dev/null | while read -r p; do
+  local out
+  out="$(run_on "$1" bash -c "pgrep -x qemu-nbd 2>/dev/null | while read -r p; do
       tr '\\0' ' ' < /proc/\$p/cmdline 2>/dev/null | grep -qF '$2' && echo \$p
-    done" 2>/dev/null | tr -dc '0-9\n' || true
+    done; exit 0" 2>/dev/null)" || return 1
+  printf '%s\n' "$out" | tr -dc '0-9\n'
 }
 
 # wait_no_nbd HANDLE MIGRATION_ID FAIL_MESSAGE -> poll until the node runs no
-# qemu-nbd for the migration; fail with the surviving pids on timeout.
+# qemu-nbd for the migration; fail with the surviving pids on timeout, or say so
+# when the node could not be probed at all.
 wait_no_nbd() {
-  local deadline=$(( SECONDS + CONVERGE_WAIT )) pids=""
+  local deadline=$(( SECONDS + CONVERGE_WAIT )) pids="" probed=0
   while (( SECONDS < deadline )); do
-    pids="$(nbd_pids_on "$1" "$2")"
-    [[ -z "$pids" ]] && return 0
+    if pids="$(nbd_pids_on "$1" "$2")"; then
+      probed=1
+      [[ -z "$pids" ]] && return 0
+    else
+      info "could not probe $1 for qemu-nbd; retrying"
+    fi
     sleep 2
   done
+  (( probed )) || fail "$3: could not probe $1 for qemu-nbd within ${CONVERGE_WAIT}s"
   fail "$3 (pids: $(echo "$pids" | tr '\n' ' '), after ${CONVERGE_WAIT}s)"
 }
 
@@ -201,10 +214,13 @@ otx vm migrate "$VM2" --node "$NODE2" --offline >/tmp/cold_restart_migrate.out 2
   || { cat /tmp/cold_restart_migrate.out; fail "vm migrate --offline request failed"; }
 MIGRATION_ID="$(latest_migration_id "$VM2ID")"
 [[ "$MIGRATION_ID" =~ ^[0-9a-f-]{36}$ ]] || fail "could not resolve the migration id (got '${MIGRATION_ID:-none}')"
-deadline=$(( SECONDS + NBD_WAIT )); nbd_pid=""
+deadline=$(( SECONDS + NBD_WAIT )); nbd_pid=""; probed=0
 while (( SECONDS < deadline )); do
-  nbd_pid="$(nbd_pids_on "$SMOKE_HANDLE_2" "$MIGRATION_ID" | head -1)"
-  [[ "$nbd_pid" =~ ^[0-9]+$ ]] && break
+  if pids="$(nbd_pids_on "$SMOKE_HANDLE_2" "$MIGRATION_ID")"; then
+    probed=1
+    nbd_pid="$(head -1 <<<"$pids")"
+    [[ "$nbd_pid" =~ ^[0-9]+$ ]] && break
+  fi
   ph="$(migration_phase "$MIGRATION_ID")"
   case "$ph" in
     completed) fail "migration completed before its qemu-nbd was ever observed (too fast; raise RESTART_DISK_GIB)" ;;
@@ -212,6 +228,7 @@ while (( SECONDS < deadline )); do
   esac
   sleep 0.5
 done
+(( probed )) || fail "could not probe node-2 for qemu-nbd within ${NBD_WAIT}s"
 [[ "$nbd_pid" =~ ^[0-9]+$ ]] || fail "node-2 never spawned a qemu-nbd for this migration within ${NBD_WAIT}s"
 info "node-2 serving the destination disk (qemu-nbd pid=$nbd_pid); restarting node-2's agent"
 
@@ -248,6 +265,13 @@ case "$outcome" in
     ;;
 esac
 info "scenario 2 outcome: migration $outcome"
+
+echo "=== scenario 2.6: node-2 still runs no qemu-nbd for the terminal migration ==="
+# A setup redelivered to the restarted agent could spawn a fresh server after
+# the check in 2.4; once the migration is terminal nothing may be left.
+wait_no_nbd "$SMOKE_HANDLE_2" "$MIGRATION_ID" \
+  "node-2 runs qemu-nbd for the migration after it went $outcome"
+pass "no qemu-nbd on node-2 for the $outcome migration"
 
 trap - EXIT
 cleanup
