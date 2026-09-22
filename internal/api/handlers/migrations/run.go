@@ -393,11 +393,7 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 			// pending and requeue, VM stays on source, agent never contacted.
 			return recordPending(ctx, st, log, m.ID, ReasonPoolNotReady, err)
 		}
-		// A handshake-setup error (incoming prep, outgoing start) is retryable: the
-		// VM is still on source, nothing durable moved. Record failed-as-retryable
-		// envelope and return the cause so the dispatcher requeues against the
-		// attempt budget.
-		return failTask(ctx, st, log, taskID, ErrCodeTargetUnreachable, err)
+		return failSetup(ctx, st, log, taskID, m.ID, err)
 	}
 
 	// Advance the migration to active as the source push proceeds, then poll the
@@ -418,7 +414,7 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 	switch t.Status {
 	case "success":
 		if err := commitCutover(ctx, st, log, taskID, m.ID, t); err != nil {
-			return err
+			return finalizeRefusedCutover(ctx, st, agent, log, taskID, m.ID, err)
 		}
 		// Post-cutover convergence. Reached ONLY after CommitMigrationCutover
 		// returned nil (a committed cutover - a fail-closed input). Best-effort:
@@ -446,6 +442,42 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 	default:
 		return failTask(ctx, st, log, taskID, "internal", fmt.Errorf("unexpected agent terminal status %q", t.Status))
 	}
+}
+
+// failSetup classifies a handshake-setup error (incoming prep, outgoing start).
+// The target refusing to adopt the VM for a reason no retry changes (it keeps an
+// earlier abandoned copy of the VM, or an unrecorded disk dir sits where the copy
+// would go) fails the migration with the target's message, which names the path
+// the operator must clear: the VM stays on its source, which was never contacted,
+// instead of burning the retry budget and leaving the migration stuck in setup.
+// Any other error is retryable - the VM is still on source and nothing durable
+// moved - so it records a failed-as-retryable envelope and returns the cause for
+// the dispatcher to requeue against the attempt budget.
+func failSetup(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID, migID uuid.UUID, err error) error {
+	var ae *agentclient.AgentError
+	if errors.As(err, &ae) && (ae.Code == ErrCodeAbandonedCopyKept || ae.Code == ErrCodeDiskDirExists) {
+		return failMigration(ctx, st, log, taskID, migID, agentclient.TaskTerminal{
+			Status: "failed", Error: &agentclient.AgentError{Code: ae.Code, Message: ae.Message},
+		})
+	}
+	return failTask(ctx, st, log, taskID, ErrCodeTargetUnreachable, err)
+}
+
+// finalizeRefusedCutover handles a commitCutover error after a source success.
+// When the cutover refused a migration that went terminal under the worker (an
+// offline cancel, or a failure), it finalizes the task now rather than relying on
+// a redelivery the last attempt of the budget would never get. Any other error,
+// including a refusal on a still-active row (its target node was deleted), is
+// returned as is.
+func finalizeRefusedCutover(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, taskID, migID uuid.UUID, err error) error {
+	if !errors.Is(err, store.ErrMigrationTerminal) {
+		return err
+	}
+	reloaded, rerr := st.MigrationByID(ctx, migID)
+	if rerr != nil || !isTerminalPhase(reloaded.Phase) || reloaded.Phase == store.MigrationPhaseCompleted {
+		return err
+	}
+	return finalizeForTerminalMigration(ctx, st, agent, log, taskID, reloaded)
 }
 
 // pollOutgoing polls the source outgoing task to terminal, classifying every poll
@@ -725,6 +757,10 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		return uuid.Nil, fmt.Errorf("source vm %s reported no boot disk size; cannot size destination", vm.Name)
 	}
 	expected := srcVM.BootDiskVirtualSizeBytes
+	abandonedIDs, err := abandonedMigrationIDs(ctx, st, vm.ID, target.ID, m.ID)
+	if err != nil {
+		return uuid.Nil, err
+	}
 	incoming, err := agent.StartIncomingMigration(ctx, agentclient.DialURL(target.Name), vm.Name, agentapi.MigrationIncomingRequest{
 		MigrationID:        m.ID,
 		Mode:               mode,
@@ -735,9 +771,11 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 		UserData:           userData,
 		NetworkConfig:      networkConfig,
 		ExpectedSizeBytes:  &expected,
+		// The generated element type aliases uuid.UUID.
+		AbandonedMigrationIds: abandonedIDs,
 	})
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("start incoming migration: %v", err)
+		return uuid.Nil, fmt.Errorf("start incoming migration: %w", err)
 	}
 
 	outMode := agentapi.MigrationOutgoingRequestMode(agentapi.MigrationModeLive)
@@ -770,21 +808,28 @@ func startOrResume(ctx context.Context, st MigrationWorkerStore, agent Migration
 	return agentTaskID, nil
 }
 
+// abandonedMigrationIDs lists the earlier offline migrations of vmID to targetID
+// (other than migID) that can never cut over, so the target may set aside a
+// stopped copy one of them left behind. nil when there are none.
+func abandonedMigrationIDs(ctx context.Context, st MigrationWorkerStore, vmID, targetID, migID uuid.UUID) (*[]uuid.UUID, error) {
+	ids, err := st.AbandonedOfflineMigrations(ctx, vmID, targetID, migID)
+	if err != nil {
+		return nil, fmt.Errorf("list abandoned migrations: %v", err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return &ids, nil
+}
+
 // commitCutover commits the atomic source -> target re-pin. ErrConcurrentUpdate
 // triggers a reconcile-by-query: re-read the migration; if a concurrent writer
 // already completed it (the cutover landed), treat as success. Then finalize the
-// task success.
+// task success. A cutover overrides a cancel only for a LIVE migration; the
+// store refuses an offline cancelled row with store.ErrMigrationTerminal, which
+// this function returns wrapped so the caller can finalize the cancel.
 func commitCutover(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID, migID uuid.UUID, terminal agentclient.TaskTerminal) error {
-	// Auditability for the auto-complete-vs-cancel race: if the migration was
-	// already cancelled when the source reported success, the cutover OVERRIDES the
-	// cancel (the source already handed off; the live copy is on the target). Log
-	// the supersede so the cancelled->completed transition is not surprising. A
-	// reload error here is non-fatal - it only affects this log line, not the
-	// commit.
-	if prior, perr := st.MigrationByID(ctx, migID); perr == nil && prior.Phase == store.MigrationPhaseCancelled {
-		log.WarnContext(ctx, "cutover superseded a cancel (source already handed off; completing to target)",
-			slog.String("migration_id", migID.String()))
-	}
+	logCancelSupersede(ctx, st, log, migID)
 
 	err := st.CommitMigrationCutover(ctx, migID)
 	if errors.Is(err, store.ErrConcurrentUpdate) {
@@ -799,20 +844,28 @@ func commitCutover(ctx context.Context, st MigrationWorkerStore, log *slog.Logge
 			// A genuinely-failed migration must never complete; surface and stop.
 			return fmt.Errorf("cutover CAS lost to a failed migration %s; not completing", migID)
 		default:
+			if reloaded.Phase == store.MigrationPhaseCancelled && !reloaded.Live {
+				// An offline cancel landed between loadCutoverState and the Txn. It
+				// is final (the cutover would refuse it now), so report it as a
+				// terminal refusal for the caller to finalize in this delivery.
+				return fmt.Errorf("cutover lost to an offline cancel of migration %s: %w", migID, store.ErrMigrationTerminal)
+			}
 			// Lost the CAS to a non-completing writer - a progress update OR a
-			// too-late cancel that landed between loadCutoverState and the Txn. Return
-			// a retryable error: the source already succeeded, so on the next delivery
-			// runMigration sees a (now) cancelled/terminal migration and routes through
-			// finalizeForTerminalMigration, which re-polls the source task, observes
-			// SUCCESS, and re-commits the cutover (no orphaned running target). A still-
-			// active migration is re-driven normally. Either way the redelivery
-			// arbitrates correctly on source-task status; this arm need only requeue.
+			// too-late cancel of a LIVE migration that landed between
+			// loadCutoverState and the Txn. Return a retryable error: the source
+			// already succeeded, so on the next delivery runMigration sees a (now)
+			// cancelled migration and routes through finalizeForTerminalMigration,
+			// which re-polls the source task, observes SUCCESS, and re-commits the
+			// cutover (no orphaned running target). A still-active migration is
+			// re-driven normally. Either way the redelivery arbitrates correctly on
+			// source-task status; this arm need only requeue.
 			return fmt.Errorf("cutover CAS lost for migration %s (phase %q); retry", migID, reloaded.Phase)
 		}
 	} else if err != nil {
-		// A non-CAS cutover error (terminal migration, store fault) is retryable so
-		// the worker reconciles on the next delivery.
-		return fmt.Errorf("commit cutover: %v", err)
+		// A non-CAS cutover error (terminal migration, store fault) is returned
+		// wrapped: the caller finalizes a terminal refusal in line, and anything
+		// else is retried so the worker reconciles on the next delivery.
+		return fmt.Errorf("commit cutover: %w", err)
 	}
 
 	result := terminal.Result
@@ -839,6 +892,19 @@ func commitCutover(ctx context.Context, st MigrationWorkerStore, log *slog.Logge
 
 	log.InfoContext(ctx, "migration completed (cutover committed)", slog.String("migration_id", migID.String()))
 	return nil
+}
+
+// logCancelSupersede audits the auto-complete-vs-cancel race: if a LIVE
+// migration was already cancelled when the source reported success, the cutover
+// OVERRIDES the cancel (the source already handed off; the live copy is on the
+// target). Log the supersede so the cancelled->completed transition is not
+// surprising. An offline cancel is refused instead, so it is not logged. A
+// reload error is non-fatal - it only affects this log line, not the commit.
+func logCancelSupersede(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, migID uuid.UUID) {
+	if prior, err := st.MigrationByID(ctx, migID); err == nil && prior.Phase == store.MigrationPhaseCancelled && prior.Live {
+		log.WarnContext(ctx, "cutover superseded a cancel (source already handed off; completing to target)",
+			slog.String("migration_id", migID.String()))
+	}
 }
 
 // parseMigrationStats extracts the final live-migration stats from a terminal
@@ -948,6 +1014,20 @@ func finalizeForTerminalMigration(ctx context.Context, st MigrationWorkerStore, 
 			slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
 		return nil
 	case store.MigrationPhaseCancelled:
+		if !m.Live {
+			// An offline cancel is final: the cutover refuses it, the target copy
+			// was never started and the source copy is untouched. Nothing to
+			// arbitrate, so do not wait on the source (an unreachable or restarted
+			// source would otherwise hold the task running until the retry budget
+			// runs out). Reap the target's incoming server and finalize.
+			reapTargetIncoming(ctx, st, agent, log, m)
+			if err := finalizeTask(ctx, st, taskID, store.TaskStatusCancelled, ErrCodeMigrationCancelled, m.ErrorMessage); err != nil {
+				return fmt.Errorf("finalize task cancelled for offline migration %s: %v", m.ID, err)
+			}
+			log.InfoContext(ctx, "finalized cancelled offline migration; vm stays on source",
+				slog.String("migration_id", m.ID.String()), slog.String("task_id", taskID.String()))
+			return nil
+		}
 		return reconcileCancelledMigration(ctx, st, agent, log, taskID, m)
 	default: // store.MigrationPhaseFailed
 		// A failed migration is fail-safe-to-source by construction (the source-failure
@@ -963,7 +1043,8 @@ func finalizeForTerminalMigration(ctx context.Context, st MigrationWorkerStore, 
 	}
 }
 
-// reconcileCancelledMigration arbitrates a CANCELLED migration on the AUTHORITATIVE
+// reconcileCancelledMigration arbitrates a cancelled LIVE migration (an offline
+// cancel is final and finalized without the source) on the AUTHORITATIVE
 // source-task status, closing the two stranded paths d44b3eb left open. The cancel
 // flag alone is NOT sufficient: a cancel that raced a source-success cutover is too
 // late (the source already handed off and force-killed its qemu, so the only live
@@ -1050,8 +1131,8 @@ func reconcileCancelledMigration(ctx context.Context, st MigrationWorkerStore, a
 	}
 }
 
-// reconcileCancelledNoAgentTask arbitrates a cancelled migration whose task has
-// no persisted agent_task_id. It probes the SOURCE agent's migration record by
+// reconcileCancelledNoAgentTask arbitrates a cancelled LIVE migration whose task
+// has no persisted agent_task_id. It probes the SOURCE agent's migration record by
 // migration_id (read-only) and branches so the potentially-split-brain action
 // (finalize cancelled) is taken ONLY when the source is confirmed uninvolved or
 // aborted - never while it is in-flight or has already handed off:
@@ -1082,15 +1163,6 @@ func reconcileCancelledNoAgentTask(ctx context.Context, st MigrationWorkerStore,
 		return nil
 	}
 
-	if !m.Live {
-		// The split-brain this arbitration prevents only exists for LIVE
-		// migrations: an offline target adopts a STOPPED copy and never
-		// auto-resumes, so a completed offline source leaves the guest intact on
-		// the source disk - finalizing cancelled is fully recoverable (the pre-fix
-		// behaviour). Skip the source probe entirely so a cancel whose very reason
-		// is an unreachable source does not hang in a retry loop.
-		return finalizeCancelled("offline migration; nothing live to arbitrate")
-	}
 	if m.SourceNodeID == nil {
 		// No source to probe: a cancelled migration with no source truly never
 		// contacted anyone. Finalize cancelled (the original safe behaviour).
