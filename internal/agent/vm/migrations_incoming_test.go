@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
 func TestStartIncomingReservesPortAndReturnsEndpoint(t *testing.T) {
@@ -19,9 +21,9 @@ func TestStartIncomingReservesPortAndReturnsEndpoint(t *testing.T) {
 		createdDisk = path
 		return nil
 	}
-	m.migSpawnNBD = func(ctx context.Context, args []string) (int, error) {
+	m.migSpawnNBD = func(ctx context.Context, args []string) (*qemu.NBDServer, error) {
 		nbdArgs = args
-		return 4321, nil
+		return &qemu.NBDServer{Pid: 4321}, nil
 	}
 
 	migID := uuid.New()
@@ -80,7 +82,7 @@ func TestStartIncomingSizesDestinationToMax(t *testing.T) {
 				gotVirtual = virtualBytes
 				return nil
 			}
-			m.migSpawnNBD = func(_ context.Context, _ []string) (int, error) { return 1, nil }
+			m.migSpawnNBD = func(_ context.Context, _ []string) (*qemu.NBDServer, error) { return &qemu.NBDServer{Pid: 1}, nil }
 
 			if _, err := m.StartIncoming(context.Background(), IncomingSpec{
 				MigrationID:    uuid.New(),

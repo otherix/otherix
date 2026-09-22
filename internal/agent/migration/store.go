@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
 // Role is the agent's side of a migration.
@@ -54,12 +56,12 @@ type Record struct {
 	Phase       Phase
 
 	// Target side.
-	Port        int    // reserved ingress port (target only)
-	NBDPort     int    // reserved NBD disk-export ingress port (live target only)
-	BlockJobID  string // blockdev-mirror job-id (live source only), for finalize/abort
-	NBDPid      int    // qemu-nbd pid (target only)
-	ListenEndpt string // host:port advertised to the source
-	AuthToken   string // correlation id + NBD export name
+	Port        int             // reserved ingress port (target only)
+	NBDPort     int             // reserved NBD disk-export ingress port (live target only)
+	BlockJobID  string          // blockdev-mirror job-id (live source only), for finalize/abort
+	NBD         *qemu.NBDServer // qemu-nbd server (offline target only); stopped only through its handle
+	ListenEndpt string          // host:port advertised to the source
+	AuthToken   string          // correlation id + NBD export name
 	// ExportIDs are the per-disk block-export-add ids ("exp0", "exp1", ...)
 	// the live target created, in boot-first index order, so the resume can
 	// del every writable export at switchover (live target only).

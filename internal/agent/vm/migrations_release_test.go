@@ -12,8 +12,8 @@ import (
 )
 
 // TestReleaseIncomingNBDFreesPortAndDropsRecord drives the post-cutover
-// release path: a TARGET migration record (with a reserved port, NBDPid=0 so
-// StopNBD no-ops) is dropped from the store and its port returned to the
+// release path: a TARGET migration record (with a reserved port and no NBD
+// server, so StopNBD no-ops) is dropped from the store and its port returned to the
 // allocator. The port-release assertion exhausts the whole range afterwards
 // and confirms the freed port is reservable again.
 //
@@ -27,7 +27,7 @@ func TestReleaseIncomingNBDFreesPortAndDropsRecord(t *testing.T) {
 	m := newTestManager(t)
 
 	// Reserve one ingress port the way StartIncoming would, then record it on
-	// a target migration for vmID. NBDPid=0 makes StopNBD a no-op.
+	// a target migration for vmID. A nil NBD makes StopNBD a no-op.
 	port, err := m.migPorts.Reserve()
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
@@ -37,7 +37,7 @@ func TestReleaseIncomingNBDFreesPortAndDropsRecord(t *testing.T) {
 	m.Migrations().Put(&migration.Record{
 		MigrationID: migID, VMID: vmID, Role: migration.RoleTarget,
 		Mode: migration.ModeOffline, Phase: migration.PhaseSetup,
-		Port: port, NBDPid: 0,
+		Port: port,
 	})
 
 	m.releaseIncomingNBD(vmID)

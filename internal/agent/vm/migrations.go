@@ -148,10 +148,8 @@ func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
 	if !ok {
 		return
 	}
-	if rec.NBDPid > 0 {
-		if err := qemu.StopNBD(rec.NBDPid, 5*time.Second); err != nil {
-			m.log.Warn("release migration nbd server failed", "vm_id", vmID.String(), "pid", rec.NBDPid, "err", err)
-		}
+	if err := m.migStopNBD(rec.NBD, 5*time.Second); err != nil {
+		m.log.Warn("release migration nbd server failed", "vm_id", vmID.String(), "err", err)
 	}
 	// Free BOTH ports of the pair (offline records carry NBDPort==0, which
 	// ReleasePair ignores). Releasing only rec.Port leaked the NBD port on the
@@ -316,7 +314,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	}
 
 	token := s.MigrationID.String()
-	nbdPid, err := m.migSpawnNBD(ctx, qemu.NBDServerArgs(qemu.NBDServerSpec{
+	nbdSrv, err := m.migSpawnNBD(ctx, qemu.NBDServerArgs(qemu.NBDServerSpec{
 		CredsDir: credsDir, SourceIdentity: s.SourceIdentity, BindHost: s.BindHost,
 		Port: port, Export: token, DiskPath: v.DiskPath,
 	}))
@@ -334,7 +332,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	// timeout tear down the half-started server so it does not linger holding
 	// the disk lock + port.
 	if err := m.migWaitNBDReady(ctx, endpoint); err != nil {
-		_ = qemu.StopNBD(nbdPid, 3*time.Second)
+		_ = m.migStopNBD(nbdSrv, 3*time.Second)
 		cleanup()
 		return IncomingResult{}, fmt.Errorf("nbd server not ready: %v", err)
 	}
@@ -342,7 +340,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	m.migrations.Put(&migration.Record{
 		MigrationID: s.MigrationID, VMID: s.VMUUID, VMName: s.VMName,
 		Role: migration.RoleTarget, Mode: migration.Mode(s.Mode), Phase: migration.PhaseSetup,
-		Port: port, NBDPid: nbdPid, ListenEndpt: endpoint, AuthToken: token,
+		Port: port, NBD: nbdSrv, ListenEndpt: endpoint, AuthToken: token,
 		CredsDir: credsDir, CreatedAt: time.Now().UTC(),
 	})
 	return IncomingResult{ListenEndpoint: endpoint, AuthToken: token}, nil
@@ -582,17 +580,16 @@ func (m *Manager) CancelMigration(id uuid.UUID) (MigrationView, bool) {
 		// the live side. Fails toward inaction: a loser leaks the allocator entry
 		// (recoverable; the kills above already dropped the OS-level binding)
 		// rather than freeing a live migration's port.
-		if rec.NBDPid > 0 {
-			// StopNBD, not a bare Kill: it checks the pid is still alive and SIGTERMs
-			// first (so the export closes and flushes), escalating to SIGKILL only on
-			// timeout. A bare SIGKILL of an unverified pid from an in-memory record
-			// could hit an unrelated process after the server died and the pid was
-			// reused - and this arm is now live traffic, since the control plane reaps
-			// offline targets.
-			if err := qemu.StopNBD(rec.NBDPid, 5*time.Second); err != nil {
-				m.log.Warn("cancel migration: stop nbd server failed",
-					"migration_id", id.String(), "pid", rec.NBDPid, "err", err)
-			}
+		// StopNBD, not a bare Kill: it signals through the server's handle, so a
+		// server that already exited is not signalled again, and it SIGTERMs
+		// first (so the export closes and flushes), escalating to SIGKILL only on
+		// timeout. A bare SIGKILL of an unverified pid from an in-memory record
+		// could hit an unrelated process after the server died and the pid was
+		// reused - and this arm is now live traffic, since the control plane reaps
+		// offline targets.
+		if err := m.migStopNBD(rec.NBD, 5*time.Second); err != nil {
+			m.log.Warn("cancel migration: stop nbd server failed",
+				"migration_id", id.String(), "err", err)
 		}
 		if rec.ConvertPid > 0 {
 			_ = qemu.Kill(rec.ConvertPid)

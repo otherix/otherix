@@ -205,7 +205,8 @@ type Manager struct {
 	// hostname passed without a real ISO build. Defaults to the
 	// cloudinit.Builder in New.
 	createBuildCidata func(path, hostname string, userData, networkData []byte) error
-	migSpawnNBD       func(ctx context.Context, args []string) (int, error)
+	migSpawnNBD       func(ctx context.Context, args []string) (*qemu.NBDServer, error)
+	migStopNBD        func(srv *qemu.NBDServer, grace time.Duration) error
 	migRunConvert     func(ctx context.Context, args []string) error
 	migWaitNBDReady   func(ctx context.Context, endpoint string) error
 
@@ -534,6 +535,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		return err
 	}
 	m.migSpawnNBD = qemu.SpawnQemuNBD
+	m.migStopNBD = qemu.StopNBD
 	m.migRunConvert = qemu.RunQemuImgConvert
 	m.migWaitNBDReady = func(ctx context.Context, endpoint string) error {
 		return qemu.WaitNBDListening(ctx, endpoint, 15*time.Second)

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
 func TestStorePutGetUpdate(t *testing.T) {
@@ -116,14 +118,14 @@ func TestTakeTargetByVM(t *testing.T) {
 	targetMig := uuid.New()
 	sourceMig := uuid.New()
 
-	s.Put(&Record{MigrationID: targetMig, VMID: targetVM, Role: RoleTarget, Port: 49152, NBDPid: 4242})
+	s.Put(&Record{MigrationID: targetMig, VMID: targetVM, Role: RoleTarget, Port: 49152, NBD: &qemu.NBDServer{Pid: 4242}})
 	s.Put(&Record{MigrationID: sourceMig, VMID: sourceVM, Role: RoleSource})
 
 	rec, ok := s.TakeTargetByVM(targetVM)
 	if !ok {
 		t.Fatalf("TakeTargetByVM(%s) = false, want true", targetVM)
 	}
-	if rec.MigrationID != targetMig || rec.Port != 49152 || rec.NBDPid != 4242 {
+	if rec.MigrationID != targetMig || rec.Port != 49152 || rec.NBD == nil || rec.NBD.Pid != 4242 {
 		t.Errorf("TakeTargetByVM returned %+v, want target record (mig=%s port=49152 pid=4242)", rec, targetMig)
 	}
 	// Removed on take: a second call finds nothing.
