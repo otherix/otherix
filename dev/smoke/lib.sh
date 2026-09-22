@@ -73,6 +73,27 @@ run_on() {
 smoke_handle() { local v="SMOKE_HANDLE_$1"; printf '%s' "${!v}"; }
 smoke_state()  { local v="SMOKE_STATE_$1";  printf '%s' "${!v}"; }
 
+# smoke_restart_agent <1|2|3> - restart the agent on node N the way the platform
+# runs it: systemd on Lima; on Linux, stop it by its pid file and respawn it
+# exactly as dev/scripts/linux-multinode.sh do_start does. Guests and any
+# helper processes it spawned keep running, as under systemd's KillMode=process.
+smoke_restart_agent() {
+    local idx="$1" handle dir pidf agent_bin
+    handle="$(smoke_handle "$idx")"
+    case "${SMOKE_PLATFORM}" in
+        lima) run_on "$handle" sudo systemctl restart otherix-agent ;;
+        netns)
+            dir="$(smoke_state "$idx")"; pidf="${dir}/agent.pid"
+            agent_bin="$(pwd)/bin/otherix-agent"
+            sudo sh -c "p=\$(cat '${pidf}' 2>/dev/null); [ -n \"\$p\" ] || exit 0; kill \"\$p\" 2>/dev/null; \
+              for _ in \$(seq 1 60); do kill -0 \"\$p\" 2>/dev/null || exit 0; sleep 0.5; done; kill -9 \"\$p\" 2>/dev/null; true"
+            sudo sh -c "nohup ip netns exec '${handle}' unshare --mount --propagation private \
+              sh -c \"mount --bind '${dir}/pools' /var/lib/otherix/pools && exec '${agent_bin}' serve --config '${dir}/agent.yaml'\" \
+              > '${dir}/agent.log' 2>&1 & echo \$! > '${pidf}'"
+            ;;
+    esac
+}
+
 # smoke_require_node_cmd <cmd> — fail early with an actionable message if a tool a
 # smoke runs ON a node is missing. On Linux the smoke runs it inside the netns,
 # which shares the host filesystem, so the binary must be on the host PATH; on

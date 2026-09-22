@@ -315,6 +315,10 @@ smoke-vm-migration-cancel: ## Migration cancel propagation: `otherix migration c
 smoke-vm-migration-cancel-offline: ## Offline migration cancel: the target's qemu-nbd + ingress port are reaped promptly (an offline target has no agent-side backstop), task finalizes cancelled, VM stays usable on its source node (run after local-dev-start)
 	@bash dev/smoke/vm-migration-cancel-offline/run.sh
 
+.PHONY: smoke-vm-migration-cold-stopped
+smoke-vm-migration-cold-stopped: ## Cold migration of a stopped VM leaves no qemu-nbd on the target and the VM starts there; a target agent restart mid-migration leaves no qemu-nbd and the VM usable (run after local-dev-start)
+	@bash dev/smoke/vm-migration-cold-stopped/run.sh
+
 .PHONY: smoke-vm-snapshots
 smoke-vm-snapshots: ## VM snapshot smoke: `otherix vm snapshot create` then `vm create --from-snapshot`; asserts the source's post-boot disk state survives the snapshot -> recreate and the restored guest hostname is the new VM name (run after local-dev-start)
 	@bash dev/smoke/vm-snapshots/run.sh
