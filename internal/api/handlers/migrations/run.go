@@ -61,7 +61,8 @@ type MigrationWorkerStore interface {
 	BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error
 	UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, upd store.MigrationProgressUpdate) error
 	CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error
-	// AbandonedOfflineMigrations lists vmID's failed or cancelled offline migrations to targetID, excluding exclude.
+	// AbandonedOfflineMigrations lists vmID's failed or cancelled offline
+	// migrations to targetID, excluding exclude.
 	AbandonedOfflineMigrations(ctx context.Context, vmID, targetID, exclude uuid.UUID) ([]uuid.UUID, error)
 	UpdateMigrationStats(ctx context.Context, migID uuid.UUID, stats store.MigrationStats) error
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
@@ -446,8 +447,8 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 
 // failSetup classifies a handshake-setup error (incoming prep, outgoing start).
 // The target refusing to adopt the VM for a reason no retry changes (it keeps an
-// earlier abandoned copy of the VM, or an unrecorded disk dir sits where the copy
-// would go) fails the migration with the target's message, which names the path
+// earlier abandoned copy of the VM, an unrecorded disk dir sits where the copy
+// would go, or an abandoned copy cannot be moved aside) fails the migration with the target's message, which names the path
 // the operator must clear: the VM stays on its source, which was never contacted,
 // instead of burning the retry budget and leaving the migration stuck in setup.
 // Any other error is retryable - the VM is still on source and nothing durable
@@ -455,7 +456,7 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 // the dispatcher to requeue against the attempt budget.
 func failSetup(ctx context.Context, st MigrationWorkerStore, log *slog.Logger, taskID, migID uuid.UUID, err error) error {
 	var ae *agentclient.AgentError
-	if errors.As(err, &ae) && (ae.Code == ErrCodeAbandonedCopyKept || ae.Code == ErrCodeDiskDirExists) {
+	if errors.As(err, &ae) && (ae.Code == ErrCodeAbandonedCopyKept || ae.Code == ErrCodeDiskDirExists || ae.Code == ErrCodeAbandonedCopyUnmovable) {
 		return failMigration(ctx, st, log, taskID, migID, agentclient.TaskTerminal{
 			Status: "failed", Error: &agentclient.AgentError{Code: ae.Code, Message: ae.Message},
 		})
@@ -841,8 +842,10 @@ func commitCutover(ctx context.Context, st MigrationWorkerStore, log *slog.Logge
 		case store.MigrationPhaseCompleted:
 			// Already completed by a concurrent commit: idempotent success.
 		case store.MigrationPhaseFailed:
-			// A genuinely-failed migration must never complete; surface and stop.
-			return fmt.Errorf("cutover CAS lost to a failed migration %s; not completing", migID)
+			// A genuinely-failed migration must never complete. It is final, so
+			// report it as a terminal refusal for the caller to finalize failed in
+			// this delivery.
+			return fmt.Errorf("cutover CAS lost to a failed migration %s; not completing: %w", migID, store.ErrMigrationTerminal)
 		default:
 			if reloaded.Phase == store.MigrationPhaseCancelled && !reloaded.Live {
 				// An offline cancel landed between loadCutoverState and the Txn. It

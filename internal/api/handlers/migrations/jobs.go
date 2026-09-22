@@ -46,10 +46,13 @@ const (
 	ErrCodeTLSHandshake       = "tls_handshake_failed"
 	ErrCodeConvergenceFailed  = "convergence_failed"
 	ErrCodeMigrationCancelled = "migration_cancelled"
-	// ErrCodeAbandonedCopyKept and ErrCodeDiskDirExists are the target agent's
-	// refusals to adopt a VM that no retry changes: an abandoned copy of the VM is
-	// already set aside in the pool, or an unrecorded disk dir sits where the
-	// copy would go. Both fail the migration.
-	ErrCodeAbandonedCopyKept = "abandoned_copy_kept"
-	ErrCodeDiskDirExists     = "disk_dir_exists"
+	// ErrCodeAbandonedCopyKept, ErrCodeDiskDirExists and
+	// ErrCodeAbandonedCopyUnmovable are the target agent's refusals to adopt a
+	// VM that no retry changes: an abandoned copy of the VM is already set aside
+	// in the pool, an unrecorded disk dir sits where the copy would go, or an
+	// abandoned copy cannot be moved aside (its disk is missing or at an
+	// unexpected path). All fail the migration.
+	ErrCodeAbandonedCopyKept      = "abandoned_copy_kept"
+	ErrCodeDiskDirExists          = "disk_dir_exists"
+	ErrCodeAbandonedCopyUnmovable = "abandoned_copy_unmovable"
 )

@@ -4515,10 +4515,21 @@ components:
         - ssh_login_not_allowed
         - ssh_ingress_not_enabled
         - ingress_unavailable
+        - disk_dir_exists
+        - abandoned_copy_kept
+        - abandoned_copy_unmovable
         - internal
       description: |
         Stable machine-readable error code. Other codes may be returned for
         endpoint-specific cases; clients must accept unknown values gracefully.
+
+        `disk_dir_exists`, `abandoned_copy_kept` and `abandoned_copy_unmovable`
+        appear on a failed `vm.migrate` task: the target node refused to adopt
+        the VM for a reason no retry changes (a disk dir it did not create is in
+        the way, an earlier abandoned copy of the VM is already kept in the
+        pool's `abandoned/` dir, or an abandoned copy cannot be moved aside).
+        The message names the path on the node to clear; the VM stays on its
+        source.
 
     Error:
       type: object

@@ -2799,16 +2799,16 @@ func TestRunMigration_OfflineCancelDuringPushRefusesCutover(t *testing.T) {
 	assertOfflineCancelFinalized(t, s, agent, taskID, m, vm, nodeA, nodeB)
 }
 
-// cutoverCancelStore cancels the migration inside CommitMigrationCutover and
-// reports the lost CAS, modelling a cancel that lands between the cutover's
-// state read and its Txn.
-type cutoverCancelStore struct {
+// cutoverRaceFake runs interleave inside CommitMigrationCutover and reports the
+// lost CAS, modelling a concurrent write (a cancel or a failure) that lands
+// between the cutover's state read and its Txn.
+type cutoverRaceFake struct {
 	migrations.MigrationWorkerStore
-	cancel func()
+	interleave func()
 }
 
-func (st cutoverCancelStore) CommitMigrationCutover(context.Context, uuid.UUID) error {
-	st.cancel()
+func (st cutoverRaceFake) CommitMigrationCutover(context.Context, uuid.UUID) error {
+	st.interleave()
 	return store.ErrConcurrentUpdate
 }
 
@@ -2823,7 +2823,7 @@ func TestRunMigration_OfflineCancelLandsInsideCutoverCAS(t *testing.T) {
 	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false) // OFFLINE
 
 	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
-	st := cutoverCancelStore{MigrationWorkerStore: s, cancel: func() {
+	st := cutoverRaceFake{MigrationWorkerStore: s, interleave: func() {
 		if _, err := s.CancelMigration(ctx, m.ID, "operator cancelled at cutover"); err != nil {
 			t.Errorf("CancelMigration inside cutover: %v", err)
 		}
@@ -2836,11 +2836,49 @@ func TestRunMigration_OfflineCancelLandsInsideCutoverCAS(t *testing.T) {
 	assertOfflineCancelFinalized(t, s, agent, taskID, m, vm, nodeA, nodeB)
 }
 
-// TestRunMigration_AbandonedCopyKeptFailsMigration pins that the two target
+// TestRunMigration_FailureLandsInsideCutoverCAS pins that a failure winning the
+// cutover CAS race is finalized failed in the same delivery: nothing starts on
+// the target and nothing is deleted on the source.
+func TestRunMigration_FailureLandsInsideCutoverCAS(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	st := cutoverRaceFake{MigrationWorkerStore: s, interleave: func() {
+		failed := store.MigrationPhaseFailed
+		msg := "failed at cutover"
+		if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &failed, ErrorMessage: &msg}); err != nil {
+			t.Errorf("fail the migration inside cutover: %v", err)
+		}
+	}}
+
+	h := migrations.MigrateHandler(st, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(failure inside cutover CAS) = %v, want nil (finalized in this delivery)", err)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusFailed {
+		t.Errorf("task status = %q, want failed", task.Status)
+	}
+	if agent.startTargetCalls != 0 {
+		t.Errorf("StartVMOnTarget calls = %d, want 0", agent.startTargetCalls)
+	}
+	if agent.deleteSourceCalls != 0 {
+		t.Errorf("DeleteVMOnSource calls = %d, want 0", agent.deleteSourceCalls)
+	}
+}
+
+// TestRunMigration_AbandonedCopyKeptFailsMigration pins that the target
 // refusals no retry can change fail the migration terminally with the target's
 // message (the source is never contacted), while any other 409 stays retryable.
 func TestRunMigration_AbandonedCopyKeptFailsMigration(t *testing.T) {
-	for _, code := range []string{migrations.ErrCodeAbandonedCopyKept, migrations.ErrCodeDiskDirExists} {
+	for _, code := range []string{migrations.ErrCodeAbandonedCopyKept, migrations.ErrCodeDiskDirExists, migrations.ErrCodeAbandonedCopyUnmovable} {
 		t.Run(code, func(t *testing.T) {
 			s, cli := freshStore(t)
 			ctx := context.Background()
@@ -2870,6 +2908,16 @@ func TestRunMigration_AbandonedCopyKeptFailsMigration(t *testing.T) {
 			}
 			if task.Status != store.TaskStatusFailed {
 				t.Errorf("task status = %q, want failed", task.Status)
+			}
+			var envelope struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(task.Error, &envelope); err != nil {
+				t.Fatalf("decode task error %q: %v", task.Error, err)
+			}
+			if envelope.Code != code || envelope.Message != msg {
+				t.Errorf("task error = (%q, %q), want (%q, %q)", envelope.Code, envelope.Message, code, msg)
 			}
 		})
 	}
