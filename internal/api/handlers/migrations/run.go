@@ -61,6 +61,8 @@ type MigrationWorkerStore interface {
 	BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error
 	UpdateMigrationProgress(ctx context.Context, migID uuid.UUID, upd store.MigrationProgressUpdate) error
 	CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error
+	// AbandonedOfflineMigrations lists vmID's failed or cancelled offline migrations to targetID, excluding exclude.
+	AbandonedOfflineMigrations(ctx context.Context, vmID, targetID, exclude uuid.UUID) ([]uuid.UUID, error)
 	UpdateMigrationStats(ctx context.Context, migID uuid.UUID, stats store.MigrationStats) error
 	ListVMDisksByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMDisk, error)
 	ListVMNicsByVM(ctx context.Context, vmID uuid.UUID) ([]store.VMNic, error)

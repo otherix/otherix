@@ -170,6 +170,69 @@ func seedActiveMigration(t *testing.T, s *etcdstore.Store, vmID, source, target 
 	return got
 }
 
+// seedActiveOfflineMigration is seedActiveMigration for an offline (Live=false)
+// migration.
+func seedActiveOfflineMigration(t *testing.T, s *etcdstore.Store, vmID, source, target uuid.UUID) store.Migration {
+	t.Helper()
+	ctx := context.Background()
+	p := migrationParams(vmID, source, target)
+	p.Live = false
+	m, err := s.CreateMigration(ctx, p, migrationJobArgsStub{TaskID: p.Task.ID, MigrationID: p.ID})
+	if err != nil {
+		t.Fatalf("CreateMigration(offline): %v", err)
+	}
+	active := store.MigrationPhaseActive
+	if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &active}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(active): %v", err)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID after activate: %v", err)
+	}
+	return got
+}
+
+// An offline target never runs its copy before a cutover and the source copy is
+// only deleted after one, so a cancel of an offline migration is final: the
+// cutover must not override it. A live cancel is still overridden (the target
+// may already be running the guest).
+func TestCommitMigrationCutover_RefusesCancelledOffline(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	src := nodeParams(uniqueNodeName("cut-off-src"))
+	tgt := nodeParams(uniqueNodeName("cut-off-tgt"))
+	for _, n := range []store.CreateNodeParams{src, tgt} {
+		if _, err := s.CreateNode(ctx, n); err != nil {
+			t.Fatalf("CreateNode: %v", err)
+		}
+	}
+
+	vm := seedPinnedVM(t, cli, src.ID)
+	m := seedActiveOfflineMigration(t, s, vm.ID, src.ID, tgt.ID)
+	if _, err := s.CancelMigration(ctx, m.ID, "test"); err != nil {
+		t.Fatalf("CancelMigration: %v", err)
+	}
+	if err := s.CommitMigrationCutover(ctx, m.ID); !errors.Is(err, store.ErrMigrationTerminal) {
+		t.Errorf("CommitMigrationCutover(offline cancelled) = %v, want store.ErrMigrationTerminal", err)
+	}
+	got, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if got.PinnedNodeID == nil || *got.PinnedNodeID != src.ID {
+		t.Errorf("pin after refused cutover = %v, want source %v", got.PinnedNodeID, src.ID)
+	}
+
+	liveVM := seedPinnedVM(t, cli, src.ID)
+	live := seedActiveMigration(t, s, liveVM.ID, src.ID, tgt.ID)
+	if _, err := s.CancelMigration(ctx, live.ID, "test"); err != nil {
+		t.Fatalf("CancelMigration(live): %v", err)
+	}
+	if err := s.CommitMigrationCutover(ctx, live.ID); err != nil {
+		t.Errorf("CommitMigrationCutover(live cancelled) = %v, want nil (override)", err)
+	}
+}
+
 func TestCommitMigrationCutover_FlipsPin(t *testing.T) {
 	s, cli := startStore(t)
 	ctx := context.Background()
