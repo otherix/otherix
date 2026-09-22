@@ -61,7 +61,7 @@ func (f *fakeVMManager) HasOfflineIncoming(id uuid.UUID) bool {
 	return f.offlineIncoming[id]
 }
 
-func (f *fakeVMManager) ReleaseIncoming(id uuid.UUID) bool {
+func (f *fakeVMManager) ReleaseIncoming(id uuid.UUID, _ time.Time) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "ReleaseIncoming")

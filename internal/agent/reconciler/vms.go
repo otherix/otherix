@@ -42,7 +42,7 @@ type VMManager interface {
 	HasOfflineIncoming(vmID uuid.UUID) bool
 	// ReleaseIncoming releases the VM's offline incoming server in the
 	// background; false when the VM's slot is busy (retry next tick).
-	ReleaseIncoming(vmID uuid.UUID) bool
+	ReleaseIncoming(vmID uuid.UUID, requested time.Time) bool
 }
 
 // VMs is the per-resource reconciler for VMs. Single instance per
@@ -439,7 +439,7 @@ func (r *VMs) holdBack(ctx context.Context, v *vm.VM, requested time.Time) bool 
 	if !r.manager.HasOfflineIncoming(v.ID) {
 		return false
 	}
-	if r.manager.ReleaseIncoming(v.ID) {
+	if r.manager.ReleaseIncoming(v.ID, requested) {
 		r.log.InfoContext(ctx, "vm reconcile: releasing completed migration's incoming server",
 			slog.String("vm", v.Name))
 	}

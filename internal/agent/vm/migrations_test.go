@@ -4,6 +4,8 @@
 package vm
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,5 +198,90 @@ func TestReleaseIncomingStopsTheLiveServerNotTheStaleOne(t *testing.T) {
 		if len(stopped) != 1 || stopped[0] != 2 {
 			t.Fatalf("iteration %d: stopped %v, want exactly [2]", i, stopped)
 		}
+	}
+}
+
+// TestReleaseIncomingKeepsEverythingWhenTheStopFails: a server that could not be
+// stopped still holds its disk and its port, so the release puts the record back
+// and keeps the port reserved for the next attempt; the attempt after a
+// successful stop then frees both.
+func TestReleaseIncomingKeepsEverythingWhenTheStopFails(t *testing.T) {
+	m := newTestManager(t)
+	m.migPorts = migration.NewPortAllocator(49152, 49152) // exactly one port
+	stopErr := errors.New("qemu-nbd did not exit")
+	var stopped []int
+	m.migStopNBD = func(srv *qemu.NBDServer, _ time.Duration) error {
+		stopped = append(stopped, srv.Pid)
+		return stopErr
+	}
+	port, err := m.migPorts.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	vmID, migID := uuid.New(), uuid.New()
+	m.Migrations().Put(&migration.Record{
+		MigrationID: migID, VMID: vmID, Role: migration.RoleTarget,
+		Mode: migration.ModeOffline, Phase: migration.PhaseSetup,
+		Port: port, NBD: &qemu.NBDServer{Pid: 55},
+	})
+
+	m.releaseIncoming(vmID, true)
+
+	if len(stopped) != 1 {
+		t.Fatalf("stopped %v, want one attempt", stopped)
+	}
+	if !m.HasActiveMigration(vmID) {
+		t.Errorf("HasActiveMigration = false after a failed stop, want the record put back")
+	}
+	if p, err := m.migPorts.Reserve(); err == nil {
+		t.Errorf("Reserve() = %d after a failed stop, want the port still held by the running server", p)
+	}
+
+	stopErr = nil
+	m.releaseIncoming(vmID, true)
+
+	if len(stopped) != 2 || stopped[1] != 55 {
+		t.Errorf("stopped %v, want the retry to stop pid 55", stopped)
+	}
+	if m.HasActiveMigration(vmID) {
+		t.Errorf("HasActiveMigration = true after a successful stop, want the record dropped")
+	}
+	if p, err := m.migPorts.Reserve(); err != nil || p != port {
+		t.Errorf("Reserve() = (%d, %v) after a successful stop, want (%d, nil)", p, err, port)
+	}
+}
+
+// TestReleaseIncomingAfterARealCancelLeavesALaterMigrationsPort drives the real
+// sequence rather than writing a terminal record by hand: the cancel stops the
+// server and frees the port, a later migration reserves that port, and a release
+// arriving afterwards must neither stop anything nor free the port again.
+func TestReleaseIncomingAfterARealCancelLeavesALaterMigrationsPort(t *testing.T) {
+	m, spy := NewManagerForSeamTest(t)
+	m.migPorts = migration.NewPortAllocator(49152, 49152) // exactly one port
+	vmID, migID := uuid.New(), uuid.New()
+	if _, err := m.StartIncoming(context.Background(), IncomingSpec{
+		MigrationID: migID, VMUUID: vmID, VMName: "cold", VCPUs: 1, MemoryMib: 512,
+		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64, Mode: "offline",
+		DiskSizeBytes: 1 << 30, SourceIdentity: "CN=node-src", BindHost: "10.0.0.2",
+	}); err != nil {
+		t.Fatalf("StartIncoming: %v", err)
+	}
+
+	if _, ok := m.CancelMigration(migID); !ok {
+		t.Fatalf("CancelMigration returned ok=false")
+	}
+	afterCancel := len(spy.Pids())
+	later, err := m.migPorts.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve() after cancel: %v, want the freed port", err)
+	}
+
+	m.releaseIncoming(vmID, false)
+
+	if got := spy.Pids(); len(got) != afterCancel {
+		t.Errorf("stops after the release = %v, want no stop beyond the cancel's %d", got, afterCancel)
+	}
+	if p, err := m.migPorts.Reserve(); err == nil {
+		t.Errorf("Reserve() = %d after the release, want port %d still held by the later migration", p, later)
 	}
 }

@@ -183,15 +183,16 @@ func (s *Store) Incoming(vmID uuid.UUID) (Record, bool) {
 }
 
 // TakeIncoming finds and REMOVES vmID's non-terminal target record, restricted
-// to offline records when offlineOnly. Terminal records are never taken: the
-// finalizer that stamped one already stopped its server and released its ports,
-// and it stays for GetMigration. Records are never otherwise deleted, so a VM
+// to offline records (any mode but live, as the incoming path routes them) when
+// offlineOnly. Terminal records are never taken: the finalizer that stamped one
+// already stopped its server and released its ports, and it stays for
+// GetMigration. Records are never otherwise deleted, so a VM
 // can hold a terminal record from an earlier attempt next to the live one.
 func (s *Store) TakeIncoming(vmID uuid.UUID, offlineOnly bool) (Record, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, r := s.incomingLocked(vmID)
-	if r == nil || (offlineOnly && r.Mode != ModeOffline) {
+	if r == nil || (offlineOnly && r.Mode == ModeLive) {
 		return Record{}, false
 	}
 	cp := *r

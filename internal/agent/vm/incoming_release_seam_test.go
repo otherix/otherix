@@ -157,3 +157,29 @@ func TestCompletedColdMigrationIsReleasedAndThenTornDown(t *testing.T) {
 		t.Errorf("stopped %v, want exactly one stop (the delete finds nothing left to release)", got)
 	}
 }
+
+// TestReleaseIncomingRechecksTheArrivalOnTheLiveVM: the fence is decided on the
+// live VM when the release starts, not on a copy the caller read earlier, so a
+// response requested before the VM (re)arrived releases nothing.
+func TestReleaseIncomingRechecksTheArrivalOnTheLiveVM(t *testing.T) {
+	m, stops := vm.NewManagerForSeamTest(t)
+	vmID := uuid.New()
+	stale := time.Now()
+	startColdIncoming(t, m, vmID)
+
+	if m.ReleaseIncoming(vmID, stale) {
+		t.Errorf("ReleaseIncoming(requested before the arrival) = true, want false")
+	}
+	if got := stops.Pids(); len(got) != 0 {
+		t.Errorf("stopped %v, want nothing for a response older than the arrival", got)
+	}
+	if !m.HasActiveMigration(vmID) {
+		t.Errorf("HasActiveMigration = false, want the record kept")
+	}
+
+	if !m.ReleaseIncoming(vmID, time.Now()) {
+		t.Fatalf("ReleaseIncoming(requested after the arrival) = false, want true")
+	}
+	eventually(t, "the incoming server to be stopped", func() bool { return len(stops.Pids()) == 1 })
+	eventually(t, "the record to be released", func() bool { return !m.HasActiveMigration(vmID) })
+}

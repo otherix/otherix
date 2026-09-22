@@ -145,6 +145,12 @@ func TestTakeIncoming(t *testing.T) {
 			offlineOnly: true,
 		},
 		{
+			name:        "offlineOnly takes a non-terminal target with no mode",
+			recs:        []Record{{MigrationID: uuid.MustParse("00000000-0000-0000-0000-000000000004"), VMID: vmID, Role: RoleTarget, Phase: PhaseSetup}},
+			offlineOnly: true,
+			wantMig:     uuid.MustParse("00000000-0000-0000-0000-000000000004"),
+		},
+		{
 			name: "source records are never taken",
 			recs: []Record{{MigrationID: uuid.New(), VMID: vmID, Role: RoleSource, Mode: ModeOffline, Phase: PhaseActive}},
 		},

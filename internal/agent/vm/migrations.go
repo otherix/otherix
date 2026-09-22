@@ -150,36 +150,46 @@ const nbdStopGrace = 5 * time.Second
 // second time. Terminal records are never taken (see TakeIncoming), so both the
 // stop and the release apply only to state nobody else has finalised. A no-op
 // when vmID has no such record.
+//
+// A failed stop leaves everything as it was: the server may still be running,
+// holding its disk and its port, so the record goes back and the ports stay
+// reserved, and the next reconciler tick or a start retries.
 func (m *Manager) releaseIncoming(vmID uuid.UUID, offlineOnly bool) {
 	rec, ok := m.migrations.TakeIncoming(vmID, offlineOnly)
 	if !ok {
 		return
 	}
 	if err := m.migStopNBD(rec.NBD, nbdStopGrace); err != nil {
-		m.log.Warn("release migration nbd server failed",
+		m.migrations.Put(&rec)
+		m.log.Warn("release migration nbd server failed; kept for retry",
 			"vm_id", vmID.String(), "migration_id", rec.MigrationID.String(), "err", err)
+		return
 	}
 	m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
 }
 
 // HasOfflineIncoming reports whether vmID has an in-flight offline incoming
 // migration on this node, whose server nothing but a start, a delete or
-// ReleaseIncoming ever stops.
+// ReleaseIncoming ever stops. Offline means not live, as StartIncoming routes it.
 func (m *Manager) HasOfflineIncoming(vmID uuid.UUID) bool {
 	rec, ok := m.migrations.Incoming(vmID)
-	return ok && rec.Mode == migration.ModeOffline
+	return ok && rec.Mode != migration.ModeLive
 }
 
 // ReleaseIncoming releases vmID's offline incoming server, in the background,
 // under the VM's lifecycle slot. The caller must already know the migration
-// committed. Holding the slot serialises the release against a start of the
-// same VM: a start that finds the record already taken while the server is
-// still exiting would fail on the disk write lock. Returns false, doing
-// nothing, when the VM is unknown or its slot is busy; the caller retries.
-func (m *Manager) ReleaseIncoming(vmID uuid.UUID) bool {
+// committed, from a heartbeat response requested at requested. Holding the slot
+// serialises the release against a start of the same VM: a start that finds the
+// record already taken while the server is still exiting would fail on the disk
+// write lock. The arrival is re-checked on the live VM, not on a copy the caller
+// read earlier: the VM may have left and arrived again since, and a response
+// requested before that arrival cannot speak for it. Returns false, doing
+// nothing, when the VM is unknown, arrived at or after requested, or its slot is
+// busy; the caller retries.
+func (m *Manager) ReleaseIncoming(vmID uuid.UUID, requested time.Time) bool {
 	m.mu.Lock()
 	var name string
-	if v, ok := m.vms[vmID]; ok {
+	if v, ok := m.vms[vmID]; ok && (v.ArrivedAt.IsZero() || v.ArrivedAt.Before(requested)) {
 		name = v.Name
 	}
 	m.mu.Unlock()
@@ -618,7 +628,7 @@ func (m *Manager) CancelMigration(id uuid.UUID) (MigrationView, bool) {
 		// could hit an unrelated process after the server died and the pid was
 		// reused - and this arm is now live traffic, since the control plane reaps
 		// offline targets.
-		if err := m.migStopNBD(rec.NBD, 5*time.Second); err != nil {
+		if err := m.migStopNBD(rec.NBD, nbdStopGrace); err != nil {
 			m.log.Warn("cancel migration: stop nbd server failed",
 				"migration_id", id.String(), "err", err)
 		}
