@@ -387,10 +387,18 @@ func TestSetAsideResumesAMoveACrashInterrupted(t *testing.T) {
 	if err := os.Rename(filepath.Dir(f.disk), kept); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
+	metaPath := filepath.Join(f.m.stateDir, f.vmID.String(), state.MetaFileName)
+	wantMeta, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read meta.json: %v", err)
+	}
 	s := f.spec(f.old)
 
 	if _, err := f.m.StartIncoming(context.Background(), s); err != nil {
 		t.Fatalf("StartIncoming = %v, want the interrupted move completed", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(kept, state.MetaFileName)); err != nil || string(got) != string(wantMeta) {
+		t.Errorf("kept meta.json = (%q, %v), want the original %q", got, err, wantMeta)
 	}
 	if v, err := f.m.Get(f.vmID); err != nil || v.AdoptedBy != s.MigrationID {
 		t.Errorf("Get = (%v, %v), want the new adopt", v.AdoptedBy, err)
@@ -519,4 +527,52 @@ func TestSetAsideMovesNothingOnAReplay(t *testing.T) {
 		t.Errorf("StartIncoming(replay) = (%+v, %v), want the minted endpoints", res, err)
 	}
 	f.assertNotMoved(t)
+}
+
+// TestSetAsideKeepsTheRecordWhenMetaJSONCannotBeRead: meta.json is the only
+// recovery record of the moved copy, so a read failure other than "missing"
+// aborts before the state dir is removed, and a retry once it reads again
+// finishes the move with it kept.
+func TestSetAsideKeepsTheRecordWhenMetaJSONCannotBeRead(t *testing.T) {
+	f := newAbandonedFixture(t)
+	metaPath := filepath.Join(f.m.stateDir, f.vmID.String(), state.MetaFileName)
+	wantMeta, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read meta.json: %v", err)
+	}
+	// A directory in its place fails the read with EISDIR, even as root.
+	if err := os.Remove(metaPath); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.Mkdir(metaPath, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	kept := f.kept(f.m.defaultTestPoolRoot(t))
+
+	if _, err := f.m.StartIncoming(context.Background(), f.spec(f.old)); err == nil {
+		t.Fatalf("StartIncoming with an unreadable meta.json = nil, want an error")
+	}
+	if v, err := f.m.Get(f.vmID); err != nil || v.AdoptedBy != f.old {
+		t.Errorf("Get = (%v, %v), want the record kept", v.AdoptedBy, err)
+	}
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Errorf("state dir meta.json: %v, want it kept", err)
+	}
+
+	if err := os.Remove(metaPath); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.WriteFile(metaPath, wantMeta, 0o600); err != nil {
+		t.Fatalf("restore meta.json: %v", err)
+	}
+	s := f.spec(f.old)
+	if _, err := f.m.StartIncoming(context.Background(), s); err != nil {
+		t.Fatalf("retry StartIncoming = %v, want the move completed", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(kept, state.MetaFileName)); err != nil || string(got) != string(wantMeta) {
+		t.Errorf("kept meta.json = (%q, %v), want the original %q", got, err, wantMeta)
+	}
+	if got, err := os.ReadFile(filepath.Join(kept, "disk.qcow2")); err != nil || string(got) != abandonedBytes {
+		t.Errorf("kept disk = (%q, %v), want the original bytes", got, err)
+	}
 }

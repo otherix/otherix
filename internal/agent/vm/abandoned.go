@@ -49,15 +49,11 @@ func (m *Manager) setAsideAbandonedCopy(s IncomingSpec) error {
 		return err
 	}
 
-	metaSrc := filepath.Join(m.stateDir, v.ID.String(), state.MetaFileName)
-	if b, err := os.ReadFile(metaSrc); err == nil { // #nosec G304 -- the VM's own state dir
-		keep := filepath.Join(dst, state.MetaFileName)
-		if err := os.WriteFile(keep, b, 0o600); err != nil { // #nosec G703 -- dst is built from the VM's own disk path and ids, checked above
-			return fmt.Errorf("keep %s with the abandoned copy: %v", state.MetaFileName, err)
-		}
+	if err := m.keepMeta(v.ID, dst); err != nil {
+		return err
 	}
 	// The move must be durable before the record that could replay it is gone.
-	for _, d := range []string{filepath.Dir(src), abandonedDir, poolRoot} {
+	for _, d := range []string{dst, filepath.Dir(src), abandonedDir, poolRoot} {
 		if err := syncDir(d); err != nil {
 			return fmt.Errorf("sync %s: %v", d, err)
 		}
@@ -128,6 +124,37 @@ func (m *Manager) moveCopyAside(cur *VM, v VM, src, dst string) (bool, error) {
 	default:
 		return false, fmt.Errorf("abandoned copy of vm %s: disk dir %s not found and not already moved to %s", v.ID, src, dst)
 	}
+}
+
+// keepMeta durably copies the VM's meta.json into the moved copy's dir dst, the
+// record an operator recovers the copy by. A missing meta.json is skipped. Any
+// other read or write failure is returned, so the caller aborts before it
+// removes the state dir, and the next request finishes the move through the
+// already-moved branch.
+func (m *Manager) keepMeta(id uuid.UUID, dst string) error {
+	b, err := os.ReadFile(filepath.Join(m.stateDir, id.String(), state.MetaFileName)) // #nosec G304 -- the VM's own state dir
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s of the abandoned copy: %v", state.MetaFileName, err)
+	}
+	keep := filepath.Join(dst, state.MetaFileName)
+	f, err := os.OpenFile(keep, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 G703 -- dst is built from the VM's own disk path and ids
+	if err != nil {
+		return fmt.Errorf("keep %s with the abandoned copy: %v", state.MetaFileName, err)
+	}
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("keep %s with the abandoned copy: %v", state.MetaFileName, err)
+	}
+	return nil
 }
 
 // renameIfUnchanged renames src to dst only while the VM entry is still cur and
