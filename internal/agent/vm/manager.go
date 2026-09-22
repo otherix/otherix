@@ -626,6 +626,11 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	// skipped-but-live VM's taps. See sweepOrphanTaps.
 	m.sweepOrphanTaps(skippedDirs == 0)
 
+	// Stop migration qemu-nbd servers a previous agent process left running.
+	// Runs before the agent serves, so no server this process starts can be
+	// mistaken for an orphan.
+	qemu.SweepOrphanNBD("/proc", cfg.StatePath, qemu.OpenPidfd, nbdStopGrace, log)
+
 	log.Info("vm manager initialized",
 		"state_dir", cfg.StatePath,
 		"recovered_vms", len(m.vms),

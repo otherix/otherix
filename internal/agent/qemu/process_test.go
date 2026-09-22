@@ -164,3 +164,28 @@ func TestStopNBDWithoutProcessIsNoop(t *testing.T) {
 		t.Errorf("StopNBD(zero handle) = %v, want nil", err)
 	}
 }
+
+// probeErrSpy is a handle whose signal-0 probe fails with an error other than
+// os.ErrProcessDone (EPERM, say): the process is not known to have exited.
+type probeErrSpy struct{ signalSpy }
+
+func (s *probeErrSpy) Signal(sig os.Signal) error {
+	if sig == syscall.Signal(0) {
+		return syscall.EPERM
+	}
+	return s.signalSpy.Signal(sig)
+}
+
+// TestStopNBDProbeErrorIsNotExit: a failing probe on a handle without a reaper
+// is not taken as an exit, so the stop escalates to SIGKILL and reports failure
+// rather than letting a caller open a disk the server may still hold.
+func TestStopNBDProbeErrorIsNotExit(t *testing.T) {
+	spy := &probeErrSpy{}
+	if err := StopNBD(&NBDServer{Pid: 42, proc: spy}, 200*time.Millisecond); err == nil {
+		t.Errorf("StopNBD = nil, want an error while the probe cannot confirm the exit")
+	}
+	sent := spy.signals()
+	if len(sent) != 2 || sent[0] != syscall.SIGTERM || sent[1] != syscall.SIGKILL {
+		t.Errorf("signals = %v, want [SIGTERM SIGKILL]", sent)
+	}
+}

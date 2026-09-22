@@ -177,7 +177,9 @@ const nbdKillGrace = 2 * time.Second
 // waitExit reports whether the server exited within grace. A server this agent
 // spawned closes done when its reaper returns. A server the agent did not spawn
 // (an orphan found at startup) is reaped by its new parent, so its handle is
-// polled with signal 0 until the handle reports it gone.
+// polled with signal 0 until the handle reports it gone. Only os.ErrProcessDone
+// counts as an exit: any other probe error leaves the process not known to have
+// exited, and polling continues until grace runs out.
 func (s *NBDServer) waitExit(grace time.Duration) bool {
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
@@ -192,7 +194,7 @@ func (s *NBDServer) waitExit(grace time.Duration) bool {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if err := s.proc.Signal(syscall.Signal(0)); err != nil {
+		if err := s.proc.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
 			return true
 		}
 		select {
