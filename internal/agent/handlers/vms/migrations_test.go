@@ -407,23 +407,31 @@ func TestMapIncomingErrorStatuses(t *testing.T) {
 	}
 }
 
-// TestMapIncomingErrorDiskDirExists: the control plane fails a migration for
-// good on exactly this code, and the message must name the dir for the operator.
-func TestMapIncomingErrorDiskDirExists(t *testing.T) {
-	err := fmt.Errorf("%w: /pools/p/vms/x", vm.ErrDiskDirExists)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/vms/demo/migrations/incoming", nil)
+// TestMapIncomingErrorRefusalCodes: the control plane fails a migration for
+// good on exactly these codes, and the message must name the path for the
+// operator.
+func TestMapIncomingErrorRefusalCodes(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		code string
+	}{
+		{err: fmt.Errorf("%w: /pools/p/vms/x", vm.ErrDiskDirExists), code: "disk_dir_exists"},
+		{err: fmt.Errorf("%w: /pools/p/abandoned/x-y; remove it", vm.ErrAbandonedCopyKept), code: "abandoned_copy_kept"},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/vms/demo/migrations/incoming", nil)
 
-	mapIncomingError(rec, req, err)
+		mapIncomingError(rec, req, tc.err)
 
-	var body struct {
-		Error struct{ Code, Message string } `json:"error"`
-	}
-	if jerr := json.Unmarshal(rec.Body.Bytes(), &body); jerr != nil {
-		t.Fatalf("decode body %s: %v", rec.Body.String(), jerr)
-	}
-	if rec.Code != http.StatusConflict || body.Error.Code != "disk_dir_exists" || body.Error.Message != err.Error() {
-		t.Errorf("mapIncomingError(%v) = (%d, %q, %q), want (409, disk_dir_exists, %q)",
-			err, rec.Code, body.Error.Code, body.Error.Message, err.Error())
+		var body struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		if jerr := json.Unmarshal(rec.Body.Bytes(), &body); jerr != nil {
+			t.Fatalf("decode body %s: %v", rec.Body.String(), jerr)
+		}
+		if rec.Code != http.StatusConflict || body.Error.Code != tc.code || body.Error.Message != tc.err.Error() {
+			t.Errorf("mapIncomingError(%v) = (%d, %q, %q), want (409, %s, %q)",
+				tc.err, rec.Code, body.Error.Code, body.Error.Message, tc.code, tc.err.Error())
+		}
 	}
 }

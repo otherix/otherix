@@ -293,6 +293,10 @@ func mapIncomingError(w http.ResponseWriter, r *http.Request, err error) {
 		// The message names the dir, so the operator knows what to move away.
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeDiskDirExists, err.Error(), nil)
+	case errors.Is(err, vm.ErrAbandonedCopyKept):
+		// The message names the kept copy, so the operator knows what to remove.
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeAbandonedCopyKept, err.Error(), nil)
 	case errors.Is(err, vm.ErrPoolUnknown):
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "pool does not match a configured pool", nil)

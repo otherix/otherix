@@ -137,6 +137,12 @@ const (
 	// agent's message, which names the dir to move away.
 	CodeDiskDirExists ErrorCode = "disk_dir_exists"
 
+	// CodeAbandonedCopyKept is the agent refusing an incoming migration because
+	// an earlier abandoned copy of the VM is already kept in the pool's
+	// abandoned/ dir. Not retryable: the control plane fails the migration with
+	// the agent's message, which names the kept copy to remove.
+	CodeAbandonedCopyKept ErrorCode = "abandoned_copy_kept"
+
 	CodeInternal ErrorCode = "internal"
 )
 

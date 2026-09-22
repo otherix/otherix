@@ -361,6 +361,12 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	}
 	defer release()
 
+	// For both paths, before anything is reserved, so a refusal leaks nothing.
+	// A replay of a migration already prepared here moves nothing and falls
+	// through to the idempotent-resume guards below.
+	if err := m.setAsideAbandonedCopy(s); err != nil {
+		return IncomingResult{}, err
+	}
 	if migration.Mode(s.Mode) == migration.ModeLive {
 		return m.startIncomingLive(ctx, s)
 	}
@@ -372,7 +378,6 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	if rec, ok := m.migrations.Get(s.MigrationID); ok && rec.Role == migration.RoleTarget {
 		return IncomingResult{ListenEndpoint: rec.ListenEndpt, AuthToken: rec.AuthToken}, nil
 	}
-
 	port, err := m.migPorts.Reserve()
 	if err != nil {
 		// %w so the handler can errors.Is(ErrNoFreePort) and surface a
@@ -409,7 +414,10 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	// cannot write past the end of a smaller target). Over-sizing is safe:
 	// the resulting qcow2 just has extra unused virtual space and still
 	// boots. So pick the larger of the source disk virtual size and the
-	// progress-UX estimate. CreateDisk ensures the per-VM parent dir exists.
+	// progress-UX estimate. The per-VM dir was created exclusively by
+	// adoptIncoming above; CreateDisk's own MkdirAll of it is then a no-op and
+	// must not replace that exclusive mkdir, which is what keeps an existing
+	// copy's disk from being truncated.
 	virtualBytes := s.DiskSizeBytes
 	if s.ExpectedSize > virtualBytes {
 		virtualBytes = s.ExpectedSize

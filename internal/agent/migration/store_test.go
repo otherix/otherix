@@ -200,3 +200,66 @@ func TestIncoming(t *testing.T) {
 		t.Errorf("Incoming(unknown vm) = true, want false")
 	}
 }
+
+func TestTakeIncomingByID(t *testing.T) {
+	vmID := uuid.New()
+	tests := []struct {
+		name string
+		rec  Record
+		want bool
+	}{
+		{name: "offline target in setup", rec: Record{Role: RoleTarget, Mode: ModeOffline, Phase: PhaseSetup}, want: true},
+		{name: "offline target active", rec: Record{Role: RoleTarget, Mode: ModeOffline, Phase: PhaseActive}, want: true},
+		{name: "live target", rec: Record{Role: RoleTarget, Mode: ModeLive, Phase: PhaseSetup}, want: false},
+		{name: "source", rec: Record{Role: RoleSource, Mode: ModeOffline, Phase: PhaseSetup}, want: false},
+		{name: "terminal target", rec: Record{Role: RoleTarget, Mode: ModeOffline, Phase: PhaseCancelled}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStore()
+			rec := tc.rec
+			rec.MigrationID, rec.VMID = uuid.New(), vmID
+			s.Put(&rec)
+
+			got, ok := s.TakeIncomingByID(rec.MigrationID)
+			if ok != tc.want {
+				t.Fatalf("TakeIncomingByID(%s) ok = %v, want %v", tc.name, ok, tc.want)
+			}
+			_, stillThere := s.Get(rec.MigrationID)
+			if stillThere == tc.want {
+				t.Errorf("record present after TakeIncomingByID = %v, want %v", stillThere, !tc.want)
+			}
+			if ok && got.MigrationID != rec.MigrationID {
+				t.Errorf("TakeIncomingByID() id = %s, want %s", got.MigrationID, rec.MigrationID)
+			}
+		})
+	}
+	if _, ok := NewStore().TakeIncomingByID(uuid.New()); ok {
+		t.Errorf("TakeIncomingByID(unknown) ok = true, want false")
+	}
+}
+
+func TestHasActiveForVMExcept(t *testing.T) {
+	vmID, except := uuid.New(), uuid.New()
+	tests := []struct {
+		name string
+		rec  Record
+		want bool
+	}{
+		{name: "only the excepted record", rec: Record{MigrationID: except, VMID: vmID, Role: RoleTarget, Phase: PhaseSetup}, want: false},
+		{name: "other target record", rec: Record{MigrationID: uuid.New(), VMID: vmID, Role: RoleTarget, Phase: PhaseSetup}, want: true},
+		{name: "source record", rec: Record{MigrationID: uuid.New(), VMID: vmID, Role: RoleSource, Phase: PhaseActive}, want: true},
+		{name: "terminal record", rec: Record{MigrationID: uuid.New(), VMID: vmID, Role: RoleTarget, Phase: PhaseFailed}, want: false},
+		{name: "other vm", rec: Record{MigrationID: uuid.New(), VMID: uuid.New(), Role: RoleSource, Phase: PhaseSetup}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStore()
+			rec := tc.rec
+			s.Put(&rec)
+			if got := s.HasActiveForVMExcept(vmID, except); got != tc.want {
+				t.Errorf("HasActiveForVMExcept(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
