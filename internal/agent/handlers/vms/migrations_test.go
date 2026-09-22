@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -403,5 +404,26 @@ func TestMapIncomingErrorStatuses(t *testing.T) {
 				t.Errorf("mapIncomingError(%v) status = %d, want %d (body=%s)", tc.err, rec.Code, tc.want, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestMapIncomingErrorDiskDirExists: the control plane fails a migration for
+// good on exactly this code, and the message must name the dir for the operator.
+func TestMapIncomingErrorDiskDirExists(t *testing.T) {
+	err := fmt.Errorf("%w: /pools/p/vms/x", vm.ErrDiskDirExists)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/vms/demo/migrations/incoming", nil)
+
+	mapIncomingError(rec, req, err)
+
+	var body struct {
+		Error struct{ Code, Message string } `json:"error"`
+	}
+	if jerr := json.Unmarshal(rec.Body.Bytes(), &body); jerr != nil {
+		t.Fatalf("decode body %s: %v", rec.Body.String(), jerr)
+	}
+	if rec.Code != http.StatusConflict || body.Error.Code != "disk_dir_exists" || body.Error.Message != err.Error() {
+		t.Errorf("mapIncomingError(%v) = (%d, %q, %q), want (409, disk_dir_exists, %q)",
+			err, rec.Code, body.Error.Code, body.Error.Message, err.Error())
 	}
 }

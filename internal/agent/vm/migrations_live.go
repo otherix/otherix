@@ -103,7 +103,9 @@ func (m *Manager) startIncomingLive(ctx context.Context, s IncomingSpec) (Incomi
 		return IncomingResult{}, err
 	}
 
-	v, err := m.AdoptForMigration(AdoptSpec{
+	// adoptIncoming creates the disk dir exclusively, so adopted (and with it
+	// cleanup's disk-dir removal) is set only for a dir this call created.
+	v, err := m.adoptIncoming(AdoptSpec{
 		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMib: s.MemoryMib,
 		PoolName: s.PoolName, Architecture: s.Architecture,
 		InitialStatus: StatusMigratingIncoming,

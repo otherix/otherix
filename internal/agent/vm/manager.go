@@ -70,6 +70,13 @@ var (
 	// it to 409 conflict so the CP worker resumes on its next poll rather
 	// than the agent clobbering the live VM.
 	ErrCreateInFlight = errors.New("vm create already in flight for this id")
+
+	// ErrDiskDirExists is returned by an incoming migration whose per-VM disk
+	// dir already exists. The dir belongs to something the call did not create
+	// (an older copy of the VM), so the migration refuses rather than write a
+	// disk over it. Handlers map it to 409 disk_dir_exists; the operator moves
+	// the dir away to migrate the VM here again.
+	ErrDiskDirExists = errors.New("a disk dir for this vm already exists")
 )
 
 // shutdownGrace bounds how long Delete and Stop wait for system_powerdown

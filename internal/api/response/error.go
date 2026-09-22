@@ -131,6 +131,12 @@ const (
 	// a gateway converging (or a NIC attaching) clears it.
 	CodeIngressUnavailable ErrorCode = "ingress_unavailable"
 
+	// CodeDiskDirExists is the agent refusing an incoming migration because
+	// the VM's disk dir already exists on the target (an older copy it did not
+	// create). Not retryable: the control plane fails the migration with the
+	// agent's message, which names the dir to move away.
+	CodeDiskDirExists ErrorCode = "disk_dir_exists"
+
 	CodeInternal ErrorCode = "internal"
 )
 

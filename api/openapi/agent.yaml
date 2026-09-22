@@ -1520,6 +1520,7 @@ components:
         - network_in_use
         - protocol_not_available
         - not_implemented
+        - disk_dir_exists
       description: |
         Stable machine-readable error code. Endpoint-specific codes
         beyond this enum may be returned for narrow cases; clients

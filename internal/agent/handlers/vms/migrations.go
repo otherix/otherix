@@ -289,6 +289,10 @@ func mapIncomingError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, vm.ErrInFlight):
 		response.WriteError(w, r, http.StatusConflict,
 			response.CodeConflict, "vm operation already in flight", nil)
+	case errors.Is(err, vm.ErrDiskDirExists):
+		// The message names the dir, so the operator knows what to move away.
+		response.WriteError(w, r, http.StatusConflict,
+			response.CodeDiskDirExists, err.Error(), nil)
 	case errors.Is(err, vm.ErrPoolUnknown):
 		response.WriteError(w, r, http.StatusBadRequest,
 			response.CodeValidationFailed, "pool does not match a configured pool", nil)
