@@ -237,6 +237,11 @@ type IncomingSpec struct {
 	// materializes a host tap per NIC (attached to its overlay bridge) before
 	// launching the incoming qemu, so the resumed guest has network.
 	NICs []netfabric.NIC
+	// AbandonedMigrationIDs are the control plane's earlier OFFLINE migrations
+	// of this VM to this node that ended failed or cancelled. A stopped copy
+	// adopted by one of them may be moved aside before this migration adopts
+	// the VM (setAsideAbandonedCopy).
+	AbandonedMigrationIDs []uuid.UUID
 }
 
 // MigrationDisk is one entry of the ordered disk manifest the target

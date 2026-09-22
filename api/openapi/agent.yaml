@@ -2618,6 +2618,19 @@ components:
             absent on legacy requests (no overlay/bridge NIC cutover).
           items:
             $ref: "#/components/schemas/MigrationNic"
+        abandoned_migration_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: |
+            Ids of this VM's earlier OFFLINE migrations to this node that ended
+            failed or cancelled. Such a migration can never cut over, so the copy
+            it left here is not the VM's home. If the node still holds a stopped
+            copy adopted by one of them, it moves that copy aside (renames its
+            disk dir into the pool's abandoned/ dir; nothing is deleted) before
+            adopting the VM again. Absent or empty: an existing copy fails the
+            request as before.
 
     MigrationDisk:
       type: object

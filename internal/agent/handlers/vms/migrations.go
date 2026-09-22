@@ -66,24 +66,7 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.manager.StartIncoming(r.Context(), vm.IncomingSpec{
-		MigrationID:    req.MigrationID,
-		VMUUID:         req.VMSpec.VMUUID,
-		VMName:         req.VMSpec.Name,
-		VCPUs:          req.VMSpec.CPUCores,
-		MemoryMib:      int(req.VMSpec.MemoryMib),
-		PoolName:       poolName,
-		Architecture:   qemu.Architecture(req.VMSpec.Architecture),
-		Mode:           string(req.Mode),
-		ExpectedSize:   deref64(req.ExpectedSizeBytes),
-		DiskSizeBytes:  int64(boot.SizeGib) * gibBytes,
-		Disks:          incomingDisks(req, int64(boot.SizeGib)*gibBytes),
-		SourceIdentity: deref(req.SourceNodeIdentity),
-		BindHost:       h.migrationHost,
-		UserData:       deref(req.UserData),
-		NetworkConfig:  deref(req.NetworkConfig),
-		NICs:           incomingNICs(req),
-	})
+	res, err := h.manager.StartIncoming(r.Context(), incomingSpecFromRequest(req, poolName, h.migrationHost))
 	if err != nil {
 		h.log.ErrorContext(r.Context(), "start incoming migration failed",
 			"migration_id", req.MigrationID.String(), "vm", req.VMSpec.Name, "error", err)
@@ -96,6 +79,37 @@ func (h *Handler) StartIncoming(w http.ResponseWriter, r *http.Request) {
 		NbdEndpoint:    strPtrOrNil(res.NBDEndpoint),
 		AuthToken:      res.AuthToken,
 	})
+}
+
+// incomingSpecFromRequest maps a validated incoming-migration request to the
+// manager's spec. The caller has already checked that the request carries a
+// boot disk and resolved its pool to poolName; bindHost is this node's
+// migration listen host.
+func incomingSpecFromRequest(req agentapi.MigrationIncomingRequest, poolName, bindHost string) vm.IncomingSpec {
+	boot := req.VMSpec.Disks[0]
+	var abandoned []uuid.UUID
+	if req.AbandonedMigrationIds != nil {
+		abandoned = *req.AbandonedMigrationIds
+	}
+	return vm.IncomingSpec{
+		MigrationID:           req.MigrationID,
+		VMUUID:                req.VMSpec.VMUUID,
+		VMName:                req.VMSpec.Name,
+		VCPUs:                 req.VMSpec.CPUCores,
+		MemoryMib:             int(req.VMSpec.MemoryMib),
+		PoolName:              poolName,
+		Architecture:          qemu.Architecture(req.VMSpec.Architecture),
+		Mode:                  string(req.Mode),
+		ExpectedSize:          deref64(req.ExpectedSizeBytes),
+		DiskSizeBytes:         int64(boot.SizeGib) * gibBytes,
+		Disks:                 incomingDisks(req, int64(boot.SizeGib)*gibBytes),
+		SourceIdentity:        deref(req.SourceNodeIdentity),
+		BindHost:              bindHost,
+		UserData:              deref(req.UserData),
+		NetworkConfig:         deref(req.NetworkConfig),
+		NICs:                  incomingNICs(req),
+		AbandonedMigrationIDs: abandoned,
+	}
 }
 
 // incomingDisks maps the wire disk manifest to the manager's disk list. When
