@@ -163,16 +163,45 @@ func CreateRawDisk(ctx context.Context, path string, virtualBytes int64) error {
 	return nil
 }
 
-// SpawnQemuNBD starts qemu-nbd detached and returns its pid. qemu-nbd does
-// not daemonize by default; we start it and let it run until torn down. The
-// caller tracks the pid in the migration record for teardown.
-func SpawnQemuNBD(ctx context.Context, args []string) (int, error) {
+// Signaler is the part of *os.Process a server handle needs. On Linux Go backs
+// an *os.Process with a pidfd, so a signal reaches exactly the process the
+// handle was created for, and returns os.ErrProcessDone once it has exited -
+// never a process that later reused its pid.
+type Signaler interface {
+	Signal(sig os.Signal) error
+}
+
+// NBDServer is a running qemu-nbd the agent spawned for an incoming migration.
+// It is stopped only through its process handle (StopNBD), never by raw pid:
+// the child is reaped as soon as it exits, and from then on its pid may belong
+// to an unrelated process. Pid is kept for logs. A zero NBDServer (no process)
+// stops as a no-op, which is what unit-test fakes construct.
+type NBDServer struct {
+	Pid  int
+	proc Signaler
+	done <-chan struct{}
+}
+
+// SpawnQemuNBD starts qemu-nbd and returns its handle. qemu-nbd does not
+// daemonize by default; it runs until StopNBD. A goroutine waits on the child
+// so it is reaped the moment it exits instead of lingering as a zombie.
+func SpawnQemuNBD(_ context.Context, args []string) (*NBDServer, error) {
+	return spawnNBD("qemu-nbd", args)
+}
+
+// spawnNBD is SpawnQemuNBD with the binary injectable for tests.
+func spawnNBD(binary string, args []string) (*NBDServer, error) {
 	// #nosec G204 -- the command is a fixed qemu binary; the args are server-constructed migration parameters (paths/ports/identities resolved by the CP and this agent), never raw user input.
-	cmd := exec.Command("qemu-nbd", args...)
+	cmd := exec.Command(binary, args...)
 	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("start qemu-nbd: %v", err)
+		return nil, fmt.Errorf("start %s: %v", binary, err)
 	}
-	return cmd.Process.Pid, nil
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	return &NBDServer{Pid: cmd.Process.Pid, proc: cmd.Process, done: done}, nil
 }
 
 // RunQemuImgConvert runs qemu-img convert to completion (a blocking push).

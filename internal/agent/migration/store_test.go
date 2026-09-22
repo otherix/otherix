@@ -109,36 +109,94 @@ func TestHasActiveForVM(t *testing.T) {
 	}
 }
 
-func TestTakeTargetByVM(t *testing.T) {
+// TestTakeIncoming: the take returns the NON-terminal target record for a VM and
+// removes it, never a terminal one (its finalizer already stopped the server and
+// released the ports), honours offlineOnly, and ignores source records. A VM can
+// hold a terminal target record from an earlier failed attempt next to the live
+// one; the take must pick the live one every time, not by map order.
+func TestTakeIncoming(t *testing.T) {
+	vmID := uuid.New()
+	tests := []struct {
+		name        string
+		recs        []Record
+		offlineOnly bool
+		wantMig     uuid.UUID // uuid.Nil: nothing taken
+	}{
+		{
+			name:    "non-terminal offline target",
+			recs:    []Record{{MigrationID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), VMID: vmID, Role: RoleTarget, Mode: ModeOffline, Phase: PhaseSetup}},
+			wantMig: uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+		},
+		{
+			name: "terminal record next to the live one",
+			recs: []Record{
+				{MigrationID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), VMID: vmID, Role: RoleTarget, Mode: ModeLive, Phase: PhaseFailed},
+				{MigrationID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), VMID: vmID, Role: RoleTarget, Mode: ModeOffline, Phase: PhaseSetup},
+			},
+			wantMig: uuid.MustParse("00000000-0000-0000-0000-000000000003"),
+		},
+		{
+			name: "only a terminal record",
+			recs: []Record{{MigrationID: uuid.New(), VMID: vmID, Role: RoleTarget, Mode: ModeOffline, Phase: PhaseCancelled}},
+		},
+		{
+			name:        "offlineOnly skips a live target",
+			recs:        []Record{{MigrationID: uuid.New(), VMID: vmID, Role: RoleTarget, Mode: ModeLive, Phase: PhaseActive}},
+			offlineOnly: true,
+		},
+		{
+			name:        "offlineOnly takes a non-terminal target with no mode",
+			recs:        []Record{{MigrationID: uuid.MustParse("00000000-0000-0000-0000-000000000004"), VMID: vmID, Role: RoleTarget, Phase: PhaseSetup}},
+			offlineOnly: true,
+			wantMig:     uuid.MustParse("00000000-0000-0000-0000-000000000004"),
+		},
+		{
+			name: "source records are never taken",
+			recs: []Record{{MigrationID: uuid.New(), VMID: vmID, Role: RoleSource, Mode: ModeOffline, Phase: PhaseActive}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Repeat so map iteration order cannot make a wrong pick pass by luck.
+			for i := 0; i < 50; i++ {
+				s := NewStore()
+				for j := range tc.recs {
+					s.Put(&tc.recs[j])
+				}
+				rec, ok := s.TakeIncoming(vmID, tc.offlineOnly)
+				if tc.wantMig == uuid.Nil {
+					if ok {
+						t.Fatalf("TakeIncoming = %s, want nothing", rec.MigrationID)
+					}
+					continue
+				}
+				if !ok || rec.MigrationID != tc.wantMig {
+					t.Fatalf("TakeIncoming = (%s, %v), want (%s, true)", rec.MigrationID, ok, tc.wantMig)
+				}
+				if _, again := s.TakeIncoming(vmID, tc.offlineOnly); again {
+					t.Fatalf("second TakeIncoming returned a record, want the first take to remove it")
+				}
+			}
+		})
+	}
+}
+
+// TestIncoming returns the non-terminal target record without removing it.
+func TestIncoming(t *testing.T) {
 	s := NewStore()
-	targetVM := uuid.New()
-	sourceVM := uuid.New()
-	targetMig := uuid.New()
-	sourceMig := uuid.New()
+	vmID := uuid.New()
+	live := uuid.New()
+	s.Put(&Record{MigrationID: uuid.New(), VMID: vmID, Role: RoleTarget, Mode: ModeOffline, Phase: PhaseFailed})
+	s.Put(&Record{MigrationID: live, VMID: vmID, Role: RoleTarget, Mode: ModeOffline, Phase: PhaseSetup})
 
-	s.Put(&Record{MigrationID: targetMig, VMID: targetVM, Role: RoleTarget, Port: 49152, NBDPid: 4242})
-	s.Put(&Record{MigrationID: sourceMig, VMID: sourceVM, Role: RoleSource})
-
-	rec, ok := s.TakeTargetByVM(targetVM)
-	if !ok {
-		t.Fatalf("TakeTargetByVM(%s) = false, want true", targetVM)
+	rec, ok := s.Incoming(vmID)
+	if !ok || rec.MigrationID != live {
+		t.Fatalf("Incoming = (%s, %v), want (%s, true)", rec.MigrationID, ok, live)
 	}
-	if rec.MigrationID != targetMig || rec.Port != 49152 || rec.NBDPid != 4242 {
-		t.Errorf("TakeTargetByVM returned %+v, want target record (mig=%s port=49152 pid=4242)", rec, targetMig)
+	if _, still := s.Get(live); !still {
+		t.Errorf("Incoming removed the record, want it left in place")
 	}
-	// Removed on take: a second call finds nothing.
-	if _, ok := s.TakeTargetByVM(targetVM); ok {
-		t.Errorf("TakeTargetByVM(%s) second call = true, want false (record removed)", targetVM)
-	}
-	if _, ok := s.Get(targetMig); ok {
-		t.Errorf("Get(%s) after take = found, want absent", targetMig)
-	}
-
-	// A source-role record is never returned (and stays put).
-	if _, ok := s.TakeTargetByVM(sourceVM); ok {
-		t.Errorf("TakeTargetByVM(%s) = true for source-role record, want false", sourceVM)
-	}
-	if _, ok := s.Get(sourceMig); !ok {
-		t.Errorf("source record removed by TakeTargetByVM; want left in place")
+	if _, ok := s.Incoming(uuid.New()); ok {
+		t.Errorf("Incoming(unknown vm) = true, want false")
 	}
 }

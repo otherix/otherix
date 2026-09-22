@@ -205,7 +205,8 @@ type Manager struct {
 	// hostname passed without a real ISO build. Defaults to the
 	// cloudinit.Builder in New.
 	createBuildCidata func(path, hostname string, userData, networkData []byte) error
-	migSpawnNBD       func(ctx context.Context, args []string) (int, error)
+	migSpawnNBD       func(ctx context.Context, args []string) (*qemu.NBDServer, error)
+	migStopNBD        func(srv *qemu.NBDServer, grace time.Duration) error
 	migRunConvert     func(ctx context.Context, args []string) error
 	migWaitNBDReady   func(ctx context.Context, endpoint string) error
 
@@ -231,6 +232,10 @@ type Manager struct {
 	// outlives the 202 request). Production never waits on it; tests Wait at
 	// teardown so a resume's persistVM write cannot race t.TempDir cleanup.
 	resumeWG sync.WaitGroup
+
+	// releaseWG tracks the goroutines ReleaseIncoming starts. Production never
+	// waits on it; tests Wait so a release cannot outlive t.TempDir cleanup.
+	releaseWG sync.WaitGroup
 
 	// migConvergenceTimeout bounds the live-migration RAM watchdog. Set
 	// from cfg.Migration.ConvergenceTimeout in New, with a non-zero guard
@@ -534,6 +539,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 		return err
 	}
 	m.migSpawnNBD = qemu.SpawnQemuNBD
+	m.migStopNBD = qemu.StopNBD
 	m.migRunConvert = qemu.RunQemuImgConvert
 	m.migWaitNBDReady = func(ctx context.Context, endpoint string) error {
 		return qemu.WaitNBDListening(ctx, endpoint, 15*time.Second)
@@ -619,6 +625,11 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	// disabled (fail toward inaction) rather than risk severing a
 	// skipped-but-live VM's taps. See sweepOrphanTaps.
 	m.sweepOrphanTaps(skippedDirs == 0)
+
+	// Stop migration qemu-nbd servers a previous agent process left running.
+	// Runs before the agent serves, so no server this process starts can be
+	// mistaken for an orphan.
+	qemu.SweepOrphanNBD("/proc", cfg.StatePath, qemu.OpenPidfd, nbdStopGrace, log)
 
 	log.Info("vm manager initialized",
 		"state_dir", cfg.StatePath,
@@ -1581,7 +1592,7 @@ func (m *Manager) runStart(taskID, vmID uuid.UUID, observed Status) {
 	// exclusive write lock and would make the spawn fail with "Failed to get
 	// write lock". Deterministic regardless of how many connections the
 	// transfer used; a no-op for a normal (non-migration) start.
-	m.releaseIncomingNBD(vmID)
+	m.releaseIncoming(vmID, false)
 
 	if code, err := m.spawnAndVerify(log, v); err != nil {
 		m.failTask(taskID, vmID, code, err.Error())
@@ -2024,6 +2035,13 @@ func (m *Manager) runDelete(taskID, vmID uuid.UUID) {
 	// is logged and does not abort the delete (the in-memory VM and its
 	// state directory still get removed).
 	m.teardownNICs(v.NICs)
+
+	// A completed cold migration's incoming server may still hold this disk
+	// open if the delete arrived before the reconciler released it. Stop it
+	// first, or removing the file would leave its blocks allocated for as long
+	// as the server runs. Only a non-terminal offline record is taken, so a
+	// copy left by a cancelled or failed migration is not touched here.
+	m.releaseIncoming(vmID, true)
 
 	// Cleanup disk + per-VM dirs. Errors logged but not fatal — operator
 	// can clean stale files manually if needed.

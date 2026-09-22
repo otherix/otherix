@@ -76,6 +76,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		PIDFile:       pid,
 		Migrated:      true,
 		NICs:          spec.NICs,
+		ArrivedAt:     time.Now(),
 	}
 
 	m.mu.Lock()
@@ -139,36 +140,74 @@ func (m *Manager) removeAdoptedVM(id uuid.UUID) {
 // Migrations returns the agent's in-memory migration record store.
 func (m *Manager) Migrations() *migration.Store { return m.migrations }
 
-// releaseIncomingNBD tears down any TARGET-side migration qemu-nbd holding
-// vmID's disk: it stops the server (releasing the exclusive write lock) and
-// frees both reserved ingress ports of the pair. Called from the start path before spawning
-// qemu on a just-migrated VM. A no-op when no migration targeted this VM.
-func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
-	rec, ok := m.migrations.TakeTargetByVM(vmID)
+// nbdStopGrace bounds a graceful qemu-nbd stop before SIGKILL.
+const nbdStopGrace = 5 * time.Second
+
+// releaseIncoming stops vmID's in-flight incoming migration server and frees
+// its port pair, dropping the record. offlineOnly restricts it to offline
+// records: a live target has its own finalizer, which releases its ports as it
+// stamps the record, and taking the record from under it would release them a
+// second time. Terminal records are never taken (see TakeIncoming), so both the
+// stop and the release apply only to state nobody else has finalised. A no-op
+// when vmID has no such record.
+//
+// A failed stop leaves everything as it was: the server may still be running,
+// holding its disk and its port, so the record goes back and the ports stay
+// reserved, and the next reconciler tick or a start retries.
+func (m *Manager) releaseIncoming(vmID uuid.UUID, offlineOnly bool) {
+	rec, ok := m.migrations.TakeIncoming(vmID, offlineOnly)
 	if !ok {
 		return
 	}
-	if rec.NBDPid > 0 {
-		if err := qemu.StopNBD(rec.NBDPid, 5*time.Second); err != nil {
-			m.log.Warn("release migration nbd server failed", "vm_id", vmID.String(), "pid", rec.NBDPid, "err", err)
-		}
+	if err := m.migStopNBD(rec.NBD, nbdStopGrace); err != nil {
+		m.migrations.Put(&rec)
+		m.log.Warn("release migration nbd server failed; kept for retry",
+			"vm_id", vmID.String(), "migration_id", rec.MigrationID.String(), "err", err)
+		return
 	}
-	// Free BOTH ports of the pair (offline records carry NBDPort==0, which
-	// ReleasePair ignores). Releasing only rec.Port leaked the NBD port on the
-	// cold-live edge.
-	//
-	// Only for a NON-terminal record. TakeTargetByVM matches on role alone, so it
-	// also hands back records some other finalizer already stamped terminal - and
-	// every one of those released the ports as it stamped (runIncomingResume,
-	// failIncomingResume, teardownIncomingTarget, CancelMigration). Releasing
-	// again would return a port a LATER migration has since reserved, giving two
-	// incoming migrations the same ingress port. Fails toward inaction, like the
-	// other three: a terminal record whose ports somehow were not released leaks
-	// an allocator entry (recoverable, self-heals on agent restart) rather than
-	// freeing a live migration's port.
-	if !rec.Terminal() {
-		m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
+	m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
+}
+
+// HasOfflineIncoming reports whether vmID has an in-flight offline incoming
+// migration on this node, whose server nothing but a start, a delete or
+// ReleaseIncoming ever stops. Offline means not live, as StartIncoming routes it.
+func (m *Manager) HasOfflineIncoming(vmID uuid.UUID) bool {
+	rec, ok := m.migrations.Incoming(vmID)
+	return ok && rec.Mode != migration.ModeLive
+}
+
+// ReleaseIncoming releases vmID's offline incoming server, in the background,
+// under the VM's lifecycle slot. The caller must already know the migration
+// committed, from a heartbeat response requested at requested. Holding the slot
+// serialises the release against a start of the same VM: a start that finds the
+// record already taken while the server is still exiting would fail on the disk
+// write lock. The arrival is re-checked on the live VM, not on a copy the caller
+// read earlier: the VM may have left and arrived again since, and a response
+// requested before that arrival cannot speak for it. Returns false, doing
+// nothing, when the VM is unknown, arrived at or after requested, or its slot is
+// busy; the caller retries.
+func (m *Manager) ReleaseIncoming(vmID uuid.UUID, requested time.Time) bool {
+	m.mu.Lock()
+	var name string
+	if v, ok := m.vms[vmID]; ok && (v.ArrivedAt.IsZero() || v.ArrivedAt.Before(requested)) {
+		name = v.Name
 	}
+	m.mu.Unlock()
+	if name == "" {
+		return false
+	}
+	release, ok := m.inFlightAcquire(name)
+	if !ok {
+		return false
+	}
+	m.releaseWG.Add(1)
+	// #nosec G118 -- the release intentionally outlives the reconcile pass.
+	go func() {
+		defer m.releaseWG.Done()
+		defer release()
+		m.releaseIncoming(vmID, true)
+	}()
+	return true
 }
 
 // IncomingSpec parameterizes target-side migration preparation.
@@ -316,7 +355,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	}
 
 	token := s.MigrationID.String()
-	nbdPid, err := m.migSpawnNBD(ctx, qemu.NBDServerArgs(qemu.NBDServerSpec{
+	nbdSrv, err := m.migSpawnNBD(ctx, qemu.NBDServerArgs(qemu.NBDServerSpec{
 		CredsDir: credsDir, SourceIdentity: s.SourceIdentity, BindHost: s.BindHost,
 		Port: port, Export: token, DiskPath: v.DiskPath,
 	}))
@@ -334,7 +373,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	// timeout tear down the half-started server so it does not linger holding
 	// the disk lock + port.
 	if err := m.migWaitNBDReady(ctx, endpoint); err != nil {
-		_ = qemu.StopNBD(nbdPid, 3*time.Second)
+		_ = m.migStopNBD(nbdSrv, 3*time.Second)
 		cleanup()
 		return IncomingResult{}, fmt.Errorf("nbd server not ready: %v", err)
 	}
@@ -342,7 +381,7 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	m.migrations.Put(&migration.Record{
 		MigrationID: s.MigrationID, VMID: s.VMUUID, VMName: s.VMName,
 		Role: migration.RoleTarget, Mode: migration.Mode(s.Mode), Phase: migration.PhaseSetup,
-		Port: port, NBDPid: nbdPid, ListenEndpt: endpoint, AuthToken: token,
+		Port: port, NBD: nbdSrv, ListenEndpt: endpoint, AuthToken: token,
 		CredsDir: credsDir, CreatedAt: time.Now().UTC(),
 	})
 	return IncomingResult{ListenEndpoint: endpoint, AuthToken: token}, nil
@@ -582,17 +621,16 @@ func (m *Manager) CancelMigration(id uuid.UUID) (MigrationView, bool) {
 		// the live side. Fails toward inaction: a loser leaks the allocator entry
 		// (recoverable; the kills above already dropped the OS-level binding)
 		// rather than freeing a live migration's port.
-		if rec.NBDPid > 0 {
-			// StopNBD, not a bare Kill: it checks the pid is still alive and SIGTERMs
-			// first (so the export closes and flushes), escalating to SIGKILL only on
-			// timeout. A bare SIGKILL of an unverified pid from an in-memory record
-			// could hit an unrelated process after the server died and the pid was
-			// reused - and this arm is now live traffic, since the control plane reaps
-			// offline targets.
-			if err := qemu.StopNBD(rec.NBDPid, 5*time.Second); err != nil {
-				m.log.Warn("cancel migration: stop nbd server failed",
-					"migration_id", id.String(), "pid", rec.NBDPid, "err", err)
-			}
+		// StopNBD, not a bare Kill: it signals through the server's handle, so a
+		// server that already exited is not signalled again, and it SIGTERMs
+		// first (so the export closes and flushes), escalating to SIGKILL only on
+		// timeout. A bare SIGKILL of an unverified pid from an in-memory record
+		// could hit an unrelated process after the server died and the pid was
+		// reused - and this arm is now live traffic, since the control plane reaps
+		// offline targets.
+		if err := m.migStopNBD(rec.NBD, nbdStopGrace); err != nil {
+			m.log.Warn("cancel migration: stop nbd server failed",
+				"migration_id", id.String(), "err", err)
 		}
 		if rec.ConvertPid > 0 {
 			_ = qemu.Kill(rec.ConvertPid)

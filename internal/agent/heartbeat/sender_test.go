@@ -146,3 +146,44 @@ func TestSender_SkipsPostOnCollectError(t *testing.T) {
 		t.Errorf("expected zero posts when collect failed, got %d", poster.count.Load())
 	}
 }
+
+type responseSpy struct {
+	got *Response
+}
+
+func (s *responseSpy) HandleHeartbeatResponse(_ context.Context, resp *Response) { s.got = resp }
+
+// TestSender_StampsRequestTimeOnResponse: the response handed to the reconcilers
+// carries the monotonic time its request was sent, taken before the post, so a
+// consumer can tell that the state it carries was computed after that instant.
+func TestSender_StampsRequestTimeOnResponse(t *testing.T) {
+	poster := &sendTimeSpy{}
+	spy := &responseSpy{}
+	s := NewSender(&stubCollector{report: Report{AgentVersion: "test"}}, poster, spy,
+		SenderConfig{Interval: time.Hour}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	before := time.Now()
+	s.tick(context.Background())
+
+	if spy.got == nil {
+		t.Fatalf("response handler not called")
+	}
+	// The stamp must be taken before the request goes out: a stamp taken after
+	// Send returns could be newer than a VM that arrived while the request was
+	// in flight, and the reconciler would then trust a response that predates it.
+	got := spy.got.RequestSentAt
+	if got.Before(before) || got.After(poster.sentAt) {
+		t.Errorf("RequestSentAt = %v, want within [%v, %v] (before Send)", got, before, poster.sentAt)
+	}
+}
+
+// sendTimeSpy is a Poster that records when Send ran.
+type sendTimeSpy struct {
+	sentAt time.Time
+}
+
+func (s *sendTimeSpy) Send(context.Context, Report) (int, *Response, error) {
+	s.sentAt = time.Now()
+	time.Sleep(time.Millisecond) // a stamp taken after Send returns is then strictly later
+	return 200, &Response{}, nil
+}

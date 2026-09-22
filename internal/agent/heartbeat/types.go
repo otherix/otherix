@@ -3,7 +3,11 @@
 
 package heartbeat
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // Report mirrors HeartbeatRequest in api/openapi/control-plane.yaml.
 // Hand-written rather than codegen-driven because the agent does not
@@ -230,6 +234,11 @@ type Response struct {
 	// driven only by an entry here - never by a VM's absence from DeclaredVMs,
 	// which is a fail-open producer.
 	VMTombstones []VMTombstone `json:"vm_tombstones,omitempty"`
+	// RequestSentAt is when this agent sent the request this response answers,
+	// read from the monotonic clock. Agent-local, never on the wire. Everything
+	// in the response was computed after this instant, which is what lets the
+	// VM reconciler order it against local events (see reconciler.VMs).
+	RequestSentAt time.Time `json:"-"`
 }
 
 // VMTombstone is one CP-declared VM teardown. VMName is for logs only: the

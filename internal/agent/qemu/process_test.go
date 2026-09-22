@@ -9,51 +9,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
-
-// TestStopNBD starts a trivial long-running child, stops it via StopNBD, and
-// asserts the process is gone. SIGTERM kills `sleep` outright, so the SIGKILL
-// fallback is dormant here; the assertion is only that the pid no longer
-// exists after StopNBD returns.
-func TestStopNBD(t *testing.T) {
-	if _, err := exec.LookPath("sleep"); err != nil {
-		t.Skipf("sleep not available: %v", err)
-	}
-	cmd := exec.Command("sleep", "30")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start sleep: %v", err)
-	}
-	pid := cmd.Process.Pid
-	// Reap the child so it does not linger as a zombie (which IsAlive would
-	// still report as alive via signal 0).
-	defer func() { _ = cmd.Wait() }()
-
-	if !IsAlive(pid) {
-		t.Fatalf("child pid %d not alive after Start", pid)
-	}
-	if err := StopNBD(pid, 2*time.Second); err != nil {
-		t.Fatalf("StopNBD(%d) = %v, want nil", pid, err)
-	}
-	// Reap before checking liveness: a terminated-but-unwaited child is a
-	// zombie that still answers signal 0.
-	_ = cmd.Wait()
-	if IsAlive(pid) {
-		t.Errorf("pid %d still alive after StopNBD", pid)
-	}
-}
-
-// TestStopNBDNoopForDeadPid confirms StopNBD is a no-op (nil) for a
-// nonexistent / nonpositive pid.
-func TestStopNBDNoopForDeadPid(t *testing.T) {
-	if err := StopNBD(0, time.Second); err != nil {
-		t.Errorf("StopNBD(0) = %v, want nil", err)
-	}
-	if err := StopNBD(-1, time.Second); err != nil {
-		t.Errorf("StopNBD(-1) = %v, want nil", err)
-	}
-}
 
 // writeFakeProc lays out <root>/<pid>/cmdline with the NUL-separated args a
 // /proc entry would expose, mirroring the kernel's argv[] encoding qemu is
@@ -108,5 +68,124 @@ func TestVerifyCmdlineAt(t *testing.T) {
 				t.Errorf("verifyCmdlineAt(%q, %d, %q) = %v, want %v", root, tc.pid, tc.uuid, got, tc.want)
 			}
 		})
+	}
+}
+
+// signalSpy records the signals sent through a handle. exitOn, when non-zero,
+// is the signal after which the fake process counts as gone: every later
+// signal returns os.ErrProcessDone.
+type signalSpy struct {
+	mu     sync.Mutex
+	sent   []os.Signal
+	exitOn syscall.Signal
+	gone   bool
+}
+
+func (s *signalSpy) Signal(sig os.Signal) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gone {
+		return os.ErrProcessDone
+	}
+	s.sent = append(s.sent, sig)
+	if s.exitOn != 0 && sig == s.exitOn {
+		s.gone = true
+	}
+	return nil
+}
+
+func (s *signalSpy) signals() []os.Signal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]os.Signal(nil), s.sent...)
+}
+
+// TestStopNBDStopsItsOwnChildPromptly spawns a real child through the same path
+// SpawnQemuNBD uses and stops it: the stop returns well inside its grace and the
+// child is reaped.
+func TestStopNBDStopsItsOwnChildPromptly(t *testing.T) {
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skipf("sleep not available: %v", err)
+	}
+	srv, err := spawnNBD("sleep", []string{"30"})
+	if err != nil {
+		t.Fatalf("spawnNBD: %v", err)
+	}
+	start := time.Now()
+	if err := StopNBD(srv, 2*time.Second); err != nil {
+		t.Fatalf("StopNBD = %v, want nil", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("StopNBD took %v, want well under its 2s grace", elapsed)
+	}
+	select {
+	case <-srv.done:
+	case <-time.After(time.Second):
+		t.Errorf("child %d not reaped after StopNBD", srv.Pid)
+	}
+}
+
+// TestStopNBDAfterExitIsNoop: stopping a server that already exited returns nil
+// without error. That it sends nothing is the Go runtime's guarantee for a
+// reaped process handle, not something this test can observe.
+func TestStopNBDAfterExitIsNoop(t *testing.T) {
+	if _, err := exec.LookPath("true"); err != nil {
+		t.Skipf("true not available: %v", err)
+	}
+	srv, err := spawnNBD("true", nil)
+	if err != nil {
+		t.Fatalf("spawnNBD: %v", err)
+	}
+	<-srv.done
+	if err := StopNBD(srv, time.Second); err != nil {
+		t.Errorf("StopNBD after exit = %v, want nil", err)
+	}
+}
+
+// TestStopNBDEscalatesToKill: a server that ignores SIGTERM is SIGKILLed once
+// the grace runs out, through the same handle.
+func TestStopNBDEscalatesToKill(t *testing.T) {
+	spy := &signalSpy{exitOn: syscall.SIGKILL}
+	if err := StopNBD(&NBDServer{Pid: 42, proc: spy}, 300*time.Millisecond); err != nil {
+		t.Fatalf("StopNBD = %v, want nil", err)
+	}
+	sent := spy.signals()
+	if len(sent) < 2 || sent[0] != syscall.SIGTERM || sent[len(sent)-1] != syscall.SIGKILL {
+		t.Errorf("signals = %v, want SIGTERM first and SIGKILL last", sent)
+	}
+}
+
+// TestStopNBDWithoutProcessIsNoop covers nil and the zero handle test fakes use.
+func TestStopNBDWithoutProcessIsNoop(t *testing.T) {
+	if err := StopNBD(nil, time.Second); err != nil {
+		t.Errorf("StopNBD(nil) = %v, want nil", err)
+	}
+	if err := StopNBD(&NBDServer{Pid: 4321}, time.Second); err != nil {
+		t.Errorf("StopNBD(zero handle) = %v, want nil", err)
+	}
+}
+
+// probeErrSpy is a handle whose signal-0 probe fails with an error other than
+// os.ErrProcessDone (EPERM, say): the process is not known to have exited.
+type probeErrSpy struct{ signalSpy }
+
+func (s *probeErrSpy) Signal(sig os.Signal) error {
+	if sig == syscall.Signal(0) {
+		return syscall.EPERM
+	}
+	return s.signalSpy.Signal(sig)
+}
+
+// TestStopNBDProbeErrorIsNotExit: a failing probe on a handle without a reaper
+// is not taken as an exit, so the stop escalates to SIGKILL and reports failure
+// rather than letting a caller open a disk the server may still hold.
+func TestStopNBDProbeErrorIsNotExit(t *testing.T) {
+	spy := &probeErrSpy{}
+	if err := StopNBD(&NBDServer{Pid: 42, proc: spy}, 200*time.Millisecond); err == nil {
+		t.Errorf("StopNBD = nil, want an error while the probe cannot confirm the exit")
+	}
+	sent := spy.signals()
+	if len(sent) != 2 || sent[0] != syscall.SIGTERM || sent[1] != syscall.SIGKILL {
+		t.Errorf("signals = %v, want [SIGTERM SIGKILL]", sent)
 	}
 }

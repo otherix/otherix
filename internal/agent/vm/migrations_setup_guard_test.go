@@ -31,10 +31,10 @@ func incomingSetupCases() []incomingSetupCase {
 			// migSpawnNBD runs after AdoptForMigration and the destination disk.
 			blockAt: func(m *Manager, entered chan<- struct{}, release <-chan struct{}) {
 				m.migCreateDisk = func(context.Context, string, int64) error { return nil }
-				m.migSpawnNBD = func(context.Context, []string) (int, error) {
+				m.migSpawnNBD = func(context.Context, []string) (*qemu.NBDServer, error) {
 					entered <- struct{}{}
 					<-release
-					return 4321, nil
+					return &qemu.NBDServer{Pid: 4321}, nil
 				}
 			},
 		},
@@ -177,7 +177,7 @@ func TestStartIncomingReleasesSlotOnFailure(t *testing.T) {
 			// Fail the parked seam instead of completing it.
 			switch tc.mode {
 			case "offline":
-				m.migSpawnNBD = func(context.Context, []string) (int, error) { return 0, boom }
+				m.migSpawnNBD = func(context.Context, []string) (*qemu.NBDServer, error) { return nil, boom }
 			default:
 				m.migLaunchIncoming = func(context.Context, *VM, qemu.LiveIncomingSpec) error { return boom }
 			}

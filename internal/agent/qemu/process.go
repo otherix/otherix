@@ -5,6 +5,7 @@ package qemu
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -140,18 +141,66 @@ func Kill(pid int) error {
 	return syscall.Kill(pid, syscall.SIGKILL)
 }
 
-// StopNBD stops a qemu-nbd server gracefully: SIGTERM (lets it close the
-// export, flush, and release the disk write lock), then SIGKILL if it does
-// not exit within grace. A no-op for a pid that is already gone.
-func StopNBD(pid int, grace time.Duration) error {
-	if pid <= 0 || !IsAlive(pid) {
+// StopNBD stops a qemu-nbd server gracefully: SIGTERM (it closes the export,
+// flushes, and releases the disk write lock), then SIGKILL if it has not exited
+// within grace, and waits for that exit too. Both signals go through the
+// process handle, so a server that already exited is a no-op rather than a
+// signal to whatever reused its pid.
+// A nil server, or one without a process, is a no-op.
+func StopNBD(srv *NBDServer, grace time.Duration) error {
+	if srv == nil || srv.proc == nil {
 		return nil
 	}
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-	ctx, cancel := context.WithTimeout(context.Background(), grace)
-	defer cancel()
-	if err := WaitGone(ctx, pid, grace); err == nil {
+	if err := srv.proc.Signal(syscall.SIGTERM); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+		return fmt.Errorf("sigterm qemu-nbd %d: %v", srv.Pid, err)
+	}
+	if srv.waitExit(grace) {
 		return nil
 	}
-	return Kill(pid) // SIGKILL fallback
+	if err := srv.proc.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("sigkill qemu-nbd %d: %v", srv.Pid, err)
+	}
+	// Wait for the exit even after SIGKILL: a caller about to open the same disk
+	// must not race a server still releasing its write lock.
+	if !srv.waitExit(nbdKillGrace) {
+		return fmt.Errorf("qemu-nbd %d still running after SIGKILL", srv.Pid)
+	}
+	return nil
+}
+
+// nbdKillGrace bounds the wait for a SIGKILLed server to exit.
+const nbdKillGrace = 2 * time.Second
+
+// waitExit reports whether the server exited within grace. A server this agent
+// spawned closes done when its reaper returns. A server the agent did not spawn
+// (an orphan found at startup) is reaped by its new parent, so its handle is
+// polled with signal 0 until the handle reports it gone. Only os.ErrProcessDone
+// counts as an exit: any other probe error leaves the process not known to have
+// exited, and polling continues until grace runs out.
+func (s *NBDServer) waitExit(grace time.Duration) bool {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	if s.done != nil {
+		select {
+		case <-s.done:
+			return true
+		case <-timer.C:
+			return false
+		}
+	}
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if err := s.proc.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
+			return true
+		}
+		select {
+		case <-timer.C:
+			return false
+		case <-tick.C:
+		}
+	}
 }

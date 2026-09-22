@@ -630,13 +630,12 @@ func cancelTargetIncoming(ctx context.Context, agent MigrationAgentClient, log *
 // resumed the guest itself at switchover, so a start here would be a
 // no-op-or-error. For an OFFLINE migration the target adopted a stopped VM and
 // the CP starts it.
-// Known limitation: when the migrated VM's desired phase is NOT running (a cold
-// migration that stays stopped on the target), no start is dispatched, so the
-// agent's start-path teardown of the incoming qemu-nbd (releaseIncomingNBD) does
-// not run here - the target's reserved migration port and the idle qemu-nbd
-// (still holding the disk write lock) are reclaimed lazily on the VM's first
-// start or on agent restart. A leak, never a destroy; acceptable for this slice
-// since offline migration overwhelmingly targets running VMs.
+// A cold migration that stays stopped on the target is not started here, so
+// the start path's release of the target's incoming qemu-nbd does not run. The
+// target agent releases it itself: its VM reconciler does so once the VM is
+// declared to that node by a heartbeat requested after the migration began,
+// which only the committed cutover can cause; a delete releases it before it
+// removes the disk; and an agent restart stops any server left running.
 func convergePostCutover(ctx context.Context, st MigrationWorkerStore, agent MigrationAgentClient, log *slog.Logger, migID uuid.UUID, vm store.VM, source, target store.Node, live bool) {
 	if vm.DesiredPhase == store.VmDesiredPhaseRunning && !live {
 		if err := agent.StartVMOnTarget(ctx, agentclient.DialURL(target.Name), vm.Name); err != nil {

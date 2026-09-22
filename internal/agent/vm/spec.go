@@ -85,6 +85,13 @@ type VM struct {
 	// migration. The create flow must NOT re-clone it from the base image
 	// on first start; the disk is already the authoritative copy.
 	Migrated bool
+	// ArrivedAt is when this VM arrived on this node by migration, on the
+	// monotonic clock; zero for a VM created here or replayed after a restart.
+	// In memory only (meta.json does not carry it). The VM reconciler takes no
+	// action on the VM from a heartbeat response requested before this instant:
+	// such a response cannot know the VM is back, and its declaration or
+	// tombstone may describe the node as it was before.
+	ArrivedAt time.Time
 }
 
 // CreateSpec is the wire-shape of a POST /v1/vms body, post-validation.

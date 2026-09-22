@@ -336,7 +336,9 @@ func TestStartIncoming_LiveUnsupportedDiskFormatFailsClosed(t *testing.T) {
 func TestStartIncoming_OfflineUnchanged(t *testing.T) {
 	m := newTestManager(t)
 	m.migCreateDisk = func(ctx context.Context, path string, virtualBytes int64) error { return nil }
-	m.migSpawnNBD = func(ctx context.Context, args []string) (int, error) { return 4321, nil }
+	m.migSpawnNBD = func(ctx context.Context, args []string) (*qemu.NBDServer, error) {
+		return &qemu.NBDServer{Pid: 4321}, nil
+	}
 	m.migLaunchIncoming = func(ctx context.Context, v *VM, ls qemu.LiveIncomingSpec) error {
 		t.Fatalf("migLaunchIncoming called on offline migration")
 		return nil

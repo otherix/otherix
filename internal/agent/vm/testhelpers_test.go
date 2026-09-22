@@ -44,6 +44,7 @@ func newTestManager(t *testing.T) *Manager {
 	// (registered after newTestConfig's t.TempDir, so LIFO runs it first), so a
 	// resume's persistVM write cannot race RemoveAll ("directory not empty").
 	t.Cleanup(m.resumeWG.Wait)
+	t.Cleanup(m.releaseWG.Wait)
 	return m
 }
 
