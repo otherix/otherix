@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -706,6 +707,11 @@ func (s *Store) MigrationTriedToLandOn(ctx context.Context, vmID, nodeID uuid.UU
 // row), so the copy it left on the target never became the VM's home: the target
 // may set that copy aside when the VM is migrated there again. Completed rows are
 // never listed - their copy may be the home.
+//
+// A corrupt index entry or an unreadable migration row is skipped with a WARN
+// rather than failing the whole list: leaving an id out only means its copy is
+// not set aside, while an error would block every migration of the VM to every
+// node. A Range error is still returned.
 func (s *Store) AbandonedOfflineMigrations(ctx context.Context, vmID, targetID, exclude uuid.UUID) ([]uuid.UUID, error) {
 	items, err := s.c.Range(ctx, migrationsVMIndexPrefix(vmID))
 	if err != nil {
@@ -715,7 +721,9 @@ func (s *Store) AbandonedOfflineMigrations(ctx context.Context, vmID, targetID, 
 	for _, kv := range items {
 		id, perr := uuid.Parse(string(kv.Value))
 		if perr != nil {
-			return nil, fmt.Errorf("corrupt migration vm index %q: %v", kv.Key, perr)
+			s.log.WarnContext(ctx, "etcdstore: skipping corrupt migration vm index entry",
+				slog.String("key", kv.Key), slog.String("error", perr.Error()))
+			continue
 		}
 		if id == exclude {
 			continue
@@ -723,7 +731,9 @@ func (s *Store) AbandonedOfflineMigrations(ctx context.Context, vmID, targetID, 
 		var m store.Migration
 		found, gerr := s.c.GetJSON(ctx, migrationKey(id), &m)
 		if gerr != nil {
-			return nil, gerr
+			s.log.WarnContext(ctx, "etcdstore: skipping unreadable migration row",
+				slog.String("migration_id", id.String()), slog.String("error", gerr.Error()))
+			continue
 		}
 		if !found || m.Live || m.TargetNodeID == nil || *m.TargetNodeID != targetID {
 			continue

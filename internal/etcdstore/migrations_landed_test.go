@@ -216,6 +216,8 @@ func TestAbandonedOfflineMigrations(t *testing.T) {
 	cancel(offCancelled.ID)
 	liveFailed := seedActiveMigration(t, s, vm.ID, src.ID, tgt.ID)
 	fail(liveFailed.ID)
+	liveCancelled := seedActiveMigration(t, s, vm.ID, src.ID, tgt.ID)
+	cancel(liveCancelled.ID)
 	otherTarget := seedActiveOfflineMigration(t, s, vm.ID, src.ID, other.ID)
 	fail(otherTarget.ID)
 	inFlight := seedActiveOfflineMigration(t, s, vm.ID, src.ID, tgt.ID)
@@ -251,5 +253,46 @@ func TestAbandonedOfflineMigrations(t *testing.T) {
 				t.Errorf("AbandonedOfflineMigrations() mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// TestAbandonedOfflineMigrations_SkipsCorruptEntries pins that a corrupt index
+// entry or an undecodable migration row is left out of the list instead of
+// failing it: an error would block every migration of the VM to every node,
+// while leaving an id out only means its copy is not set aside.
+func TestAbandonedOfflineMigrations_SkipsCorruptEntries(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	src := nodeParams(uniqueNodeName("corrupt-src"))
+	tgt := nodeParams(uniqueNodeName("corrupt-tgt"))
+	for _, n := range []store.CreateNodeParams{src, tgt} {
+		if _, err := s.CreateNode(ctx, n); err != nil {
+			t.Fatalf("CreateNode: %v", err)
+		}
+	}
+	vm := seedPinnedVM(t, cli, src.ID)
+	good := seedActiveOfflineMigration(t, s, vm.ID, src.ID, tgt.ID)
+	failed := store.MigrationPhaseFailed
+	if err := s.UpdateMigrationProgress(ctx, good.ID, store.MigrationProgressUpdate{Phase: &failed}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(failed): %v", err)
+	}
+
+	garbage := uuid.New()
+	for key, val := range map[string]string{
+		etcd.Key("index", "migrations", "vm", vm.ID.String(), "corrupt"):        "not-a-uuid",
+		etcd.Key("index", "migrations", "vm", vm.ID.String(), garbage.String()): garbage.String(),
+		etcd.Key("migrations", garbage.String()):                                "{not json",
+	} {
+		if err := cli.Put(ctx, key, []byte(val)); err != nil {
+			t.Fatalf("Put(%s): %v", key, err)
+		}
+	}
+
+	got, err := s.AbandonedOfflineMigrations(ctx, vm.ID, tgt.ID, uuid.Nil)
+	if err != nil {
+		t.Fatalf("AbandonedOfflineMigrations() = %v, want nil error", err)
+	}
+	if diff := cmp.Diff([]uuid.UUID{good.ID}, got); diff != "" {
+		t.Errorf("AbandonedOfflineMigrations() mismatch (-want +got):\n%s", diff)
 	}
 }
