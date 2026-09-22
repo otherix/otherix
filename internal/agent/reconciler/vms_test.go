@@ -40,14 +40,37 @@ type fakeVMManager struct {
 	deleteByIDErr error
 
 	memUsedMiB *int64
+
+	offlineIncoming map[uuid.UUID]bool
+	releases        []uuid.UUID
+	releaseBusy     bool
 }
 
 func newFakeVMManager(vms ...*vm.VM) *fakeVMManager {
 	return &fakeVMManager{
-		vms:       vms,
-		inFlight:  map[string]struct{}{},
-		migrating: map[uuid.UUID]struct{}{},
+		vms:             vms,
+		inFlight:        map[string]struct{}{},
+		migrating:       map[uuid.UUID]struct{}{},
+		offlineIncoming: map[uuid.UUID]bool{},
 	}
+}
+
+func (f *fakeVMManager) HasOfflineIncoming(id uuid.UUID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.offlineIncoming[id]
+}
+
+func (f *fakeVMManager) ReleaseIncoming(id uuid.UUID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "ReleaseIncoming")
+	if f.releaseBusy {
+		return false
+	}
+	f.releases = append(f.releases, id)
+	delete(f.offlineIncoming, id)
+	return true
 }
 
 func (f *fakeVMManager) List() []*vm.VM {
@@ -232,7 +255,7 @@ func TestVMs_Reconcile_TableDriven(t *testing.T) {
 				t.Fatalf("NewVMs: %v", err)
 			}
 			declared := append([]heartbeat.DeclaredVM(nil), tc.declared...)
-			r.desired.Store(&declared)
+			r.snapshot.Store(&responseSnapshot{declared: declared})
 			r.reconcile(context.Background())
 
 			mgr.mu.Lock()
@@ -259,7 +282,7 @@ func TestVMs_Reconcile_SkipsInFlightOps(t *testing.T) {
 		t.Fatalf("NewVMs: %v", err)
 	}
 	declared := []heartbeat.DeclaredVM{{Name: "busy", DesiredPhase: "running", Generation: 1}}
-	r.desired.Store(&declared)
+	r.snapshot.Store(&responseSnapshot{declared: declared})
 	r.reconcile(context.Background())
 
 	mgr.mu.Lock()
@@ -633,4 +656,132 @@ func sliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestDispatchIgnoresAResponseOlderThanTheVMsArrival: a response requested before
+// a VM arrived here cannot know it is back. Its declaration may be the VM's old
+// home on this node, so the reconciler must neither start the adopted copy -
+// that boots a half-written disk mid-push - nor release its server.
+func TestDispatchIgnoresAResponseOlderThanTheVMsArrival(t *testing.T) {
+	id := uuid.New()
+	requested := time.Now()
+	fake := newFakeVMManager(&vm.VM{ID: id, Name: "cold", Status: vm.StatusStopped, ArrivedAt: requested.Add(time.Millisecond)})
+	fake.offlineIncoming[id] = true
+	r := newVMsForTest(t, fake)
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredVMs:   []heartbeat.DeclaredVM{{Name: "cold", DesiredPhase: "running", Generation: 1}},
+		RequestSentAt: requested,
+	})
+
+	r.reconcile(context.Background())
+
+	if len(fake.releases) != 0 || len(fake.starts) != 0 {
+		t.Errorf("releases=%v starts=%v, want neither for a response older than the arrival", fake.releases, fake.starts)
+	}
+}
+
+// TestDispatchReleasesACompletedColdMigration: a response requested after the VM
+// arrived that declares it here means its migration committed; the offline
+// server is released and nothing else runs for the VM this tick.
+func TestDispatchReleasesACompletedColdMigration(t *testing.T) {
+	for _, status := range []vm.Status{vm.StatusStopped, vm.StatusFailed} {
+		t.Run(string(status), func(t *testing.T) {
+			id := uuid.New()
+			fake := newFakeVMManager(&vm.VM{ID: id, Name: "cold", Status: status, ArrivedAt: time.Now().Add(-time.Millisecond)})
+			fake.offlineIncoming[id] = true
+			r := newVMsForTest(t, fake)
+			r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+				DeclaredVMs:   []heartbeat.DeclaredVM{{Name: "cold", DesiredPhase: "running", Generation: 1}},
+				RequestSentAt: time.Now(),
+			})
+
+			r.reconcile(context.Background())
+
+			if len(fake.releases) != 1 || fake.releases[0] != id {
+				t.Errorf("releases = %v, want [%s]", fake.releases, id)
+			}
+			if len(fake.starts) != 0 {
+				t.Errorf("starts = %v, want none in the tick that released", fake.starts)
+			}
+		})
+	}
+}
+
+// TestDispatchRetriesTheReleaseWhenTheSlotIsBusy: a lifecycle op holding the VM's
+// slot defers the release to a later tick; nothing else runs meanwhile.
+func TestDispatchRetriesTheReleaseWhenTheSlotIsBusy(t *testing.T) {
+	id := uuid.New()
+	fake := newFakeVMManager(&vm.VM{ID: id, Name: "cold", Status: vm.StatusStopped, ArrivedAt: time.Now().Add(-time.Millisecond)})
+	fake.offlineIncoming[id] = true
+	fake.releaseBusy = true
+	r := newVMsForTest(t, fake)
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredVMs:   []heartbeat.DeclaredVM{{Name: "cold", DesiredPhase: "stopped", Generation: 1}},
+		RequestSentAt: time.Now(),
+	})
+
+	r.reconcile(context.Background())
+	if len(fake.releases) != 0 {
+		t.Fatalf("releases = %v, want none while the slot is busy", fake.releases)
+	}
+	fake.mu.Lock()
+	fake.releaseBusy = false
+	fake.mu.Unlock()
+	r.reconcile(context.Background())
+	if len(fake.releases) != 1 {
+		t.Errorf("releases = %v, want one once the slot frees", fake.releases)
+	}
+}
+
+// TestDispatchUnstampedResponseFencesOnlyMigratedVMs: a response nobody stamped
+// fences a VM that arrived by migration (toward inaction), and leaves a VM
+// created here alone.
+func TestDispatchUnstampedResponseFencesOnlyMigratedVMs(t *testing.T) {
+	migrated, created := uuid.New(), uuid.New()
+	fake := newFakeVMManager(
+		&vm.VM{ID: migrated, Name: "moved", Status: vm.StatusStopped, ArrivedAt: time.Now()},
+		&vm.VM{ID: created, Name: "local", Status: vm.StatusStopped},
+	)
+	r := newVMsForTest(t, fake)
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		DeclaredVMs: []heartbeat.DeclaredVM{
+			{Name: "moved", DesiredPhase: "running", Generation: 1},
+			{Name: "local", DesiredPhase: "running", Generation: 1},
+		},
+	})
+
+	r.reconcile(context.Background())
+
+	if len(fake.starts) != 1 || fake.starts[0] != "local" {
+		t.Errorf("starts = %v, want exactly [local]", fake.starts)
+	}
+}
+
+// TestTombstoneFromAResponseOlderThanTheVMsArrivalIsIgnored: a tombstone the CP
+// sent while the VM lived elsewhere must not destroy the copy that migrated back
+// here since; a tombstone requested after the arrival is honoured.
+func TestTombstoneFromAResponseOlderThanTheVMsArrivalIsIgnored(t *testing.T) {
+	id := uuid.New()
+	requested := time.Now()
+	arrived := requested.Add(time.Millisecond)
+	fake := newFakeVMManager(&vm.VM{ID: id, Name: "back", Status: vm.StatusRunning, ArrivedAt: arrived})
+	r := newVMsForTest(t, fake)
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		VMTombstones:  []heartbeat.VMTombstone{{VMID: id, VMName: "back"}},
+		RequestSentAt: requested,
+	})
+
+	r.reconcile(context.Background())
+	if len(fake.deletesByID) != 0 {
+		t.Fatalf("deletesByID = %v, want none for a tombstone older than the arrival", fake.deletesByID)
+	}
+
+	r.HandleHeartbeatResponse(context.Background(), &heartbeat.Response{
+		VMTombstones:  []heartbeat.VMTombstone{{VMID: id, VMName: "back"}},
+		RequestSentAt: arrived.Add(time.Millisecond),
+	})
+	r.reconcile(context.Background())
+	if len(fake.deletesByID) != 1 {
+		t.Errorf("deletesByID = %v, want the fresh tombstone honoured", fake.deletesByID)
+	}
 }

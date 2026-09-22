@@ -146,3 +146,31 @@ func TestSender_SkipsPostOnCollectError(t *testing.T) {
 		t.Errorf("expected zero posts when collect failed, got %d", poster.count.Load())
 	}
 }
+
+type responseSpy struct {
+	got *Response
+}
+
+func (s *responseSpy) HandleHeartbeatResponse(_ context.Context, resp *Response) { s.got = resp }
+
+// TestSender_StampsRequestTimeOnResponse: the response handed to the reconcilers
+// carries the monotonic time its request was sent, taken before the post, so a
+// consumer can tell that the state it carries was computed after that instant.
+func TestSender_StampsRequestTimeOnResponse(t *testing.T) {
+	poster := &stubPoster{status: 200, response: &Response{}}
+	spy := &responseSpy{}
+	s := NewSender(&stubCollector{report: Report{AgentVersion: "test"}}, poster, spy,
+		SenderConfig{Interval: time.Hour}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	before := time.Now()
+	s.tick(context.Background())
+	after := time.Now()
+
+	if spy.got == nil {
+		t.Fatalf("response handler not called")
+	}
+	got := spy.got.RequestSentAt
+	if got.Before(before) || got.After(after) {
+		t.Errorf("RequestSentAt = %v, want within [%v, %v]", got, before, after)
+	}
+}

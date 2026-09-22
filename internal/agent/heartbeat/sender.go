@@ -129,6 +129,7 @@ func (s *Sender) tick(ctx context.Context) {
 		s.logger.WarnContext(ctx, "heartbeat collect failed", slog.String("error", err.Error()))
 		return
 	}
+	sentAt := time.Now()
 	status, response, err := s.poster.Send(ctx, report)
 	if err != nil {
 		// ctx-cancelled errors during shutdown are noise; suppress them.
@@ -140,6 +141,9 @@ func (s *Sender) tick(ctx context.Context) {
 			slog.Int("status", status),
 		)
 		return
+	}
+	if response != nil {
+		response.RequestSentAt = sentAt
 	}
 	if s.responseHandler != nil && response != nil {
 		s.responseHandler.HandleHeartbeatResponse(ctx, response)

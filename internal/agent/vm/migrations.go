@@ -76,6 +76,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		PIDFile:       pid,
 		Migrated:      true,
 		NICs:          spec.NICs,
+		ArrivedAt:     time.Now(),
 	}
 
 	m.mu.Lock()
@@ -159,6 +160,44 @@ func (m *Manager) releaseIncoming(vmID uuid.UUID, offlineOnly bool) {
 			"vm_id", vmID.String(), "migration_id", rec.MigrationID.String(), "err", err)
 	}
 	m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
+}
+
+// HasOfflineIncoming reports whether vmID has an in-flight offline incoming
+// migration on this node, whose server nothing but a start, a delete or
+// ReleaseIncoming ever stops.
+func (m *Manager) HasOfflineIncoming(vmID uuid.UUID) bool {
+	rec, ok := m.migrations.Incoming(vmID)
+	return ok && rec.Mode == migration.ModeOffline
+}
+
+// ReleaseIncoming releases vmID's offline incoming server, in the background,
+// under the VM's lifecycle slot. The caller must already know the migration
+// committed. Holding the slot serialises the release against a start of the
+// same VM: a start that finds the record already taken while the server is
+// still exiting would fail on the disk write lock. Returns false, doing
+// nothing, when the VM is unknown or its slot is busy; the caller retries.
+func (m *Manager) ReleaseIncoming(vmID uuid.UUID) bool {
+	m.mu.Lock()
+	var name string
+	if v, ok := m.vms[vmID]; ok {
+		name = v.Name
+	}
+	m.mu.Unlock()
+	if name == "" {
+		return false
+	}
+	release, ok := m.inFlightAcquire(name)
+	if !ok {
+		return false
+	}
+	m.releaseWG.Add(1)
+	// #nosec G118 -- the release intentionally outlives the reconcile pass.
+	go func() {
+		defer m.releaseWG.Done()
+		defer release()
+		m.releaseIncoming(vmID, true)
+	}()
+	return true
 }
 
 // IncomingSpec parameterizes target-side migration preparation.

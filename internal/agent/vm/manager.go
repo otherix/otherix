@@ -233,6 +233,10 @@ type Manager struct {
 	// teardown so a resume's persistVM write cannot race t.TempDir cleanup.
 	resumeWG sync.WaitGroup
 
+	// releaseWG tracks the goroutines ReleaseIncoming starts. Production never
+	// waits on it; tests Wait so a release cannot outlive t.TempDir cleanup.
+	releaseWG sync.WaitGroup
+
 	// migConvergenceTimeout bounds the live-migration RAM watchdog. Set
 	// from cfg.Migration.ConvergenceTimeout in New, with a non-zero guard
 	// (a zero timeout would make the watchdog fire instantly).

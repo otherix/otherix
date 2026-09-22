@@ -37,6 +37,12 @@ type VMManager interface {
 	// HasActiveMigration reports whether a non-terminal migration names this
 	// VM, in either role. Teardown must not race the migration state machine.
 	HasActiveMigration(vmID uuid.UUID) bool
+	// HasOfflineIncoming reports an in-flight offline incoming migration of
+	// the VM on this node.
+	HasOfflineIncoming(vmID uuid.UUID) bool
+	// ReleaseIncoming releases the VM's offline incoming server in the
+	// background; false when the VM's slot is busy (retry next tick).
+	ReleaseIncoming(vmID uuid.UUID) bool
 }
 
 // VMs is the per-resource reconciler for VMs. Single instance per
@@ -53,15 +59,36 @@ type VMs struct {
 	manager VMManager
 	tick    time.Duration
 
-	desired    atomic.Pointer[[]heartbeat.DeclaredVM]
-	tombstones atomic.Pointer[[]heartbeat.VMTombstone]
-	trigger    chan struct{}
+	// snapshot is the last successful heartbeat response's declared VMs and
+	// tombstones, with the time its request was sent. They are stored as one
+	// value so a tick never pairs one response's declarations with another's
+	// request time.
+	snapshot atomic.Pointer[responseSnapshot]
+	trigger  chan struct{}
 
 	mu      sync.Mutex
 	reports map[string]heartbeat.VMReport
 
 	teardownMu      sync.Mutex
 	lastTeardownTry map[uuid.UUID]time.Time
+}
+
+// responseSnapshot is what the reconciler keeps of one heartbeat response.
+// requested orders it against local events: everything in it was computed
+// after that instant.
+type responseSnapshot struct {
+	declared   []heartbeat.DeclaredVM
+	tombstones []heartbeat.VMTombstone
+	requested  time.Time
+}
+
+// predatesArrival reports whether a response requested at requested is older
+// than v's arrival on this node by migration, and so cannot speak for it: its
+// declaration or tombstone may describe the node as it was before the VM came
+// back. A VM created here, or replayed after a restart, has no arrival and is
+// never held back.
+func predatesArrival(v *vm.VM, requested time.Time) bool {
+	return !v.ArrivedAt.IsZero() && !v.ArrivedAt.Before(requested)
 }
 
 // teardownRetryInterval is the minimum spacing between teardown attempts for
@@ -104,9 +131,8 @@ func (r *VMs) HandleHeartbeatResponse(_ context.Context, resp *heartbeat.Respons
 		return
 	}
 	vms := append([]heartbeat.DeclaredVM(nil), resp.DeclaredVMs...)
-	r.desired.Store(&vms)
 	ts := append([]heartbeat.VMTombstone(nil), resp.VMTombstones...)
-	r.tombstones.Store(&ts)
+	r.snapshot.Store(&responseSnapshot{declared: vms, tombstones: ts, requested: resp.RequestSentAt})
 	select {
 	case r.trigger <- struct{}{}:
 	default:
@@ -176,15 +202,16 @@ func (r *VMs) reconcile(ctx context.Context) {
 		return
 	}
 	observed := r.manager.List()
+	snap := r.snapshot.Load()
 	// Tombstones first: the reports loop below does a QMP round-trip per
 	// running VM, and a destructive correction must not queue behind an
 	// unrelated stats read on a hung socket.
-	r.reconcileTombstones(ctx, observed)
+	r.reconcileTombstones(ctx, observed, snap)
 
-	desiredPtr := r.desired.Load()
 	var desired []heartbeat.DeclaredVM
-	if desiredPtr != nil {
-		desired = *desiredPtr
+	var requested time.Time
+	if snap != nil {
+		desired, requested = snap.declared, snap.requested
 	}
 	desiredByName := make(map[string]heartbeat.DeclaredVM, len(desired))
 	for _, d := range desired {
@@ -210,7 +237,7 @@ func (r *VMs) reconcile(ctx context.Context) {
 			// reports the VM in heartbeat and waits. No corrective op.
 			continue
 		}
-		r.dispatch(ctx, v, decl)
+		r.dispatch(ctx, v, decl, requested)
 	}
 
 	r.mu.Lock()
@@ -227,12 +254,11 @@ func (r *VMs) reconcile(ctx context.Context) {
 // Teardown is asynchronous and is never awaited. While this agent still holds
 // the VM it keeps reporting it, so the CP keeps re-sending the tombstone, and
 // the signal stops the tick after the VM is gone.
-func (r *VMs) reconcileTombstones(ctx context.Context, observed []*vm.VM) {
-	tsPtr := r.tombstones.Load()
-	if tsPtr == nil {
+func (r *VMs) reconcileTombstones(ctx context.Context, observed []*vm.VM, snap *responseSnapshot) {
+	if snap == nil {
 		return
 	}
-	r.pruneTeardownAttempts(*tsPtr)
+	r.pruneTeardownAttempts(snap.tombstones)
 
 	// List returns copies, so these are snapshots: read ID / Name / Status
 	// only, never mutate through them.
@@ -240,11 +266,16 @@ func (r *VMs) reconcileTombstones(ctx context.Context, observed []*vm.VM) {
 	for _, v := range observed {
 		byID[v.ID] = v
 	}
-	for _, ts := range *tsPtr {
+	for _, ts := range snap.tombstones {
 		v, known := byID[ts.VMID]
 		if !known {
 			// Nothing to tear down. The CP stops sending the tombstone once
 			// this node stops reporting the VM.
+			continue
+		}
+		if predatesArrival(v, snap.requested) {
+			// The CP sent this tombstone before the VM came back to this node.
+			// The next response says whether it still applies.
 			continue
 		}
 		if r.manager.HasActiveMigration(ts.VMID) {
@@ -336,8 +367,11 @@ func (r *VMs) pruneTeardownAttempts(tombstones []heartbeat.VMTombstone) {
 
 // dispatch handles one observed-vs-declared pair. Side-effect: may
 // enqueue a Manager lifecycle op when convergence requires action.
-func (r *VMs) dispatch(ctx context.Context, v *vm.VM, decl heartbeat.DeclaredVM) {
+func (r *VMs) dispatch(ctx context.Context, v *vm.VM, decl heartbeat.DeclaredVM, requested time.Time) {
 	if r.manager.HasInFlight(v.Name) {
+		return
+	}
+	if r.holdBack(ctx, v, requested) {
 		return
 	}
 	if v.Status == vm.StatusFailed {
@@ -390,6 +424,26 @@ func (r *VMs) dispatch(ctx context.Context, v *vm.VM, decl heartbeat.DeclaredVM)
 		r.log.WarnContext(ctx, "vm reconcile: unknown desired_phase",
 			slog.String("vm", v.Name), slog.String("desired_phase", decl.DesiredPhase))
 	}
+}
+
+// holdBack reports whether dispatch must leave v alone this tick: the response
+// predates the VM's arrival, or the VM holds a completed cold migration's
+// incoming server, which it releases first. A response requested after the
+// arrival that declares the VM here proves the migration committed: the pin
+// moves onto the node holding an incoming migration only by committing it,
+// and the pin was read after that migration began.
+func (r *VMs) holdBack(ctx context.Context, v *vm.VM, requested time.Time) bool {
+	if predatesArrival(v, requested) {
+		return true
+	}
+	if !r.manager.HasOfflineIncoming(v.ID) {
+		return false
+	}
+	if r.manager.ReleaseIncoming(v.ID) {
+		r.log.InfoContext(ctx, "vm reconcile: releasing completed migration's incoming server",
+			slog.String("vm", v.Name))
+	}
+	return true
 }
 
 // vmReport projects a vm.VM snapshot to heartbeat.VMReport. Surfaces
