@@ -5,29 +5,36 @@ package vm
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/agent/migration"
+	"github.com/otherix/otherix/internal/agent/qemu"
 )
 
-// TestReleaseIncomingNBDFreesPortAndDropsRecord drives the post-cutover
-// release path: a TARGET migration record (with a reserved port and no NBD
-// server, so StopNBD no-ops) is dropped from the store and its port returned to the
-// allocator. The port-release assertion exhausts the whole range afterwards
-// and confirms the freed port is reservable again.
+// TestReleaseIncomingFreesPortAndDropsRecord drives the post-cutover release
+// path: a TARGET migration record with a reserved port and a server is dropped
+// from the store, its server stopped and its port returned to the allocator.
+// The port-release assertion exhausts the whole range afterwards and confirms
+// the freed port is reservable again.
 //
 // The record is non-terminal because that is what the real path carries here:
 // nothing advances a target-side offline record after StartIncoming publishes it,
 // so it is still at phase=setup when the post-cutover start arrives. A terminal
 // record means some other finalizer already released these ports, and
-// releaseIncomingNBD must NOT release them a second time - see
-// TestReleaseIncomingNBDLeavesTerminalRecordPortsAlone.
-func TestReleaseIncomingNBDFreesPortAndDropsRecord(t *testing.T) {
+// releaseIncoming must NOT release them a second time - see
+// TestReleaseIncomingNeverTouchesATerminalRecord.
+func TestReleaseIncomingFreesPortAndDropsRecord(t *testing.T) {
 	m := newTestManager(t)
+	var stopped []int
+	m.migStopNBD = func(srv *qemu.NBDServer, _ time.Duration) error {
+		stopped = append(stopped, srv.Pid)
+		return nil
+	}
 
 	// Reserve one ingress port the way StartIncoming would, then record it on
-	// a target migration for vmID. A nil NBD makes StopNBD a no-op.
+	// a target migration for vmID.
 	port, err := m.migPorts.Reserve()
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
@@ -37,14 +44,17 @@ func TestReleaseIncomingNBDFreesPortAndDropsRecord(t *testing.T) {
 	m.Migrations().Put(&migration.Record{
 		MigrationID: migID, VMID: vmID, Role: migration.RoleTarget,
 		Mode: migration.ModeOffline, Phase: migration.PhaseSetup,
-		Port: port,
+		Port: port, NBD: &qemu.NBDServer{Pid: 4242},
 	})
 
-	m.releaseIncomingNBD(vmID)
+	m.releaseIncoming(vmID, false)
 
+	if len(stopped) != 1 || stopped[0] != 4242 {
+		t.Errorf("stopped %v, want exactly [4242]", stopped)
+	}
 	// Record dropped.
 	if _, ok := m.Migrations().Get(migID); ok {
-		t.Errorf("Get(%s) after releaseIncomingNBD = found, want absent", migID)
+		t.Errorf("Get(%s) after releaseIncoming = found, want absent", migID)
 	}
 
 	// Port returned to the pool: drain the full [start, end] range and confirm
@@ -68,6 +78,6 @@ func TestReleaseIncomingNBDFreesPortAndDropsRecord(t *testing.T) {
 		t.Errorf("drained %d ports, want full range of %d (a port leaked or was double-counted)", count, rangeSize)
 	}
 	if !freed {
-		t.Errorf("freed port %d not reservable after releaseIncomingNBD", port)
+		t.Errorf("freed port %d not reservable after releaseIncoming", port)
 	}
 }

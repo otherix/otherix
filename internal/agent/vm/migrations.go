@@ -139,34 +139,26 @@ func (m *Manager) removeAdoptedVM(id uuid.UUID) {
 // Migrations returns the agent's in-memory migration record store.
 func (m *Manager) Migrations() *migration.Store { return m.migrations }
 
-// releaseIncomingNBD tears down any TARGET-side migration qemu-nbd holding
-// vmID's disk: it stops the server (releasing the exclusive write lock) and
-// frees both reserved ingress ports of the pair. Called from the start path before spawning
-// qemu on a just-migrated VM. A no-op when no migration targeted this VM.
-func (m *Manager) releaseIncomingNBD(vmID uuid.UUID) {
-	rec, ok := m.migrations.TakeTargetByVM(vmID)
+// nbdStopGrace bounds a graceful qemu-nbd stop before SIGKILL.
+const nbdStopGrace = 5 * time.Second
+
+// releaseIncoming stops vmID's in-flight incoming migration server and frees
+// its port pair, dropping the record. offlineOnly restricts it to offline
+// records: a live target has its own finalizer, which releases its ports as it
+// stamps the record, and taking the record from under it would release them a
+// second time. Terminal records are never taken (see TakeIncoming), so both the
+// stop and the release apply only to state nobody else has finalised. A no-op
+// when vmID has no such record.
+func (m *Manager) releaseIncoming(vmID uuid.UUID, offlineOnly bool) {
+	rec, ok := m.migrations.TakeIncoming(vmID, offlineOnly)
 	if !ok {
 		return
 	}
-	if err := m.migStopNBD(rec.NBD, 5*time.Second); err != nil {
-		m.log.Warn("release migration nbd server failed", "vm_id", vmID.String(), "err", err)
+	if err := m.migStopNBD(rec.NBD, nbdStopGrace); err != nil {
+		m.log.Warn("release migration nbd server failed",
+			"vm_id", vmID.String(), "migration_id", rec.MigrationID.String(), "err", err)
 	}
-	// Free BOTH ports of the pair (offline records carry NBDPort==0, which
-	// ReleasePair ignores). Releasing only rec.Port leaked the NBD port on the
-	// cold-live edge.
-	//
-	// Only for a NON-terminal record. TakeTargetByVM matches on role alone, so it
-	// also hands back records some other finalizer already stamped terminal - and
-	// every one of those released the ports as it stamped (runIncomingResume,
-	// failIncomingResume, teardownIncomingTarget, CancelMigration). Releasing
-	// again would return a port a LATER migration has since reserved, giving two
-	// incoming migrations the same ingress port. Fails toward inaction, like the
-	// other three: a terminal record whose ports somehow were not released leaks
-	// an allocator entry (recoverable, self-heals on agent restart) rather than
-	// freeing a live migration's port.
-	if !rec.Terminal() {
-		m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
-	}
+	m.migPorts.ReleasePair(rec.Port, rec.NBDPort)
 }
 
 // IncomingSpec parameterizes target-side migration preparation.

@@ -632,7 +632,7 @@ func cancelTargetIncoming(ctx context.Context, agent MigrationAgentClient, log *
 // the CP starts it.
 // Known limitation: when the migrated VM's desired phase is NOT running (a cold
 // migration that stays stopped on the target), no start is dispatched, so the
-// agent's start-path teardown of the incoming qemu-nbd (releaseIncomingNBD) does
+// agent's start-path teardown of the incoming qemu-nbd (releaseIncoming) does
 // not run here - the target's reserved migration port and the idle qemu-nbd
 // (still holding the disk write lock) are reclaimed lazily on the VM's first
 // start or on agent restart. A leak, never a destroy; acceptable for this slice

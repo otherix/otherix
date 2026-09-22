@@ -158,18 +158,43 @@ func (s *Store) HasActiveForVM(vmID uuid.UUID) bool {
 	return false
 }
 
-// TakeTargetByVM finds and REMOVES the in-flight TARGET migration record for
-// vmID (there is at most one), returning it. Used to release the migration's
-// qemu-nbd when the migrated VM is started on this node.
-func (s *Store) TakeTargetByVM(vmID uuid.UUID) (Record, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// incomingLocked returns the id and record of vmID's non-terminal TARGET
+// record, or nil. Callers hold s.mu. At most one exists: a node adopts a VM for
+// an incoming migration only while it does not already hold it.
+func (s *Store) incomingLocked(vmID uuid.UUID) (uuid.UUID, *Record) {
 	for id, r := range s.recs {
-		if r.VMID == vmID && r.Role == RoleTarget {
-			cp := *r
-			delete(s.recs, id)
-			return cp, true
+		if r.VMID == vmID && r.Role == RoleTarget && !r.Terminal() {
+			return id, r
 		}
 	}
-	return Record{}, false
+	return uuid.Nil, nil
+}
+
+// Incoming returns a snapshot of vmID's non-terminal target record, without
+// removing it.
+func (s *Store) Incoming(vmID uuid.UUID) (Record, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, r := s.incomingLocked(vmID)
+	if r == nil {
+		return Record{}, false
+	}
+	return *r, true
+}
+
+// TakeIncoming finds and REMOVES vmID's non-terminal target record, restricted
+// to offline records when offlineOnly. Terminal records are never taken: the
+// finalizer that stamped one already stopped its server and released its ports,
+// and it stays for GetMigration. Records are never otherwise deleted, so a VM
+// can hold a terminal record from an earlier attempt next to the live one.
+func (s *Store) TakeIncoming(vmID uuid.UUID, offlineOnly bool) (Record, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, r := s.incomingLocked(vmID)
+	if r == nil || (offlineOnly && r.Mode != ModeOffline) {
+		return Record{}, false
+	}
+	cp := *r
+	delete(s.recs, id)
+	return cp, true
 }
