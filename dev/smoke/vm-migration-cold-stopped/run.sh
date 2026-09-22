@@ -60,6 +60,9 @@ NBD_WAIT="${NBD_WAIT:-120}"
 CONVERGE_WAIT="${CONVERGE_WAIT:-60}"
 MIGRATE_WAIT="${MIGRATE_WAIT:-600}"
 READY_WAIT="${READY_WAIT:-120}"
+# Long enough for a few heartbeats to replace an observed phase that predates a
+# migration's poweroff.
+SETTLE_WAIT="${SETTLE_WAIT:-15}"
 
 # --- helpers -----------------------------------------------------------
 RED=$'\033[31m'; GREEN=$'\033[32m'; YEL=$'\033[33m'; NC=$'\033[0m'
@@ -69,6 +72,7 @@ fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 otx() { "$OTX" "$@"; }
 
 vm_phase() { otx vm get "$1" --output json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || true; }
+vm_desired() { otx vm get "$1" --output json 2>/dev/null | jq -r '.desired_phase // empty' 2>/dev/null || true; }
 # vm_node NAME -> the name of the node the VM is placed on ("" if unscheduled or
 # gone). The CP repoints it only at a migration cutover.
 vm_node() { otx vm get "$1" --output json 2>/dev/null | jq -r '.node // empty' 2>/dev/null || true; }
@@ -126,12 +130,23 @@ wait_migration_terminal() {
   fail "migration ${1:0:8} not terminal within ${MIGRATE_WAIT}s (phase='${ph:-none}')"
 }
 
-# ensure_running VM -> start the VM if it is not running; fail if it will not.
+# ensure_running VM -> make sure the VM runs; fail if it will not. A VM that is
+# meant to run is brought back up by its node's reconciler, and its observed
+# phase lags by a heartbeat or two: right after an offline migration it can still
+# read "running" from before the migration powered the guest off. So let it
+# settle and wait for running; start it explicitly only if it is meant to be off.
 ensure_running() {
-  if [[ "$(vm_phase "$1")" != "running" ]]; then
-    otx vm start "$1" --wait --wait-timeout 180s >/tmp/cold_stopped_start.out 2>&1 \
-      || { cat /tmp/cold_stopped_start.out; fail "$1 does not start (phase=$(vm_phase "$1"))"; }
+  if [[ "$(vm_desired "$1")" == "running" ]]; then
+    sleep "$SETTLE_WAIT"
+    local deadline=$(( SECONDS + CONVERGE_WAIT ))
+    while (( SECONDS < deadline )); do
+      [[ "$(vm_phase "$1")" == "running" ]] && return 0
+      sleep 2
+    done
+    fail "$1 not running ${CONVERGE_WAIT}s after settling (phase=$(vm_phase "$1"))"
   fi
+  otx vm start "$1" --wait --wait-timeout 180s >/tmp/cold_stopped_start.out 2>&1 \
+    || { cat /tmp/cold_stopped_start.out; fail "$1 does not start (phase=$(vm_phase "$1"))"; }
   [[ "$(vm_phase "$1")" == "running" ]] || fail "$1 not running after start (phase=$(vm_phase "$1"))"
 }
 
