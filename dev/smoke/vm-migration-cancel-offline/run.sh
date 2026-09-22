@@ -81,7 +81,9 @@ fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 otx() { "$OTX" "$@"; }
 
 vm_phase() { otx vm get "$1" --output json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || true; }
-vm_node() { otx vm get "$1" --output json 2>/dev/null | jq -r '.status.current_node_id // empty' 2>/dev/null || true; }
+# vm_node NAME -> the name of the node the VM is placed on ("" if unscheduled or
+# gone).
+vm_node() { otx vm get "$1" --output json 2>/dev/null | jq -r '.node // empty' 2>/dev/null || true; }
 latest_migration_id() {
   otx migration list --output json 2>/dev/null \
     | jq -r --arg vm "$1" '[.data[]? | select(.vm_id==$vm)] | sort_by(.created_at) | last | .id // empty' 2>/dev/null || true
@@ -140,7 +142,8 @@ otx vm create "$VM" \
   || fail "vm create did not reach running within ${CREATE_WAIT}s"
 [[ "$(vm_phase "$VM")" == "running" ]] || fail "$VM not running after create"
 VMID="$(otx vm get "$VM" --output json | jq -r '.id')"
-SRC_NODE_ID="$(vm_node "$VM")"
+SRC_NODE="$(vm_node "$VM")"
+[[ "$SRC_NODE" == "$NODE1" ]] || fail "$VM not placed on node-1 (node=${SRC_NODE:-none})"
 pass "created and running on node-1 (id=${VMID:0:8})"
 
 # --- step 2: offline migrate, cancel once the target's qemu-nbd is up --
@@ -197,8 +200,8 @@ echo "=== step 4: VM intact on $NODE1 and migratable again ==="
 # here means the VM is still owned by node-1 with its disk intact - not that it is
 # still running. Prove it materially by starting it again.
 now_node="$(vm_node "$VM")"
-[[ "$now_node" == "$SRC_NODE_ID" ]] \
-  || fail "VM moved off its source node after a cancelled migration (${SRC_NODE_ID:0:8} -> ${now_node:0:8})"
+[[ "$now_node" == "$SRC_NODE" ]] \
+  || fail "VM moved off its source node after a cancelled migration ($SRC_NODE -> ${now_node:-none})"
 if [[ "$(vm_phase "$VM")" != "running" ]]; then
   otx vm start "$VM" --wait --wait-timeout 180s >/dev/null 2>&1 \
     || fail "VM does not start again on node-1 after the cancelled migration - the source copy was not preserved"
