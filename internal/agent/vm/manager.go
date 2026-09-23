@@ -70,6 +70,29 @@ var (
 	// it to 409 conflict so the CP worker resumes on its next poll rather
 	// than the agent clobbering the live VM.
 	ErrCreateInFlight = errors.New("vm create already in flight for this id")
+
+	// ErrDiskDirExists is returned by an incoming migration whose per-VM disk
+	// dir already exists. The dir belongs to something the call did not create
+	// (an older copy of the VM), so the migration refuses rather than write a
+	// disk over it. Handlers map it to 409 disk_dir_exists; the operator moves
+	// the dir away to migrate the VM here again.
+	ErrDiskDirExists = errors.New("a disk dir for this vm already exists")
+
+	// ErrAbandonedCopyKept is returned by an incoming migration that would move
+	// an abandoned copy of the VM aside while an earlier abandoned copy of it is
+	// already kept in the pool's abandoned/ dir. At most one is kept per VM and
+	// pool, and none is ever deleted by the agent, so the migration refuses.
+	// Handlers map it to 409 abandoned_copy_kept; the operator removes the kept
+	// copy to migrate the VM here again.
+	ErrAbandonedCopyKept = errors.New("an abandoned copy of this vm is already kept in the pool")
+
+	// ErrAbandonedCopyUnmovable is returned by an incoming migration that would
+	// move an abandoned copy of the VM aside when the copy cannot be moved: its
+	// disk dir is at an unexpected path, or it is neither in place nor already
+	// moved. No retry changes that, and the agent never guesses where a disk is,
+	// so the migration refuses. Handlers map it to 409 abandoned_copy_unmovable;
+	// the operator inspects and clears the node's copy of the VM.
+	ErrAbandonedCopyUnmovable = errors.New("an abandoned copy of this vm cannot be moved aside")
 )
 
 // shutdownGrace bounds how long Delete and Stop wait for system_powerdown
@@ -209,6 +232,10 @@ type Manager struct {
 	migStopNBD        func(srv *qemu.NBDServer, grace time.Duration) error
 	migRunConvert     func(ctx context.Context, args []string) error
 	migWaitNBDReady   func(ctx context.Context, endpoint string) error
+	// migQemuAlive reports whether v's pidfile names a live qemu that is this
+	// VM's guest (VerifyCmdline), so an abandoned copy is never moved from
+	// under a running guest.
+	migQemuAlive func(v *VM) bool
 
 	// Live-migration seams. migLaunchIncoming boots a paused -incoming
 	// qemu for an adopted target VM and waits until its QMP socket is
@@ -540,6 +567,10 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 	}
 	m.migSpawnNBD = qemu.SpawnQemuNBD
 	m.migStopNBD = qemu.StopNBD
+	m.migQemuAlive = func(v *VM) bool {
+		pid, err := qemu.ReadPIDFile(v.PIDFile)
+		return err == nil && pid > 0 && qemu.VerifyCmdline(pid, v.ID.String())
+	}
 	m.migRunConvert = qemu.RunQemuImgConvert
 	m.migWaitNBDReady = func(ctx context.Context, endpoint string) error {
 		return qemu.WaitNBDListening(ctx, endpoint, 15*time.Second)
@@ -587,6 +618,7 @@ func New(cfg *config.AgentConfig, fabric netfabric.Fabric, log *slog.Logger) (*M
 			CidataPath:    meta.CidataPath,
 			NICs:          metaToNICs(meta.NICs),
 			Migrated:      meta.Migrated,
+			AdoptedBy:     meta.AdoptedBy,
 		}
 		m.vms[v.ID] = v
 
@@ -1047,10 +1079,23 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*AgentTask, erro
 	if _, exists := m.vms[vmID]; exists {
 		origTaskID, hasTask := m.createTasks[vmID]
 		var reloadedStatus Status
+		var claimed bool
 		if !hasTask {
-			reloadedStatus = m.vms[vmID].Status
+			existing := m.vms[vmID]
+			reloadedStatus = existing.Status
+			// The create path claiming the VM makes this copy the node's own;
+			// it must never be set aside as an abandoned migration copy.
+			if existing.AdoptedBy != uuid.Nil {
+				existing.AdoptedBy = uuid.Nil
+				claimed = true
+			}
 		}
 		m.mu.Unlock()
+		if claimed {
+			if err := m.persistVM(vmID); err != nil {
+				m.log.Warn("persist claimed adopted vm", "vm_id", vmID, "err", err.Error())
+			}
+		}
 		if hasTask {
 			// In-process resumption: echo the ORIGINAL create task so the CP
 			// resumes against the same agent_task_id, leaving the live VM and
@@ -2227,6 +2272,7 @@ func (m *Manager) persistVM(id uuid.UUID) error {
 		UpdatedAt:     v.UpdatedAt,
 		NICs:          nicsToMeta(v.NICs),
 		Migrated:      v.Migrated,
+		AdoptedBy:     v.AdoptedBy,
 	}
 	return state.WriteMeta(filepath.Join(m.stateDir, v.ID.String()), meta)
 }

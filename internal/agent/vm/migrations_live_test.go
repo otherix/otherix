@@ -1384,3 +1384,38 @@ func TestCancelLive_SetsCancelledAndReleasesPorts(t *testing.T) {
 		t.Errorf("ports not released after cancel: %v", err)
 	}
 }
+
+// TestStartIncomingLiveRefusesAnExistingDiskDir: the live path refuses a disk
+// dir it did not create, leaves it untouched, and rolls back the adopt and the
+// port pair.
+func TestStartIncomingLiveRefusesAnExistingDiskDir(t *testing.T) {
+	m := newTestManager(t)
+	m.migPorts = migration.NewPortAllocator(49152, 49153) // exactly one pair
+	m.migLaunchIncoming = func(context.Context, *VM, qemu.LiveIncomingSpec) error { return nil }
+	m.migDialQMP = func(string) (qemu.LiveSourceConn, error) { return &fakeLiveConn{}, nil }
+	var created []string
+	m.migCreateDisk = func(_ context.Context, path string, _ int64) error {
+		created = append(created, path)
+		return nil
+	}
+	vmID := uuid.New()
+	disk := plantDisk(t, vmDiskDir(t, m, vmID))
+
+	_, err := m.StartIncoming(context.Background(), IncomingSpec{
+		MigrationID: uuid.New(), VMUUID: vmID, VMName: "demo", VCPUs: 1, MemoryMib: 512,
+		PoolName: m.defaultTestPool(), Architecture: "amd64", Mode: "live",
+		DiskSizeBytes: 1 << 30, SourceIdentity: "CN=node-src", BindHost: "10.0.0.2",
+	})
+
+	if !errors.Is(err, ErrDiskDirExists) {
+		t.Fatalf("StartIncoming(live) = %v, want ErrDiskDirExists", err)
+	}
+	if len(created) != 0 {
+		t.Errorf("migCreateDisk called with %v, want no disk created", created)
+	}
+	assertDiskUntouched(t, disk)
+	assertNoAdoptedRecord(t, m, vmID)
+	if _, _, err := m.migPorts.ReservePair(); err != nil {
+		t.Errorf("ReservePair() after the refusal: %v, want the pair released", err)
+	}
+}

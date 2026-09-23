@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -403,5 +404,35 @@ func TestMapIncomingErrorStatuses(t *testing.T) {
 				t.Errorf("mapIncomingError(%v) status = %d, want %d (body=%s)", tc.err, rec.Code, tc.want, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestMapIncomingErrorRefusalCodes: the control plane fails a migration for
+// good on exactly these codes, and the message must name the path for the
+// operator.
+func TestMapIncomingErrorRefusalCodes(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		code string
+	}{
+		{err: fmt.Errorf("%w: /pools/p/vms/x", vm.ErrDiskDirExists), code: "disk_dir_exists"},
+		{err: fmt.Errorf("%w: /pools/p/abandoned/x-y; remove it", vm.ErrAbandonedCopyKept), code: "abandoned_copy_kept"},
+		{err: fmt.Errorf("%w: vm x: disk dir /pools/p/vms/x not found", vm.ErrAbandonedCopyUnmovable), code: "abandoned_copy_unmovable"},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/vms/demo/migrations/incoming", nil)
+
+		mapIncomingError(rec, req, tc.err)
+
+		var body struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		if jerr := json.Unmarshal(rec.Body.Bytes(), &body); jerr != nil {
+			t.Fatalf("decode body %s: %v", rec.Body.String(), jerr)
+		}
+		if rec.Code != http.StatusConflict || body.Error.Code != tc.code || body.Error.Message != tc.err.Error() {
+			t.Errorf("mapIncomingError(%v) = (%d, %q, %q), want (409, %s, %q)",
+				tc.err, rec.Code, body.Error.Code, body.Error.Message, tc.code, tc.err.Error())
+		}
 	}
 }

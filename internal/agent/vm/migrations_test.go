@@ -285,3 +285,146 @@ func TestReleaseIncomingAfterARealCancelLeavesALaterMigrationsPort(t *testing.T)
 		t.Errorf("Reserve() = %d after the release, want port %d still held by the later migration", p, later)
 	}
 }
+
+// offlineIncomingSpec is a minimal offline incoming spec for vmID.
+func offlineIncomingSpec(m *Manager, migID, vmID uuid.UUID) IncomingSpec {
+	return IncomingSpec{
+		MigrationID: migID, VMUUID: vmID, VMName: "cold", VCPUs: 1, MemoryMib: 512,
+		PoolName: m.defaultTestPool(), Architecture: qemu.ArchAMD64, Mode: "offline",
+		DiskSizeBytes: 1 << 30, SourceIdentity: "CN=node-src", BindHost: "10.0.0.2",
+	}
+}
+
+// vmDiskDir is the per-VM disk dir an adopt of vmID in the default test pool uses.
+func vmDiskDir(t *testing.T, m *Manager, vmID uuid.UUID) string {
+	t.Helper()
+	root, err := m.poolRoot(m.defaultTestPool())
+	if err != nil {
+		t.Fatalf("poolRoot: %v", err)
+	}
+	return filepath.Join(root, "vms", vmID.String())
+}
+
+// plantDisk writes a disk file with known bytes into the per-VM disk dir, as an
+// older copy whose record is gone would leave it.
+func plantDisk(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	disk := filepath.Join(dir, "disk.qcow2")
+	if err := os.WriteFile(disk, []byte("older copy"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return disk
+}
+
+// assertDiskUntouched fails unless disk still holds the bytes plantDisk wrote.
+func assertDiskUntouched(t *testing.T, disk string) {
+	t.Helper()
+	got, err := os.ReadFile(disk)
+	if err != nil || string(got) != "older copy" {
+		t.Errorf("ReadFile(%s) = (%q, %v), want the planted bytes untouched", disk, got, err)
+	}
+}
+
+// assertNoAdoptedRecord fails when vmID is still in memory or on disk under the
+// agent state dir.
+func assertNoAdoptedRecord(t *testing.T, m *Manager, vmID uuid.UUID) {
+	t.Helper()
+	if _, err := m.Get(vmID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get(%s) = %v, want ErrNotFound", vmID, err)
+	}
+	if _, err := os.Stat(filepath.Join(m.stateDir, vmID.String())); !os.IsNotExist(err) {
+		t.Errorf("state dir of %s: stat err = %v, want not exist", vmID, err)
+	}
+}
+
+// TestStartIncomingOfflineRefusesAnExistingDiskDir: a disk dir the call did not
+// create is refused and left exactly as it was, and the adopt and the port are
+// rolled back.
+func TestStartIncomingOfflineRefusesAnExistingDiskDir(t *testing.T) {
+	m, _ := NewManagerForSeamTest(t)
+	m.migPorts = migration.NewPortAllocator(49152, 49152) // exactly one port
+	var created []string
+	m.migCreateDisk = func(_ context.Context, path string, _ int64) error {
+		created = append(created, path)
+		return os.WriteFile(path, nil, 0o600)
+	}
+	vmID := uuid.New()
+	disk := plantDisk(t, vmDiskDir(t, m, vmID))
+
+	_, err := m.StartIncoming(context.Background(), offlineIncomingSpec(m, uuid.New(), vmID))
+
+	if !errors.Is(err, ErrDiskDirExists) {
+		t.Fatalf("StartIncoming(offline) = %v, want ErrDiskDirExists", err)
+	}
+	if len(created) != 0 {
+		t.Errorf("migCreateDisk called with %v, want no disk created", created)
+	}
+	assertDiskUntouched(t, disk)
+	assertNoAdoptedRecord(t, m, vmID)
+	if _, err := m.migPorts.Reserve(); err != nil {
+		t.Errorf("Reserve() after the refusal: %v, want the port released", err)
+	}
+}
+
+// TestStartIncomingOfflineRollsBackAFailedAdopt: a failure after the disk dir
+// was created removes that dir, the record and the port, so a retry of the same
+// migration adopts again.
+func TestStartIncomingOfflineRollsBackAFailedAdopt(t *testing.T) {
+	m, _ := NewManagerForSeamTest(t)
+	m.migPorts = migration.NewPortAllocator(49152, 49152) // exactly one port
+	m.migCreateDisk = func(_ context.Context, path string, _ int64) error {
+		return os.WriteFile(path, []byte("new"), 0o600)
+	}
+	spawn := m.migSpawnNBD
+	m.migSpawnNBD = func(context.Context, []string) (*qemu.NBDServer, error) {
+		return nil, errors.New("qemu-nbd failed to start")
+	}
+	m.migWaitNBDReady = func(context.Context, string) error { return nil }
+	vmID, migID := uuid.New(), uuid.New()
+
+	if _, err := m.StartIncoming(context.Background(), offlineIncomingSpec(m, migID, vmID)); err == nil {
+		t.Fatalf("StartIncoming(offline) = nil, want the spawn error")
+	}
+
+	assertNoAdoptedRecord(t, m, vmID)
+	if _, err := os.Stat(vmDiskDir(t, m, vmID)); !os.IsNotExist(err) {
+		t.Errorf("disk dir after rollback: stat err = %v, want not exist", err)
+	}
+	if _, ok := m.Migrations().Get(migID); ok {
+		t.Errorf("migration record stored despite the failure")
+	}
+
+	m.migSpawnNBD = spawn
+	if _, err := m.StartIncoming(context.Background(), offlineIncomingSpec(m, migID, vmID)); err != nil {
+		t.Errorf("retry StartIncoming(offline) = %v, want success", err)
+	}
+}
+
+// TestStartIncomingOfflineKeepsDiskAndPortWhenTheNBDStopFails: a qemu-nbd that
+// could not be stopped still holds the disk and the port, so the rollback drops
+// only the record.
+func TestStartIncomingOfflineKeepsDiskAndPortWhenTheNBDStopFails(t *testing.T) {
+	m, _ := NewManagerForSeamTest(t)
+	m.migPorts = migration.NewPortAllocator(49152, 49152) // exactly one port
+	m.migCreateDisk = func(_ context.Context, path string, _ int64) error {
+		return os.WriteFile(path, []byte("new"), 0o600)
+	}
+	m.migWaitNBDReady = func(context.Context, string) error { return errors.New("not listening") }
+	m.migStopNBD = func(*qemu.NBDServer, time.Duration) error { return errors.New("qemu-nbd did not exit") }
+	vmID := uuid.New()
+
+	if _, err := m.StartIncoming(context.Background(), offlineIncomingSpec(m, uuid.New(), vmID)); err == nil {
+		t.Fatalf("StartIncoming(offline) = nil, want the readiness error")
+	}
+
+	assertNoAdoptedRecord(t, m, vmID)
+	if _, err := os.Stat(vmDiskDir(t, m, vmID)); err != nil {
+		t.Errorf("disk dir after a failed stop: stat err = %v, want it kept", err)
+	}
+	if p, err := m.migPorts.Reserve(); err == nil {
+		t.Errorf("Reserve() = %d after a failed stop, want the port still held", p)
+	}
+}

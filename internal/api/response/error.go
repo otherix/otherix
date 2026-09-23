@@ -131,6 +131,25 @@ const (
 	// a gateway converging (or a NIC attaching) clears it.
 	CodeIngressUnavailable ErrorCode = "ingress_unavailable"
 
+	// CodeDiskDirExists is the agent refusing an incoming migration because
+	// the VM's disk dir already exists on the target (an older copy it did not
+	// create). Not retryable: the control plane fails the migration with the
+	// agent's message, which names the dir to move away.
+	CodeDiskDirExists ErrorCode = "disk_dir_exists"
+
+	// CodeAbandonedCopyKept is the agent refusing an incoming migration because
+	// an earlier abandoned copy of the VM is already kept in the pool's
+	// abandoned/ dir. Not retryable: the control plane fails the migration with
+	// the agent's message, which names the kept copy to remove.
+	CodeAbandonedCopyKept ErrorCode = "abandoned_copy_kept"
+
+	// CodeAbandonedCopyUnmovable is the agent refusing an incoming migration
+	// because an abandoned copy of the VM cannot be moved aside (its disk is
+	// missing or at an unexpected path). Not retryable: the control plane fails
+	// the migration with the agent's message, which names the VM and the path
+	// to inspect and clear.
+	CodeAbandonedCopyUnmovable ErrorCode = "abandoned_copy_unmovable"
+
 	CodeInternal ErrorCode = "internal"
 )
 

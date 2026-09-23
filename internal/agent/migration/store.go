@@ -199,3 +199,32 @@ func (s *Store) TakeIncoming(vmID uuid.UUID, offlineOnly bool) (Record, bool) {
 	delete(s.recs, id)
 	return cp, true
 }
+
+// TakeIncomingByID REMOVES and returns record id only when it is a
+// non-terminal TARGET record whose mode is not live. A live target's finalizer
+// releases its own port pair, so taking one here could release it twice;
+// terminal records are never taken, as in TakeIncoming.
+func (s *Store) TakeIncomingByID(id uuid.UUID) (Record, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.recs[id]
+	if !ok || r.Role != RoleTarget || r.Mode == ModeLive || r.Terminal() {
+		return Record{}, false
+	}
+	cp := *r
+	delete(s.recs, id)
+	return cp, true
+}
+
+// HasActiveForVMExcept reports whether any non-terminal record, in either role,
+// names vmID under an id other than except.
+func (s *Store) HasActiveForVMExcept(vmID, except uuid.UUID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, r := range s.recs {
+		if id != except && r.VMID == vmID && !r.Terminal() {
+			return true
+		}
+	}
+	return false
+}

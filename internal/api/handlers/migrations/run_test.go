@@ -154,6 +154,10 @@ type fakeMigrationAgent struct {
 	// outgoing request (it lands in outgoingReq.NbdEndpoint).
 	incomingNbdEndpoint *string
 
+	// incomingErr, when set, is returned by StartIncomingMigration (the target
+	// refused to prepare the incoming side).
+	incomingErr error
+
 	// agentTaskID is the id StartOutgoingMigration returns (and PollTask echoes).
 	agentTaskID uuid.UUID
 
@@ -178,6 +182,9 @@ func (f *fakeMigrationAgent) StartIncomingMigration(_ context.Context, _, _ stri
 	defer f.mu.Unlock()
 	f.incomingCalls++
 	f.incomingReq = req
+	if f.incomingErr != nil {
+		return agentapi.MigrationIncomingResponse{}, f.incomingErr
+	}
 	return agentapi.MigrationIncomingResponse{
 		AuthToken:      "tok-" + req.MigrationID.String(),
 		ListenEndpoint: "10.0.0.2:49152",
@@ -2615,22 +2622,16 @@ func TestFinalizeTerminalCancelled_NoAgentTaskSourceFailedReapsTarget(t *testing
 	}
 }
 
-// TestFinalizeTerminalCancelled_NoAgentTaskOfflineFinalizesWithoutProbe pins the
-// scope guard: an OFFLINE cancelled-no-agent-task migration must finalize
-// cancelled immediately WITHOUT probing the source (offline never auto-resumes,
-// so there is no live VM to strand). A source down - a common reason to cancel -
-// must not hang the cancel in a retry loop. The staged getMigrationErr would
-// make the handler retry forever if the probe fired.
-func TestFinalizeTerminalCancelled_NoAgentTaskOfflineFinalizesWithoutProbe(t *testing.T) {
+// TestRunMigration_OfflineCancelNoAgentTaskReapsTarget pins that an OFFLINE
+// cancelled migration with no agent task finalizes cancelled WITHOUT probing the
+// source (an offline cancel is final; a down source, a common reason to cancel,
+// must not hang the cancel in a retry loop) and reaps the target's incoming
+// server, which would otherwise keep its qemu-nbd and ports forever.
+func TestRunMigration_OfflineCancelNoAgentTaskReapsTarget(t *testing.T) {
 	s, cli := freshStore(t)
 	ctx := context.Background()
 
-	nodeA := seedReadyNode(t, s, "node-a", "https://node-a:9443")
-	nodeB := seedReadyNode(t, s, "node-b", "https://node-b:9443")
-	vm := seedPinnedVM(t, cli, nodeA.ID)
-	srcPool := seedPool(t, s, nodeA.ID, "default", "/var/lib/otherix/pools/default-on-a")
-	seedBootDiskInPool(t, cli, vm.ID, srcPool.ID, 40)
-	seedPool(t, s, nodeB.ID, "default", "/var/lib/otherix/pools/default")
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
 	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false) // OFFLINE
 
 	if _, err := s.CancelMigration(ctx, m.ID, "operator cancelled; source is down"); err != nil {
@@ -2639,14 +2640,17 @@ func TestFinalizeTerminalCancelled_NoAgentTaskOfflineFinalizesWithoutProbe(t *te
 
 	// A source probe would ERROR (source down) and hang the cancel; it must not fire.
 	agent := &fakeMigrationAgent{getMigrationErr: errors.New("source unreachable")}
-	placer := &fakePlacer{}
 
-	h := migrations.MigrateHandler(s, agent, placer, migrations.MigrateConfig{}, discardLogger())
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
 	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
 		t.Fatalf("MigrateHandler(offline cancelled) = %v, want nil (finalize without probe)", err)
 	}
 	if agent.getMigrationCalls != 0 {
 		t.Errorf("getMigrationCalls = %d, want 0 (offline must not probe the source)", agent.getMigrationCalls)
+	}
+	wantCancel := []cancelCall{{agentclient.DialURL(nodeB.Name), vm.Name, m.ID.String()}}
+	if diff := cmp.Diff(wantCancel, agent.cancelCalls, cmp.AllowUnexported(cancelCall{})); diff != "" {
+		t.Errorf("cancelCalls mismatch (-want +got):\n%s", diff)
 	}
 	task, err := s.TaskByID(ctx, taskID)
 	if err != nil {
@@ -2701,4 +2705,298 @@ func TestFinalizeTerminalCancelled_NoAgentTaskSourceInFlightRetries(t *testing.T
 	if agent.deleteSourceCalls != 0 {
 		t.Errorf("DeleteVMOnSource calls = %d, want 0 (must not converge on uncertainty)", agent.deleteSourceCalls)
 	}
+}
+
+// assertOfflineCancelFinalized checks the outcome every offline-cancel path must
+// reach: the migration stays cancelled, the VM stays pinned to its source, the
+// task is cancelled, the target's incoming is reaped exactly once, and nothing
+// cut over, started on the target, or deleted on the source.
+func assertOfflineCancelFinalized(t *testing.T, s *etcdstore.Store, agent *fakeMigrationAgent, taskID uuid.UUID, m store.Migration, vm store.VM, source, target store.Node) {
+	t.Helper()
+	ctx := context.Background()
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.Phase != store.MigrationPhaseCancelled {
+		t.Errorf("migration phase = %q, want cancelled (an offline cancel is final)", got.Phase)
+	}
+	gotVM, err := s.VMByID(ctx, vm.ID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if gotVM.PinnedNodeID == nil || *gotVM.PinnedNodeID != source.ID {
+		t.Errorf("PinnedNodeID = %v, want UNCHANGED source %v", gotVM.PinnedNodeID, source.ID)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusCancelled {
+		t.Errorf("task status = %q, want cancelled", task.Status)
+	}
+	wantCancel := []cancelCall{{agentclient.DialURL(target.Name), vm.Name, m.ID.String()}}
+	if diff := cmp.Diff(wantCancel, agent.cancelCalls, cmp.AllowUnexported(cancelCall{})); diff != "" {
+		t.Errorf("cancelCalls mismatch (-want +got):\n%s", diff)
+	}
+	if agent.startTargetCalls != 0 {
+		t.Errorf("StartVMOnTarget calls = %d, want 0", agent.startTargetCalls)
+	}
+	if agent.deleteSourceCalls != 0 {
+		t.Errorf("DeleteVMOnSource calls = %d, want 0", agent.deleteSourceCalls)
+	}
+}
+
+// TestRunMigration_OfflineCancelledFinalizesWithoutSource pins that a cancelled
+// OFFLINE migration whose source push had started is finalized without asking
+// the source: the cutover refuses an offline cancel, so there is nothing to
+// arbitrate, and an unreachable source must not hold the task running.
+func TestRunMigration_OfflineCancelledFinalizesWithoutSource(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false) // OFFLINE
+	armCancelledReconcile(t, s, taskID, m.ID, uuid.New())
+
+	agent := &fakeMigrationAgent{
+		pollErr:         errors.New("source unreachable"),
+		getMigrationErr: errors.New("source unreachable"),
+	}
+	h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(offline cancelled, source down) = %v, want nil", err)
+	}
+	if agent.pollCalls != 0 || agent.getMigrationCalls != 0 {
+		t.Errorf("source contacted: pollCalls = %d, getMigrationCalls = %d, want 0 and 0", agent.pollCalls, agent.getMigrationCalls)
+	}
+	assertOfflineCancelFinalized(t, s, agent, taskID, m, vm, nodeA, nodeB)
+}
+
+// TestRunMigration_OfflineCancelDuringPushRefusesCutover pins that a cancel
+// landing while an OFFLINE push runs wins even when the source then reports
+// success: the cutover refuses, and the worker finalizes the task cancelled in
+// the same delivery instead of relying on a redelivery.
+func TestRunMigration_OfflineCancelDuringPushRefusesCutover(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false) // OFFLINE
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	st := &cancelWhilePollingStore{MigrationWorkerStore: s, migID: m.ID}
+	st.cancelFn = func() {
+		if _, err := s.CancelMigration(ctx, m.ID, "operator cancelled mid-push"); err != nil {
+			t.Fatalf("mid-push CancelMigration: %v", err)
+		}
+	}
+
+	h := migrations.MigrateHandler(st, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(offline cancel during push) = %v, want nil (finalized in this delivery)", err)
+	}
+	assertOfflineCancelFinalized(t, s, agent, taskID, m, vm, nodeA, nodeB)
+}
+
+// cutoverRaceFake runs interleave inside CommitMigrationCutover and reports the
+// lost CAS, modelling a concurrent write (a cancel or a failure) that lands
+// between the cutover's state read and its Txn.
+type cutoverRaceFake struct {
+	migrations.MigrationWorkerStore
+	interleave func()
+}
+
+func (st cutoverRaceFake) CommitMigrationCutover(context.Context, uuid.UUID) error {
+	st.interleave()
+	return store.ErrConcurrentUpdate
+}
+
+// TestRunMigration_OfflineCancelLandsInsideCutoverCAS pins that an offline cancel
+// winning the cutover CAS race is finalized in the same delivery, exactly like
+// one that landed before the cutover read.
+func TestRunMigration_OfflineCancelLandsInsideCutoverCAS(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false) // OFFLINE
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	st := cutoverRaceFake{MigrationWorkerStore: s, interleave: func() {
+		if _, err := s.CancelMigration(ctx, m.ID, "operator cancelled at cutover"); err != nil {
+			t.Errorf("CancelMigration inside cutover: %v", err)
+		}
+	}}
+
+	h := migrations.MigrateHandler(st, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(offline cancel inside cutover CAS) = %v, want nil (finalized in this delivery)", err)
+	}
+	assertOfflineCancelFinalized(t, s, agent, taskID, m, vm, nodeA, nodeB)
+}
+
+// TestRunMigration_FailureLandsInsideCutoverCAS pins that a failure winning the
+// cutover CAS race is finalized failed in the same delivery: nothing starts on
+// the target and nothing is deleted on the source.
+func TestRunMigration_FailureLandsInsideCutoverCAS(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
+
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+	st := cutoverRaceFake{MigrationWorkerStore: s, interleave: func() {
+		failed := store.MigrationPhaseFailed
+		msg := "failed at cutover"
+		if err := s.UpdateMigrationProgress(ctx, m.ID, store.MigrationProgressUpdate{Phase: &failed, ErrorMessage: &msg}); err != nil {
+			t.Errorf("fail the migration inside cutover: %v", err)
+		}
+	}}
+
+	h := migrations.MigrateHandler(st, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler(failure inside cutover CAS) = %v, want nil (finalized in this delivery)", err)
+	}
+	task, err := s.TaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("TaskByID: %v", err)
+	}
+	if task.Status != store.TaskStatusFailed {
+		t.Errorf("task status = %q, want failed", task.Status)
+	}
+	if agent.startTargetCalls != 0 {
+		t.Errorf("StartVMOnTarget calls = %d, want 0", agent.startTargetCalls)
+	}
+	if agent.deleteSourceCalls != 0 {
+		t.Errorf("DeleteVMOnSource calls = %d, want 0", agent.deleteSourceCalls)
+	}
+}
+
+// TestRunMigration_AbandonedCopyKeptFailsMigration pins that the target
+// refusals no retry can change fail the migration terminally with the target's
+// message (the source is never contacted), while any other 409 stays retryable.
+func TestRunMigration_AbandonedCopyKeptFailsMigration(t *testing.T) {
+	for _, code := range []string{migrations.ErrCodeAbandonedCopyKept, migrations.ErrCodeDiskDirExists, migrations.ErrCodeAbandonedCopyUnmovable} {
+		t.Run(code, func(t *testing.T) {
+			s, cli := freshStore(t)
+			ctx := context.Background()
+
+			nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+			m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
+			const msg = "an abandoned copy of this VM is kept at /pool/abandoned/x; remove it to migrate the VM here again"
+			agent := &fakeMigrationAgent{incomingErr: &agentclient.AgentError{Status: 409, Code: code, Message: msg}}
+
+			h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+			if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+				t.Fatalf("MigrateHandler(%s) = %v, want nil (terminal, not requeued)", code, err)
+			}
+			if agent.outgoingCalls != 0 {
+				t.Errorf("StartOutgoingMigration calls = %d, want 0", agent.outgoingCalls)
+			}
+			got, err := s.MigrationByID(ctx, m.ID)
+			if err != nil {
+				t.Fatalf("MigrationByID: %v", err)
+			}
+			if got.Phase != store.MigrationPhaseFailed || derefStr(got.ErrorMessage) != msg {
+				t.Errorf("migration = (%q, %q), want (failed, %q)", got.Phase, derefStr(got.ErrorMessage), msg)
+			}
+			task, err := s.TaskByID(ctx, taskID)
+			if err != nil {
+				t.Fatalf("TaskByID: %v", err)
+			}
+			if task.Status != store.TaskStatusFailed {
+				t.Errorf("task status = %q, want failed", task.Status)
+			}
+			var envelope struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(task.Error, &envelope); err != nil {
+				t.Fatalf("decode task error %q: %v", task.Error, err)
+			}
+			if envelope.Code != code || envelope.Message != msg {
+				t.Errorf("task error = (%q, %q), want (%q, %q)", envelope.Code, envelope.Message, code, msg)
+			}
+		})
+	}
+
+	t.Run("other conflict retries", func(t *testing.T) {
+		s, cli := freshStore(t)
+		ctx := context.Background()
+
+		nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+		m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
+		agent := &fakeMigrationAgent{incomingErr: &agentclient.AgentError{Status: 409, Code: "conflict", Message: "busy"}}
+
+		h := migrations.MigrateHandler(s, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+		if err := h(ctx, jobArgs(t, taskID, m.ID)); err == nil {
+			t.Fatal("MigrateHandler(conflict) = nil, want a retryable error")
+		}
+		got, err := s.MigrationByID(ctx, m.ID)
+		if err != nil {
+			t.Fatalf("MigrationByID: %v", err)
+		}
+		if got.Phase == store.MigrationPhaseFailed {
+			t.Errorf("migration phase = %q, want non-terminal (a plain conflict is retryable)", got.Phase)
+		}
+	})
+}
+
+// abandonedSpy returns a staged list (or error) from AbandonedOfflineMigrations
+// and records the arguments it was called with.
+type abandonedSpy struct {
+	migrations.MigrationWorkerStore
+	ids                   []uuid.UUID
+	err                   error
+	vmID, target, exclude uuid.UUID
+}
+
+func (st *abandonedSpy) AbandonedOfflineMigrations(_ context.Context, vmID, targetID, exclude uuid.UUID) ([]uuid.UUID, error) {
+	st.vmID, st.target, st.exclude = vmID, targetID, exclude
+	return st.ids, st.err
+}
+
+// TestStartOrResume_SendsAbandonedMigrationIDs pins that the incoming request
+// names this VM's abandoned offline migrations to the bound target, and that a
+// failed lookup sends nothing and retries.
+func TestStartOrResume_SendsAbandonedMigrationIDs(t *testing.T) {
+	s, cli := freshStore(t)
+	ctx := context.Background()
+
+	nodeA, nodeB, vm := seedSagaVM(t, s, cli)
+	m, taskID := seedExplicitMigration(t, s, vm.ID, nodeA.ID, nodeB.ID, "default", false)
+	st := &abandonedSpy{MigrationWorkerStore: s, ids: []uuid.UUID{uuid.New(), uuid.New()}}
+	agent := &fakeMigrationAgent{terminal: agentclient.TaskTerminal{Status: "success"}}
+
+	h := migrations.MigrateHandler(st, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+	if err := h(ctx, jobArgs(t, taskID, m.ID)); err != nil {
+		t.Fatalf("MigrateHandler = %v, want nil", err)
+	}
+	if agent.incomingReq.AbandonedMigrationIds == nil {
+		t.Fatalf("AbandonedMigrationIds = nil, want %v", st.ids)
+	}
+	if diff := cmp.Diff(st.ids, *agent.incomingReq.AbandonedMigrationIds); diff != "" {
+		t.Errorf("AbandonedMigrationIds mismatch (-want +got):\n%s", diff)
+	}
+	if st.vmID != vm.ID || st.target != nodeB.ID || st.exclude != m.ID {
+		t.Errorf("AbandonedOfflineMigrations(%v, %v, %v), want (%v, %v, %v)", st.vmID, st.target, st.exclude, vm.ID, nodeB.ID, m.ID)
+	}
+
+	t.Run("lookup error retries without contacting the target", func(t *testing.T) {
+		s, cli := freshStore(t)
+		_, nodeB, vm := seedSagaVM(t, s, cli)
+		m, taskID := seedExplicitMigration(t, s, vm.ID, *vm.PinnedNodeID, nodeB.ID, "default", false)
+		st := &abandonedSpy{MigrationWorkerStore: s, err: errors.New("etcd down")}
+		agent := &fakeMigrationAgent{}
+
+		h := migrations.MigrateHandler(st, agent, &fakePlacer{}, migrations.MigrateConfig{}, discardLogger())
+		if err := h(ctx, jobArgs(t, taskID, m.ID)); err == nil {
+			t.Fatal("MigrateHandler(lookup error) = nil, want a retryable error")
+		}
+		if agent.incomingCalls != 0 {
+			t.Errorf("StartIncomingMigration calls = %d, want 0", agent.incomingCalls)
+		}
+	})
 }

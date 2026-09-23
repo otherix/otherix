@@ -252,3 +252,34 @@ func TestReadMetaNewKeyWinsOverLegacy(t *testing.T) {
 		t.Errorf("MemoryMib = %d, want 4096 (new key wins)", m.MemoryMib)
 	}
 }
+
+func TestVMMetaAdoptedByRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	in := sampleMeta()
+	in.AdoptedBy = uuid.New()
+	if err := WriteMeta(dir, in); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+	got, err := ReadMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadMeta: %v", err)
+	}
+	if got.AdoptedBy != in.AdoptedBy {
+		t.Errorf("ReadMeta().AdoptedBy = %v, want %v", got.AdoptedBy, in.AdoptedBy)
+	}
+}
+
+func TestReadMetaWithoutAdoptedByIsNil(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"vm_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","name":"old","status":"stopped"}`
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+	got, err := ReadMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadMeta: %v", err)
+	}
+	if got.AdoptedBy != uuid.Nil {
+		t.Errorf("ReadMeta().AdoptedBy = %v, want nil", got.AdoptedBy)
+	}
+}

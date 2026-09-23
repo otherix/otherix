@@ -5,7 +5,9 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -40,6 +42,8 @@ type AdoptSpec struct {
 	// VM materializes its host taps (and the resumed guest later sources a
 	// gratuitous ARP) on this node.
 	NICs []netfabric.NIC
+	// MigrationID is the migration adopting the VM; recorded as VM.AdoptedBy.
+	MigrationID uuid.UUID
 }
 
 // AdoptForMigration registers a Migrated VM on this (target) node and
@@ -75,6 +79,7 @@ func (m *Manager) AdoptForMigration(spec AdoptSpec) (*VM, error) {
 		ConsoleSocket: console,
 		PIDFile:       pid,
 		Migrated:      true,
+		AdoptedBy:     spec.MigrationID,
 		NICs:          spec.NICs,
 		ArrivedAt:     time.Now(),
 	}
@@ -106,35 +111,82 @@ func adoptStatus(s Status) Status {
 	return s
 }
 
-// removeAdoptedVM rolls back an AdoptForMigration: it drops the in-memory VM
-// record, removes the per-VM state directory (meta.json, sockets, pidfile)
-// under stateDir (mirroring runDelete's state-dir removal), and removes the
+// removeAdoptedVM rolls back an AdoptForMigration: dropAdoptedRecord plus the
 // per-VM destination disk dir. The disk-dir removal is SAFE for every caller:
-// the TARGET-side callers (the startIncomingLive rollback and
-// teardownIncomingTarget) are strictly pre-cutover, where the destination disk
-// is empty / not the live copy; the SOURCE-side caller (teardownDepartedSource)
-// runs only after a completed live migrate, where the disk is the now-stale
-// departed copy (the live copy is on the target). The target-side post-cutover
-// path (failIncomingResume) intentionally does NOT call this - there the
-// destination disk is the ONLY live copy. The RemoveAll errors are best-effort:
-// logged and ignored so a stale directory never blocks teardown.
+// the TARGET-side callers (the incoming rollbacks and teardownIncomingTarget)
+// are strictly pre-cutover and act only on a disk dir the incoming created
+// exclusively, where the destination disk is empty / not the live copy; the
+// SOURCE-side caller (teardownDepartedSource) runs only after a completed live
+// migrate, where the disk is the now-stale departed copy (the live copy is on
+// the target). The target-side post-cutover path (failIncomingResume)
+// intentionally does NOT call this - there the destination disk is the ONLY
+// live copy. The RemoveAll errors are best-effort: logged and ignored so a
+// stale directory never blocks teardown.
 func (m *Manager) removeAdoptedVM(id uuid.UUID) {
-	m.mu.Lock()
-	v := m.vms[id]
-	delete(m.vms, id)
-	m.mu.Unlock()
-	if err := os.RemoveAll(filepath.Join(m.stateDir, id.String())); err != nil {
-		m.log.Warn("removeAdoptedVM: remove agent state dir", "vm_id", id.String(), "err", err)
-	}
-	// Also remove the per-VM destination disk dir. SAFE: every caller is
-	// pre-cutover (the startIncomingLive rollback and teardownIncomingTarget),
-	// where this disk is empty / not the live copy. The post-cutover path
-	// (failIncomingResume) intentionally does NOT call removeAdoptedVM.
+	v := m.dropAdoptedRecord(id)
 	if v != nil && v.DiskPath != "" {
 		if err := os.RemoveAll(filepath.Dir(v.DiskPath)); err != nil {
 			m.log.Warn("removeAdoptedVM: remove disk dir", "vm_id", id.String(), "err", err)
 		}
 	}
+}
+
+// dropAdoptedRecord drops the in-memory VM record and removes the per-VM state
+// directory (meta.json, sockets, pidfile) under stateDir, mirroring runDelete's
+// state-dir removal. It never touches the disk dir, so it is the rollback for an
+// adopt whose disk dir is not this call's to remove. It returns the dropped VM,
+// or nil when there was none.
+func (m *Manager) dropAdoptedRecord(id uuid.UUID) *VM {
+	m.mu.Lock()
+	v := m.vms[id]
+	delete(m.vms, id)
+	m.mu.Unlock()
+	if err := os.RemoveAll(filepath.Join(m.stateDir, id.String())); err != nil {
+		m.log.Warn("dropAdoptedRecord: remove agent state dir", "vm_id", id.String(), "err", err)
+	}
+	return v
+}
+
+// adoptIncoming adopts an incoming VM and then creates its disk dir
+// exclusively (makeIncomingDiskDir). The mkdir comes after the adopt so a retry
+// of a migration whose record is still here fails "already present" at the
+// adopt rather than at the dir. When the dir cannot be created the adopt is
+// rolled back without touching the dir, which is not this call's.
+func (m *Manager) adoptIncoming(spec AdoptSpec) (*VM, error) {
+	v, err := m.AdoptForMigration(spec)
+	if err != nil {
+		return nil, err
+	}
+	if err := makeIncomingDiskDir(v.DiskPath); err != nil {
+		m.dropAdoptedRecord(v.ID)
+		return nil, err
+	}
+	return v, nil
+}
+
+// makeIncomingDiskDir creates the per-VM disk dir of an adopted incoming VM
+// exclusively. A dir that already exists belongs to something this call did
+// not make (an older copy whose record is gone, or one that was not moved
+// aside), and qemu-img create would truncate the disk inside it, so it is
+// refused with ErrDiskDirExists and left alone. Creating it here also makes
+// "this dir is ours" a checked fact for the incoming rollback, which removes it.
+func makeIncomingDiskDir(diskPath string) error {
+	dir := filepath.Dir(diskPath)
+	err := os.Mkdir(dir, 0o750)
+	if errors.Is(err, fs.ErrNotExist) {
+		// The pool's vms/ parent does not exist yet (a fresh pool).
+		if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
+			return fmt.Errorf("create pool vms dir: %v", err)
+		}
+		err = os.Mkdir(dir, 0o750)
+	}
+	switch {
+	case errors.Is(err, fs.ErrExist):
+		return fmt.Errorf("%w: %s", ErrDiskDirExists, dir)
+	case err != nil:
+		return fmt.Errorf("create vm disk dir: %v", err)
+	}
+	return nil
 }
 
 // Migrations returns the agent's in-memory migration record store.
@@ -237,6 +289,11 @@ type IncomingSpec struct {
 	// materializes a host tap per NIC (attached to its overlay bridge) before
 	// launching the incoming qemu, so the resumed guest has network.
 	NICs []netfabric.NIC
+	// AbandonedMigrationIDs are the control plane's earlier OFFLINE migrations
+	// of this VM to this node that ended failed or cancelled. A stopped copy
+	// adopted by one of them may be moved aside before this migration adopts
+	// the VM (setAsideAbandonedCopy).
+	AbandonedMigrationIDs []uuid.UUID
 }
 
 // MigrationDisk is one entry of the ordered disk manifest the target
@@ -304,6 +361,12 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	}
 	defer release()
 
+	// For both paths, before anything is reserved, so a refusal leaks nothing.
+	// A replay of a migration already prepared here moves nothing and falls
+	// through to the idempotent-resume guards below.
+	if err := m.setAsideAbandonedCopy(s); err != nil {
+		return IncomingResult{}, err
+	}
 	if migration.Mode(s.Mode) == migration.ModeLive {
 		return m.startIncomingLive(ctx, s)
 	}
@@ -315,7 +378,6 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	if rec, ok := m.migrations.Get(s.MigrationID); ok && rec.Role == migration.RoleTarget {
 		return IncomingResult{ListenEndpoint: rec.ListenEndpt, AuthToken: rec.AuthToken}, nil
 	}
-
 	port, err := m.migPorts.Reserve()
 	if err != nil {
 		// %w so the handler can errors.Is(ErrNoFreePort) and surface a
@@ -330,13 +392,21 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 		return IncomingResult{}, err
 	}
 
-	v, err := m.AdoptForMigration(AdoptSpec{
+	v, err := m.adoptIncoming(AdoptSpec{
 		UUID: s.VMUUID, Name: s.VMName, VCPUs: s.VCPUs, MemoryMib: s.MemoryMib,
 		PoolName: s.PoolName, Architecture: s.Architecture,
+		MigrationID: s.MigrationID,
 	})
 	if err != nil {
 		cleanup()
 		return IncomingResult{}, err
+	}
+	// From here on the disk dir is this call's own, so a failure rolls back the
+	// whole adopt, dir included, and a retry of the migration adopts afresh.
+	releasePort := cleanup
+	cleanup = func() {
+		m.removeAdoptedVM(v.ID)
+		releasePort()
 	}
 
 	// Destination disk virtual size must be >= the source disk's virtual
@@ -344,7 +414,10 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	// cannot write past the end of a smaller target). Over-sizing is safe:
 	// the resulting qcow2 just has extra unused virtual space and still
 	// boots. So pick the larger of the source disk virtual size and the
-	// progress-UX estimate. CreateDisk ensures the per-VM parent dir exists.
+	// progress-UX estimate. The per-VM dir was created exclusively by
+	// adoptIncoming above; CreateDisk's own MkdirAll of it is then a no-op and
+	// must not replace that exclusive mkdir, which is what keeps an existing
+	// copy's disk from being truncated.
 	virtualBytes := s.DiskSizeBytes
 	if s.ExpectedSize > virtualBytes {
 		virtualBytes = s.ExpectedSize
@@ -373,7 +446,15 @@ func (m *Manager) StartIncoming(ctx context.Context, s IncomingSpec) (IncomingRe
 	// timeout tear down the half-started server so it does not linger holding
 	// the disk lock + port.
 	if err := m.migWaitNBDReady(ctx, endpoint); err != nil {
-		_ = m.migStopNBD(nbdSrv, 3*time.Second)
+		if stopErr := m.migStopNBD(nbdSrv, 3*time.Second); stopErr != nil {
+			// A qemu-nbd that did not stop still holds the disk and the port:
+			// drop only the record, and leak the rest rather than delete a disk
+			// a live server has open.
+			m.log.Warn("incoming migration: qemu-nbd did not stop; keeping its disk dir and port",
+				"migration_id", s.MigrationID.String(), "vm_id", v.ID.String(), "port", port, "err", stopErr)
+			m.dropAdoptedRecord(v.ID)
+			return IncomingResult{}, fmt.Errorf("nbd server not ready: %v", err)
+		}
 		cleanup()
 		return IncomingResult{}, fmt.Errorf("nbd server not ready: %v", err)
 	}

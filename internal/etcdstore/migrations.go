@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -147,6 +148,18 @@ type cutoverState struct {
 	rtRev   int64
 }
 
+// cutoverRefused reports whether m has ended in a phase the cutover must never
+// override: failed, or cancelled for an OFFLINE migration. An offline cancel is
+// final. Its target adopted a stopped copy that nothing starts before a cutover,
+// and the source copy is deleted only after one, so refusing leaves the VM on
+// its unaltered source - always recoverable. The cancelled override exists only
+// for live migrations, whose target may already be running the guest when a
+// cancel loses the race to the source's handoff.
+func cutoverRefused(m store.Migration) bool {
+	return m.Phase == store.MigrationPhaseFailed ||
+		(m.Phase == store.MigrationPhaseCancelled && !m.Live)
+}
+
 // loadCutoverState reads and validates the migration, VM, and runtime rows for a
 // cutover. A nil error with done=true means the cutover is already committed
 // (idempotent reconcile) and the caller should return nil without a Txn.
@@ -178,8 +191,9 @@ func (s *Store) loadCutoverState(ctx context.Context, migID uuid.UUID) (cutoverS
 	// migration is OVERRIDDEN and proceeds: a cancel that raced the source-success
 	// lost the race - the target is already (or imminently) running, and refusing
 	// the cutover would strand a RUNNING target while the CP records cancelled
-	// (split-brain risk). Completing to the target is the only safe outcome.
-	if cs.m.Phase == store.MigrationPhaseFailed {
+	// (split-brain risk). Completing to the target is the only safe outcome. This
+	// override applies to LIVE migrations only; see cutoverRefused.
+	if cutoverRefused(cs.m) {
 		return cs, false, store.ErrMigrationTerminal
 	}
 	if cs.m.TargetNodeID == nil {
@@ -235,9 +249,11 @@ func (s *Store) loadCutoverState(ctx context.Context, migID uuid.UUID) (cutoverS
 // index move byte-matches buildBindTxn's leaf form. Terminal locks are released
 // via terminalCleanupOps. A migration already completed is a no-op (idempotent
 // reconcile); a terminal-FAILED migration, or a nil target, is an error - a
-// failed migration must never re-pin. A CANCELLED migration is OVERRIDDEN here
-// (loadCutoverState): the sole caller commits only post-source-success, so the
-// source already handed off and a cancel that raced it is too late to roll back.
+// failed migration must never re-pin. A CANCELLED LIVE migration is OVERRIDDEN
+// here (loadCutoverState): the sole caller commits only post-source-success, so
+// the source already handed off and a cancel that raced it is too late to roll
+// back. A CANCELLED OFFLINE migration is refused with store.ErrMigrationTerminal:
+// its target never runs the guest before a cutover, so the cancel is final.
 func (s *Store) CommitMigrationCutover(ctx context.Context, migID uuid.UUID) error {
 	cs, done, err := s.loadCutoverState(ctx, migID)
 	if err != nil {
@@ -683,6 +699,50 @@ func (s *Store) MigrationTriedToLandOn(ctx context.Context, vmID, nodeID uuid.UU
 		}
 	}
 	return false, nil
+}
+
+// AbandonedOfflineMigrations returns the ids of vmID's OFFLINE migrations that
+// named targetID and ended failed or cancelled, excluding exclude. Such a
+// migration can never cut over (the cutover refuses both phases for an offline
+// row), so the copy it left on the target never became the VM's home: the target
+// may set that copy aside when the VM is migrated there again. Completed rows are
+// never listed - their copy may be the home.
+//
+// A corrupt index entry or an unreadable migration row is skipped with a WARN
+// rather than failing the whole list: leaving an id out only means its copy is
+// not set aside, while an error would block every migration of the VM to every
+// node. A Range error is still returned.
+func (s *Store) AbandonedOfflineMigrations(ctx context.Context, vmID, targetID, exclude uuid.UUID) ([]uuid.UUID, error) {
+	items, err := s.c.Range(ctx, migrationsVMIndexPrefix(vmID))
+	if err != nil {
+		return nil, err
+	}
+	var ids []uuid.UUID
+	for _, kv := range items {
+		id, perr := uuid.Parse(string(kv.Value))
+		if perr != nil {
+			s.log.WarnContext(ctx, "etcdstore: skipping corrupt migration vm index entry",
+				slog.String("key", kv.Key), slog.String("error", perr.Error()))
+			continue
+		}
+		if id == exclude {
+			continue
+		}
+		var m store.Migration
+		found, gerr := s.c.GetJSON(ctx, migrationKey(id), &m)
+		if gerr != nil {
+			s.log.WarnContext(ctx, "etcdstore: skipping unreadable migration row",
+				slog.String("migration_id", id.String()), slog.String("error", gerr.Error()))
+			continue
+		}
+		if !found || m.Live || m.TargetNodeID == nil || *m.TargetNodeID != targetID {
+			continue
+		}
+		if m.Phase == store.MigrationPhaseFailed || m.Phase == store.MigrationPhaseCancelled {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // MigrationByID returns the migration row with the given id, or

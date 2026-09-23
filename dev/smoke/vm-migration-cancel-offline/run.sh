@@ -30,8 +30,14 @@
 #      finalizes `cancelled`.
 #   4. the VM is still usable on node-1 (an offline migration powers the guest
 #      off before pushing, so fail-safe-to-source here means the disk is intact
-#      and the VM starts again on its source node), and a fresh migration is
-#      accepted and completes - proving the per-VM guard was released.
+#      and the VM runs again on its source node).
+#   5. a fresh offline migration to the SAME target, node-2, is accepted and
+#      completes, and the VM runs there. The cancelled migration left its
+#      stopped copy of the VM on node-2; the new migration names the cancelled
+#      one as abandoned, so node-2 moves that copy into
+#      <pool>/abandoned/<vm-id>-<cancelled-migration-id> (nothing is deleted)
+#      instead of refusing the VM as already present. The smoke asserts the
+#      moved copy is there.
 #
 # NOT COVERED HERE: the double-release this branch also fixes needs a cancel to
 # land after the source push already completed, so that the cutover commits and
@@ -70,7 +76,10 @@ NBD_WAIT="${NBD_WAIT:-120}"
 # The reap must converge in SECONDS. There is no agent-side backstop for an
 # offline target at all, so anything that has not converged by here never will.
 CONVERGE_WAIT="${CONVERGE_WAIT:-60}"
-REMIGRATE_WAIT="${REMIGRATE_WAIT:-600}"
+MIGRATE_WAIT="${MIGRATE_WAIT:-600}"
+# Long enough for a few heartbeats to replace an observed phase that predates a
+# migration's poweroff.
+SETTLE_WAIT="${SETTLE_WAIT:-15}"
 ETCD_EP="${ETCD_EP:-127.0.0.1:2379}"
 
 # --- helpers -----------------------------------------------------------
@@ -81,6 +90,7 @@ fail() { echo "${RED}FAIL${NC} $*" >&2; exit 1; }
 otx() { "$OTX" "$@"; }
 
 vm_phase() { otx vm get "$1" --output json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || true; }
+vm_desired() { otx vm get "$1" --output json 2>/dev/null | jq -r '.desired_phase // empty' 2>/dev/null || true; }
 # vm_node NAME -> the name of the node the VM is placed on ("" if unscheduled or
 # gone).
 vm_node() { otx vm get "$1" --output json 2>/dev/null | jq -r '.node // empty' 2>/dev/null || true; }
@@ -95,10 +105,103 @@ migration_phase() { otx migration get "$1" --output json 2>/dev/null | jq -r '.p
 # id). `pgrep -x qemu-nbd` matches on the executable name, so it cannot match the
 # wrapper shell this runs in - a plain `pgrep -f <id>` would, because the id is in
 # the wrapper's own cmdline, and would report a phantom process forever.
+# Succeeds with empty output when the probe ran and found none; fails when the
+# probe could not run on the node, so a broken probe never reads as "no server".
+# The remote script ends in `exit 0`, so a non-zero status can only come from
+# reaching the node.
 nbd_pids_on() {
-  run_on "$1" bash -c "pgrep -x qemu-nbd 2>/dev/null | while read -r p; do
+  local out
+  out="$(run_on "$1" bash -c "pgrep -x qemu-nbd 2>/dev/null | while read -r p; do
       tr '\\0' ' ' < /proc/\$p/cmdline 2>/dev/null | grep -qF '$2' && echo \$p
-    done" 2>/dev/null | tr -dc '0-9\n' || true
+    done; exit 0" 2>/dev/null)" || return 1
+  printf '%s\n' "$out" | tr -dc '0-9\n'
+}
+
+# wait_no_nbd HANDLE MIGRATION_ID FAIL_MESSAGE -> poll until the node runs no
+# qemu-nbd for the migration; fail with the surviving pids on timeout, or say so
+# when the node could not be probed at all.
+wait_no_nbd() {
+  local deadline=$(( SECONDS + CONVERGE_WAIT )) pids="" probed=0
+  while (( SECONDS < deadline )); do
+    if pids="$(nbd_pids_on "$1" "$2")"; then
+      probed=1
+      [[ -z "$pids" ]] && return 0
+    else
+      info "could not probe $1 for qemu-nbd; retrying"
+    fi
+    sleep 2
+  done
+  (( probed )) || fail "$3: could not probe $1 for qemu-nbd within ${CONVERGE_WAIT}s"
+  fail "$3 (pids: $(echo "$pids" | tr '\n' ' '), after ${CONVERGE_WAIT}s)"
+}
+
+# wait_migration_terminal MIGRATION_ID -> echo the terminal phase; fail on timeout.
+wait_migration_terminal() {
+  local deadline=$(( SECONDS + MIGRATE_WAIT )) ph=""
+  while (( SECONDS < deadline )); do
+    ph="$(migration_phase "$1")"
+    case "$ph" in completed|failed|cancelled) echo "$ph"; return 0 ;; esac
+    sleep 2
+  done
+  fail "migration ${1:0:8} not terminal within ${MIGRATE_WAIT}s (phase='${ph:-none}')"
+}
+
+# ensure_running VM -> make sure the VM runs; fail if it will not. A VM that is
+# meant to run is brought back up by its node's reconciler, and its observed
+# phase lags by a heartbeat or two: right after an offline migration it can still
+# read "running" from before the migration powered the guest off. So let it
+# settle and wait for running; start it explicitly only if it is meant to be off.
+ensure_running() {
+  if [[ "$(vm_desired "$1")" == "running" ]]; then
+    sleep "$SETTLE_WAIT"
+    local deadline=$(( SECONDS + CONVERGE_WAIT ))
+    while (( SECONDS < deadline )); do
+      [[ "$(vm_phase "$1")" == "running" ]] && return 0
+      sleep 2
+    done
+    fail "$1 not running ${CONVERGE_WAIT}s after settling (phase=$(vm_phase "$1"))"
+  fi
+  otx vm start "$1" --wait --wait-timeout 180s >/tmp/cancel_offline_start.out 2>&1 \
+    || { cat /tmp/cancel_offline_start.out; fail "$1 does not start (phase=$(vm_phase "$1"))"; }
+  [[ "$(vm_phase "$1")" == "running" ]] || fail "$1 not running after start (phase=$(vm_phase "$1"))"
+}
+
+# abandoned_copy_path NODE_INDEX POOL VM_ID MIGRATION_ID -> the dir that node's
+# agent moves a copy left by the abandoned migration MIGRATION_ID into:
+# <pool root>/abandoned/<vm-id>-<migration-id>. smoke_state's pools/ is what the
+# agent sees as /var/lib/otherix/pools on both platforms. Prints nothing and
+# fails unless every component is set and well-formed, so no caller can build a
+# path with an empty or wildcard component.
+abandoned_copy_path() {
+  local root
+  root="$(smoke_state "$1")"
+  [[ -n "$root" && -n "$2" && "$2" != */* && "$2" != .* ]] || return 1
+  [[ "$3" =~ ^[0-9a-f-]{36}$ && "$4" =~ ^[0-9a-f-]{36}$ ]] || return 1
+  printf '%s/pools/%s/abandoned/%s-%s' "$root" "$2" "$3" "$4"
+}
+
+# file_on HANDLE PATH -> "present" or "absent" for the regular file PATH on the
+# node. The remote script prints a verdict and ends in `exit 0`, so a non-zero
+# status means the probe could not run on the node, never "absent".
+file_on() {
+  # shellcheck disable=SC2016 # $0 expands in the remote bash, bound to PATH
+  run_on "$1" sudo bash -c 'if [ -f "$0" ]; then echo present; else echo absent; fi; exit 0' "$2" 2>/dev/null
+}
+
+# assert_abandoned_copy HANDLE PATH WHAT -> fail unless PATH on the node holds
+# the moved disk, and fail loud when the node could not be probed.
+assert_abandoned_copy() {
+  local out
+  out="$(file_on "$1" "$2/disk.qcow2")" || fail "$3: could not probe $1 for $2"
+  [[ "$out" == "present" ]] || fail "$3: no disk.qcow2 under $2 on $1 (probe said '${out:-nothing}')"
+}
+
+# remove_abandoned_copy HANDLE PATH -> rm -rf exactly PATH on the node, and only
+# when it is a path abandoned_copy_path built (never a glob, never a path with an
+# empty component).
+remove_abandoned_copy() {
+  [[ "$2" =~ /pools/[^/]+/abandoned/[0-9a-f-]{36}-[0-9a-f-]{36}$ ]] || return 1
+  run_on "$1" sudo rm -rf -- "$2"
 }
 
 # task_status_for MIGRATION_ID -> the backing vm.migrate task's Status (the task
@@ -116,6 +219,7 @@ cleanup() {
   otx vm delete "$VM" --force --wait --wait-timeout 90s >/dev/null 2>&1 || true
   run_on "$SMOKE_HANDLE_2" sudo pkill -f "name $VM" >/dev/null 2>&1 || true
   run_on "$SMOKE_HANDLE_3" sudo pkill -f "name $VM" >/dev/null 2>&1 || true
+  [[ -n "${ABANDONED:-}" ]] && remove_abandoned_copy "$SMOKE_HANDLE_2" "$ABANDONED" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -143,21 +247,28 @@ otx vm create "$VM" \
 [[ "$(vm_phase "$VM")" == "running" ]] || fail "$VM not running after create"
 VMID="$(otx vm get "$VM" --output json | jq -r '.id')"
 SRC_NODE="$(vm_node "$VM")"
+POOL="$(otx vm get "$VM" --output json | jq -r '.pool // empty')"
+[[ -n "$POOL" ]] || fail "could not resolve the pool of $VM"
 [[ "$SRC_NODE" == "$NODE1" ]] || fail "$VM not placed on node-1 (node=${SRC_NODE:-none})"
 pass "created and running on node-1 (id=${VMID:0:8})"
 
 # --- step 2: offline migrate, cancel once the target's qemu-nbd is up --
 echo "=== step 2: offline-migrate -> $NODE2; cancel once node-2 serves the disk ==="
-MIGRATION_ID=""
+MIGRATION_ID=""; ABANDONED=""
 otx vm migrate "$VM" --node "$NODE2" --offline >/tmp/cancel_offline_migrate.out 2>&1 \
   || { cat /tmp/cancel_offline_migrate.out; fail "vm migrate --offline request failed"; }
 MIGRATION_ID="$(latest_migration_id "$VMID")"
 [[ "$MIGRATION_ID" =~ ^[0-9a-f-]{36}$ ]] || fail "could not resolve the migration id (got '${MIGRATION_ID:-none}')"
+ABANDONED="$(abandoned_copy_path 2 "$POOL" "$VMID" "$MIGRATION_ID")" \
+  || fail "could not build the abandoned-copy path (pool='$POOL' vm='$VMID' migration='$MIGRATION_ID')"
 
-deadline=$(( SECONDS + NBD_WAIT )); nbd_pid=""
+deadline=$(( SECONDS + NBD_WAIT )); nbd_pid=""; probed=0
 while (( SECONDS < deadline )); do
-  nbd_pid="$(nbd_pids_on "$SMOKE_HANDLE_2" "$MIGRATION_ID" | head -1)"
-  [[ "$nbd_pid" =~ ^[0-9]+$ ]] && break
+  if pids="$(nbd_pids_on "$SMOKE_HANDLE_2" "$MIGRATION_ID")"; then
+    probed=1
+    nbd_pid="$(head -1 <<<"$pids")"
+    [[ "$nbd_pid" =~ ^[0-9]+$ ]] && break
+  fi
   ph="$(migration_phase "$MIGRATION_ID")"
   case "$ph" in
     completed) fail "migration completed before its qemu-nbd was ever observed (too fast; raise DISK_GIB)" ;;
@@ -165,6 +276,7 @@ while (( SECONDS < deadline )); do
   esac
   sleep 0.5
 done
+(( probed )) || fail "could not probe node-2 for qemu-nbd within ${NBD_WAIT}s"
 [[ "$nbd_pid" =~ ^[0-9]+$ ]] || fail "node-2 never spawned a qemu-nbd for this migration within ${NBD_WAIT}s"
 info "node-2 serving the destination disk (qemu-nbd pid=$nbd_pid); issuing cancel"
 
@@ -175,13 +287,8 @@ pass "migration cancelled (CP authoritative)"
 
 # --- step 3: the offline target was actually reaped --------------------
 echo "=== step 3: assert node-2's incoming setup was reaped (no agent backstop exists) ==="
-deadline=$(( SECONDS + CONVERGE_WAIT )); leaked="?"
-while (( SECONDS < deadline )); do
-  if [[ -z "$(nbd_pids_on "$SMOKE_HANDLE_2" "$MIGRATION_ID")" ]]; then leaked="no"; break; fi
-  leaked="yes"; sleep 2
-done
-[[ "$leaked" == "no" ]] \
-  || fail "node-2 qemu-nbd for this migration still alive ${CONVERGE_WAIT}s after cancel - the offline target was NOT reaped"
+wait_no_nbd "$SMOKE_HANDLE_2" "$MIGRATION_ID" \
+  "node-2 qemu-nbd for this migration still alive after cancel - the offline target was NOT reaped"
 pass "node-2 qemu-nbd reaped promptly"
 
 deadline=$(( SECONDS + CONVERGE_WAIT )); tstatus=""
@@ -195,41 +302,37 @@ done
 pass "backing vm.migrate task finalized 'cancelled'"
 
 # --- step 4: the VM is intact on its source node and usable ------------
-echo "=== step 4: VM intact on $NODE1 and migratable again ==="
+echo "=== step 4: VM intact and running on $NODE1 ==="
 # An offline migration powers the guest off before pushing, so fail-safe-to-source
 # here means the VM is still owned by node-1 with its disk intact - not that it is
-# still running. Prove it materially by starting it again.
+# still running. Prove it materially by having it run again.
 now_node="$(vm_node "$VM")"
 [[ "$now_node" == "$SRC_NODE" ]] \
   || fail "VM moved off its source node after a cancelled migration ($SRC_NODE -> ${now_node:-none})"
-if [[ "$(vm_phase "$VM")" != "running" ]]; then
-  otx vm start "$VM" --wait --wait-timeout 180s >/dev/null 2>&1 \
-    || fail "VM does not start again on node-1 after the cancelled migration - the source copy was not preserved"
-fi
-[[ "$(vm_phase "$VM")" == "running" ]] || fail "VM not running on node-1 (phase=$(vm_phase "$VM"))"
+ensure_running "$VM"
+[[ "$(vm_node "$VM")" == "$SRC_NODE" ]] || fail "$VM runs off its source node (node=$(vm_node "$VM"))"
 pass "VM intact and running on node-1 (fail-safe-to-source)"
 
-# A fresh offline migration must be accepted and complete, proving the per-VM
-# migration guard was released by the terminal cancel.
-#
-# It targets node-3, not node-2, for a reason that is a KNOWN LIMITATION rather
-# than a property of this smoke: the agent's offline cancel arm reaps the
-# qemu-nbd, the port and the record, but deliberately does NOT remove the
-# adopted VM record the cancelled migration left behind. AdoptForMigration
-# refuses a UUID already in m.vms, so a second migration back to the SAME target
-# fails "already present" until that agent restarts. Removing the adopted record
-# means removing its destination disk with it, and a cancel that raced a
-# completed push would then destroy the copy the committed cutover is about to
-# start - trading a recoverable dead end for a lost VM. Pre-existing: before the
-# control plane reaped offline targets at all, the same stale record blocked the
-# same re-migration.
-otx vm migrate "$VM" --node "$NODE3" --offline --wait --wait-timeout "${REMIGRATE_WAIT}s" \
-  >/tmp/cancel_offline_migrate2.out 2>&1 \
-  || { cat /tmp/cancel_offline_migrate2.out; fail "re-migration after the cancel did not complete"; }
+# --- step 5: migrate again to the SAME target --------------------------
+echo "=== step 5: offline-migrate -> $NODE2 again; its old copy moves aside ==="
+# node-2 still holds the stopped copy the cancelled migration adopted. The new
+# migration names the cancelled one as abandoned, so node-2 moves that copy
+# into its pool's abandoned/ dir instead of refusing the VM as already present.
+# A completed migration also proves the per-VM migration guard was released.
+otx vm migrate "$VM" --node "$NODE2" --offline >/tmp/cancel_offline_migrate2.out 2>&1 \
+  || { cat /tmp/cancel_offline_migrate2.out; fail "second vm migrate --offline request failed"; }
 m2="$(latest_migration_id "$VMID")"
-ph2="$(migration_phase "$m2")"
-[[ "$ph2" == "completed" ]] || fail "re-migration did not complete (phase='${ph2:-none}')"
-pass "re-migration completed; the per-VM migration guard was released by the cancel"
+[[ "$m2" =~ ^[0-9a-f-]{36}$ && "$m2" != "$MIGRATION_ID" ]] \
+  || fail "could not resolve the second migration id (got '${m2:-none}')"
+ph2="$(wait_migration_terminal "$m2")"
+[[ "$ph2" == "completed" ]] || fail "migration to the node a cancelled migration left a copy on went '$ph2', want completed"
+now_node="$(vm_node "$VM")"
+[[ "$now_node" == "$NODE2" ]] || fail "$VM not on node-2 after the second migration (node=${now_node:-none})"
+ensure_running "$VM"
+pass "second migration ${m2:0:8} completed; $VM running on node-2"
+
+assert_abandoned_copy "$SMOKE_HANDLE_2" "$ABANDONED" "node-2 did not keep the cancelled migration's copy"
+pass "the cancelled migration's copy sits at $ABANDONED on node-2"
 
 trap - EXIT
 cleanup

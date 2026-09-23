@@ -60,6 +60,11 @@ type VMMeta struct {
 	// migration. The agent must NOT re-clone it from the base image on
 	// first start; the disk is already the authoritative copy.
 	Migrated bool `json:"migrated,omitempty"`
+	// AdoptedBy is the migration that adopted this copy onto the node; the nil
+	// UUID for a VM created here, for a meta.json written before the key
+	// existed, and once the node's create path has claimed the VM as its own.
+	// omitempty does not drop a zero array; the nil UUID string is written.
+	AdoptedBy uuid.UUID `json:"adopted_by,omitempty"`
 }
 
 // NICMeta is the persisted form of one VM network interface. TapName is

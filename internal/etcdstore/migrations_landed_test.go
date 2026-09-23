@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
 
 	"github.com/otherix/otherix/internal/etcd"
@@ -175,4 +177,122 @@ func seedAgedTargetedMigration(t *testing.T, cli *etcd.Client, vmID, target uuid
 		t.Fatalf("seed migration vm index: %v", err)
 	}
 	return id
+}
+
+// TestAbandonedOfflineMigrations covers the read that lists the offline
+// migrations of a VM to a target that ended without a cutover. Live rows,
+// completed rows, in-flight rows and rows to other targets are never listed.
+func TestAbandonedOfflineMigrations(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	src := nodeParams(uniqueNodeName("aband-src"))
+	tgt := nodeParams(uniqueNodeName("aband-tgt"))
+	other := nodeParams(uniqueNodeName("aband-oth"))
+	for _, n := range []store.CreateNodeParams{src, tgt, other} {
+		if _, err := s.CreateNode(ctx, n); err != nil {
+			t.Fatalf("CreateNode: %v", err)
+		}
+	}
+	failedPhase := store.MigrationPhaseFailed
+	fail := func(id uuid.UUID) {
+		t.Helper()
+		if err := s.UpdateMigrationProgress(ctx, id, store.MigrationProgressUpdate{Phase: &failedPhase}); err != nil {
+			t.Fatalf("UpdateMigrationProgress(failed): %v", err)
+		}
+	}
+	cancel := func(id uuid.UUID) {
+		t.Helper()
+		if _, err := s.CancelMigration(ctx, id, "test"); err != nil {
+			t.Fatalf("CancelMigration: %v", err)
+		}
+	}
+
+	// One VM accumulates history; a VM has one active migration at a time, so
+	// each row is made terminal before the next is created.
+	vm := seedPinnedVM(t, cli, src.ID)
+	offFailed := seedActiveOfflineMigration(t, s, vm.ID, src.ID, tgt.ID)
+	fail(offFailed.ID)
+	offCancelled := seedActiveOfflineMigration(t, s, vm.ID, src.ID, tgt.ID)
+	cancel(offCancelled.ID)
+	liveFailed := seedActiveMigration(t, s, vm.ID, src.ID, tgt.ID)
+	fail(liveFailed.ID)
+	liveCancelled := seedActiveMigration(t, s, vm.ID, src.ID, tgt.ID)
+	cancel(liveCancelled.ID)
+	otherTarget := seedActiveOfflineMigration(t, s, vm.ID, src.ID, other.ID)
+	fail(otherTarget.ID)
+	inFlight := seedActiveOfflineMigration(t, s, vm.ID, src.ID, tgt.ID)
+
+	// A completed offline migration to the target (through the real cutover).
+	doneVM := seedPinnedVM(t, cli, src.ID)
+	done := seedActiveOfflineMigration(t, s, doneVM.ID, src.ID, tgt.ID)
+	if err := s.CommitMigrationCutover(ctx, done.ID); err != nil {
+		t.Fatalf("CommitMigrationCutover: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		vmID    uuid.UUID
+		target  uuid.UUID
+		exclude uuid.UUID
+		want    []uuid.UUID
+	}{
+		{name: "failed and cancelled offline rows to the target", vmID: vm.ID, target: tgt.ID, exclude: inFlight.ID, want: []uuid.UUID{offFailed.ID, offCancelled.ID}},
+		{name: "exclude drops the requesting migration", vmID: vm.ID, target: tgt.ID, exclude: offFailed.ID, want: []uuid.UUID{offCancelled.ID}},
+		{name: "other target", vmID: vm.ID, target: other.ID, exclude: uuid.Nil, want: []uuid.UUID{otherTarget.ID}},
+		{name: "completed offline row is never listed", vmID: doneVM.ID, target: tgt.ID, exclude: uuid.Nil, want: nil},
+		{name: "unknown vm", vmID: uuid.New(), target: tgt.ID, exclude: uuid.Nil, want: nil},
+	}
+	sortIDs := cmpopts.SortSlices(func(a, b uuid.UUID) bool { return a.String() < b.String() })
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.AbandonedOfflineMigrations(ctx, tt.vmID, tt.target, tt.exclude)
+			if err != nil {
+				t.Fatalf("AbandonedOfflineMigrations() = %v, want nil error", err)
+			}
+			if diff := cmp.Diff(tt.want, got, sortIDs, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("AbandonedOfflineMigrations() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestAbandonedOfflineMigrations_SkipsCorruptEntries pins that a corrupt index
+// entry or an undecodable migration row is left out of the list instead of
+// failing it: an error would block every migration of the VM to every node,
+// while leaving an id out only means its copy is not set aside.
+func TestAbandonedOfflineMigrations_SkipsCorruptEntries(t *testing.T) {
+	s, cli := startStore(t)
+	ctx := context.Background()
+	src := nodeParams(uniqueNodeName("corrupt-src"))
+	tgt := nodeParams(uniqueNodeName("corrupt-tgt"))
+	for _, n := range []store.CreateNodeParams{src, tgt} {
+		if _, err := s.CreateNode(ctx, n); err != nil {
+			t.Fatalf("CreateNode: %v", err)
+		}
+	}
+	vm := seedPinnedVM(t, cli, src.ID)
+	good := seedActiveOfflineMigration(t, s, vm.ID, src.ID, tgt.ID)
+	failed := store.MigrationPhaseFailed
+	if err := s.UpdateMigrationProgress(ctx, good.ID, store.MigrationProgressUpdate{Phase: &failed}); err != nil {
+		t.Fatalf("UpdateMigrationProgress(failed): %v", err)
+	}
+
+	garbage := uuid.New()
+	for key, val := range map[string]string{
+		etcd.Key("index", "migrations", "vm", vm.ID.String(), "corrupt"):        "not-a-uuid",
+		etcd.Key("index", "migrations", "vm", vm.ID.String(), garbage.String()): garbage.String(),
+		etcd.Key("migrations", garbage.String()):                                "{not json",
+	} {
+		if err := cli.Put(ctx, key, []byte(val)); err != nil {
+			t.Fatalf("Put(%s): %v", key, err)
+		}
+	}
+
+	got, err := s.AbandonedOfflineMigrations(ctx, vm.ID, tgt.ID, uuid.Nil)
+	if err != nil {
+		t.Fatalf("AbandonedOfflineMigrations() = %v, want nil error", err)
+	}
+	if diff := cmp.Diff([]uuid.UUID{good.ID}, got); diff != "" {
+		t.Errorf("AbandonedOfflineMigrations() mismatch (-want +got):\n%s", diff)
+	}
 }

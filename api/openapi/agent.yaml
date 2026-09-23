@@ -1520,6 +1520,9 @@ components:
         - network_in_use
         - protocol_not_available
         - not_implemented
+        - disk_dir_exists
+        - abandoned_copy_kept
+        - abandoned_copy_unmovable
       description: |
         Stable machine-readable error code. Endpoint-specific codes
         beyond this enum may be returned for narrow cases; clients
@@ -2618,6 +2621,23 @@ components:
             absent on legacy requests (no overlay/bridge NIC cutover).
           items:
             $ref: "#/components/schemas/MigrationNic"
+        abandoned_migration_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: |
+            Ids of this VM's earlier OFFLINE migrations to this node that ended
+            failed or cancelled. Such a migration can never cut over, so the copy
+            it left here is not the VM's home. If the node still holds a stopped
+            copy adopted by one of them, it moves that copy aside (renames its
+            disk dir into the abandoned/ dir of the copy's own pool, which can
+            differ from this request's pool; nothing is deleted) before adopting
+            the VM again. If an earlier abandoned copy of the VM is already kept
+            there, the request fails 409 abandoned_copy_kept; if the copy cannot
+            be moved (its disk is missing or at an unexpected path), it fails 409
+            abandoned_copy_unmovable. Absent or empty: an existing copy fails the
+            request as before.
 
     MigrationDisk:
       type: object
