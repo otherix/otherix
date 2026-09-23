@@ -448,9 +448,10 @@ func driveHandshake(ctx context.Context, st MigrationWorkerStore, agent Migratio
 // failSetup classifies a handshake-setup error (incoming prep, outgoing start).
 // The target refusing to adopt the VM for a reason no retry changes (it keeps an
 // earlier abandoned copy of the VM, an unrecorded disk dir sits where the copy
-// would go, or an abandoned copy cannot be moved aside) fails the migration with the target's message, which names the path
-// the operator must clear: the VM stays on its source, which was never contacted,
-// instead of burning the retry budget and leaving the migration stuck in setup.
+// would go, or an abandoned copy cannot be moved aside) fails the migration
+// with the target's message, which names the path the operator must clear: the
+// VM stays on its source, which was never contacted, instead of burning the
+// retry budget and leaving the migration stuck in setup.
 // Any other error is retryable - the VM is still on source and nothing durable
 // moved - so it records a failed-as-retryable envelope and returns the cause for
 // the dispatcher to requeue against the attempt budget.

@@ -433,6 +433,45 @@ func TestSetAsideAbortsWhenTheCopyIsNowhere(t *testing.T) {
 	}
 }
 
+// TestSetAsideRetriesWhenTheCopyCannotBeChecked: a stat failure other than "not
+// found" (here ENOTDIR, as a parent of the disk dir is a regular file) may be
+// transient, so it stays retryable instead of refusing the VM for good.
+func TestSetAsideRetriesWhenTheCopyCannotBeChecked(t *testing.T) {
+	f := newAbandonedFixture(t)
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f.mutate(func(v *VM) { v.DiskPath = filepath.Join(blocker, "vms", f.vmID.String(), "disk.qcow2") })
+
+	_, err := f.m.StartIncoming(context.Background(), f.spec(f.old))
+	if err == nil || errors.Is(err, ErrAbandonedCopyUnmovable) {
+		t.Fatalf("StartIncoming = %v, want a retryable error", err)
+	}
+	f.assertNotMoved(t)
+}
+
+// TestSetAsideRetriesWhenTheMovedCopyCannotBeChecked: the disk dir is gone, but
+// whether it was already moved cannot be told (abandoned/ is a regular file, so
+// the stat fails with ENOTDIR): retryable, and the record stays.
+func TestSetAsideRetriesWhenTheMovedCopyCannotBeChecked(t *testing.T) {
+	f := newAbandonedFixture(t)
+	if err := os.RemoveAll(filepath.Dir(f.disk)); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(f.m.defaultTestPoolRoot(t), "abandoned"), nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, err := f.m.StartIncoming(context.Background(), f.spec(f.old))
+	if err == nil || errors.Is(err, ErrAbandonedCopyUnmovable) {
+		t.Fatalf("StartIncoming = %v, want a retryable error", err)
+	}
+	if v, err := f.m.Get(f.vmID); err != nil || v.AdoptedBy != f.old {
+		t.Errorf("Get = (%v, %v), want the record unchanged", v.AdoptedBy, err)
+	}
+}
+
 func TestSetAsideUsesTheCopysOwnPool(t *testing.T) {
 	m, _ := NewManagerForSeamTest(t)
 	otherRoot := t.TempDir()

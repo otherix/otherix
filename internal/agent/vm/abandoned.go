@@ -126,7 +126,8 @@ func (m *Manager) abandonedCopy(s IncomingSpec) (*VM, VM, bool) {
 // there from an earlier attempt, and reports whether the copy now sits at dst.
 // It refuses with ErrAbandonedCopyKept while another abandoned copy of the VM is
 // kept in the same abandoned/ dir, and with ErrAbandonedCopyUnmovable when the
-// copy is at neither place.
+// copy is at neither place. Any other stat failure is returned as a plain,
+// retryable error.
 func (m *Manager) moveCopyAside(cur *VM, v VM, src, dst string) (bool, error) {
 	abandonedDir := filepath.Dir(dst)
 	_, srcErr := os.Stat(src)
@@ -144,9 +145,14 @@ func (m *Manager) moveCopyAside(cur *VM, v VM, src, dst string) (bool, error) {
 			return false, fmt.Errorf("create %s: %v", abandonedDir, err)
 		}
 		return m.renameIfUnchanged(cur, v, src, dst)
-	case errors.Is(srcErr, fs.ErrNotExist) && dstErr == nil:
+	case !errors.Is(srcErr, fs.ErrNotExist):
+		// A stat failure other than "not found" may be transient: retry.
+		return false, fmt.Errorf("check abandoned copy of vm %s: %v", v.ID, srcErr)
+	case dstErr == nil:
 		// A previous attempt already moved it.
 		return true, nil
+	case !errors.Is(dstErr, fs.ErrNotExist):
+		return false, fmt.Errorf("check moved copy of vm %s: %v", v.ID, dstErr)
 	default:
 		// Refuse rather than drop the record: the agent does not vouch for a copy
 		// whose disk it cannot find.
