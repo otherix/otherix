@@ -63,17 +63,17 @@ gen_config() { # node, mode, initial_cluster, [cluster_join_block]
   # initial_cluster: it computes its real initial-cluster from the membership in
   # the /v1/cluster/join response, never from config. node0 (single/bootstrap)
   # keeps its self-only initial_cluster. agent_server is on for everyone because
-  # /v1/cluster/join is served on the agent TLS listener. workers is off (the
-  # promote loop is always-on and independent of it). All nodes share jwt_secret
-  # so a node0-issued JWT is accepted everywhere.
+  # /v1/cluster/join is served on the agent TLS listener. agent_client and
+  # workers are on everywhere; only the elected replica runs the workers. All
+  # nodes share jwt_secret so a node0-issued JWT is accepted everywhere.
   local n="$1" mode="$2" ic="$3" cjoin="${4:-}"
   local dir="$WORK/n$n"
   mkdir -p "$dir/pki"
   cat > "$dir/api.yaml" <<YAML
-server:        { listen: "127.0.0.1:${API_PORT[$n]}", read_timeout: 30s, write_timeout: 30s, shutdown_grace: 10s }
+server:        { listen: "127.0.0.1:${API_PORT[$n]}", read_timeout: 30s, write_timeout: 30s, shutdown_grace: 10s, tls: { enabled: false } }
 agent_server:  { enabled: true, listen: "127.0.0.1:${AGENT_PORT[$n]}" }
-agent_client:  { enabled: false }
-workers:       { enabled: false }
+agent_client:  { enabled: true }
+workers:       { enabled: true }
 logger:        { level: "info", format: "json" }
 auth:          { jwt_secret: "$JWT_SECRET", jwt_access_ttl: 15m, jwt_refresh_ttl: 720h }
 console:       { access_mode: "proxy" }
@@ -151,6 +151,26 @@ net_name() { # node_index, jwt, id
     | jq -r '.name // empty'
 }
 
+# leaders_count prints how many live nodes currently hold the worker election,
+# judged by the newest "became leader" / "leadership ended" line in each log.
+leaders_count() {
+  local c=0 n last
+  for n in "${!PID[@]}"; do
+    last="$(grep -E '"msg":"(became leader|leadership ended)"' "$WORK/n$n/log" | tail -1 || true)"
+    case "$last" in *'"became leader"'*) c=$((c + 1)) ;; esac
+  done
+  echo "$c"
+}
+
+# leader_index prints the index of the live node holding the worker election.
+leader_index() {
+  local n last
+  for n in "${!PID[@]}"; do
+    last="$(grep -E '"msg":"(became leader|leadership ended)"' "$WORK/n$n/log" | tail -1 || true)"
+    case "$last" in *'"became leader"'*) echo "$n"; return ;; esac
+  done
+}
+
 grow() { # node; writes token, configs (mode join, NO initial_cluster), starts,
          # waits ready, then waits for the auto-promote loop to make it a voter.
   local n="$1" want="$2"
@@ -209,6 +229,23 @@ grow 2 3
 
 [ "$(voter_count 0 "$JWT")" = "3" ] || fail "voters != 3 after growth"
 ok "3-voter cluster formed over peer mTLS via self-driving join"
+
+# Worker election: exactly one replica runs the workers. Killing it hands the
+# election to a survivor once the dead leader's session lease expires (15s TTL).
+log "worker election: expect exactly one leader"
+sleep 3
+[ "$(leaders_count)" = "1" ] || fail "want exactly 1 worker leader, got $(leaders_count)"
+L="$(leader_index)"
+ok "one worker leader: node$L"
+log "killing worker leader node$L"
+kill -9 "${PID[$L]}"; wait "${PID[$L]}" 2>/dev/null || true; unset "PID[$L]"
+for _ in $(seq 1 40); do [ "$(leaders_count)" = "1" ] && break; sleep 1; done
+[ "$(leaders_count)" = "1" ] || fail "no new worker leader within 40s after killing node$L"
+ok "worker leadership moved to node$(leader_index)"
+start_node "$L"; wait_ready "$L" 60
+wait_voters 3 90 "$JWT"
+[ "$(leaders_count)" = "1" ] || fail "want 1 worker leader after node$L rejoined, got $(leaders_count)"
+ok "node$L restarted as a follower; 3 voters, still one worker leader"
 
 # Replication: create a network on node0, read it back on node2 with the shared
 # admin JWT. The row replicates through etcd.
