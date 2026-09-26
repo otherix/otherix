@@ -275,8 +275,9 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 	// both score the same target before either binds and co-locate (reservation
 	// only counts ALREADY-bound targets). The lock is process-local: it serializes
 	// placement inside the worker leader; cross-replica exclusion comes from
-	// leader-only workers and the leader fence on the bind txn. The defer below releases it after the bind
-	// commits; it does NOT guard the cutover re-pin (that is its own atomic txn).
+	// leader-only workers and the leader fence on the bind txn. The defer below
+	// releases it after the bind commits; it does NOT guard the cutover re-pin
+	// (that is its own atomic txn).
 	release, err := st.AcquirePlacementLock(ctx, store.LockKeyPlacement)
 	if err != nil {
 		// A lock-acquire failure is retryable: the VM is still on source.

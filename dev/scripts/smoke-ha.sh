@@ -70,6 +70,7 @@ gen_config() { # node, mode, initial_cluster, [cluster_join_block]
   local dir="$WORK/n$n"
   mkdir -p "$dir/pki"
   cat > "$dir/api.yaml" <<YAML
+# The smoke drives the user API over plain http.
 server:        { listen: "127.0.0.1:${API_PORT[$n]}", read_timeout: 30s, write_timeout: 30s, shutdown_grace: 10s, tls: { enabled: false } }
 agent_server:  { enabled: true, listen: "127.0.0.1:${AGENT_PORT[$n]}" }
 agent_client:  { enabled: true }
@@ -245,7 +246,7 @@ ok "worker leadership moved to node$(leader_index)"
 start_node "$L"; wait_ready "$L" 60
 wait_voters 3 90 "$JWT"
 [ "$(leaders_count)" = "1" ] || fail "want 1 worker leader after node$L rejoined, got $(leaders_count)"
-ok "node$L restarted as a follower; 3 voters, still one worker leader"
+ok "node$L restarted; 3 voters, still exactly one worker leader"
 
 # Replication: create a network on node0, read it back on node2 with the shared
 # admin JWT. The row replicates through etcd.

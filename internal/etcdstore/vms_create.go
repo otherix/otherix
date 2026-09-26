@@ -237,8 +237,9 @@ func (s *Store) PlacementQuerier() scheduler.Querier { return placementReader{s:
 // (read availability -> pin commit) so concurrent placements spread across nodes
 // instead of co-locating. It is process-local (a keyed mutex): it serializes
 // placement inside the worker leader; cross-replica exclusion comes from
-// leader-only workers and the leader fence on the bind txn. A ctx cancellation while waiting returns
-// ctx.Err() (retryable; nothing durable changed) with a no-op release.
+// leader-only workers and the leader fence on the bind txn. A ctx cancellation
+// while waiting returns ctx.Err() (retryable; nothing durable changed) with a
+// no-op release.
 func (s *Store) AcquirePlacementLock(ctx context.Context, lockKey int64) (func(), error) {
 	return s.placementLk.acquire(ctx, lockKey)
 }

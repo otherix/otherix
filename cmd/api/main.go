@@ -719,7 +719,9 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 
 // buildLocalScheduler registers the periodics every replica runs for itself,
 // outside the worker election: etcd.backup snapshots the LOCAL member, so
-// copies on several nodes are the point. Returns nil when there are none.
+// copies on several nodes are the point. It is only called when
+// cfg.Workers.Enabled, so backup is still gated on workers.enabled. Returns nil
+// when there are none.
 func buildLocalScheduler(cfg *config.APIConfig, log *slog.Logger) *worker.Scheduler {
 	if !cfg.Workers.Backup.Enabled || cfg.Workers.Backup.Dir == "" {
 		return nil
