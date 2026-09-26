@@ -501,11 +501,19 @@ func warnIfUnderlayMTUBelowFloor(underlay int32, log *slog.Logger) bool {
 	return true
 }
 
-// startWorkers launches the etcd job dispatcher and the periodic scheduler when
-// cfg.Workers.Enabled. Both run for the lifetime of ctx; the returned closure
-// blocks until they have drained in-flight work after ctx is cancelled - the
+// workerLeaderTTLSeconds is the session TTL of the "workers" election: how long
+// a crashed leader's term survives before another replica can take over.
+const workerLeaderTTLSeconds = 15
+
+// startWorkers launches the async workers when cfg.Workers.Enabled. The etcd
+// job dispatcher and the cluster periodic scheduler run only while this replica
+// holds the "workers" election (one term at a time; a lost term cancels them and
+// in-flight jobs are requeued without penalty). The per-replica periodics (the
+// local etcd.backup) run for the lifetime of ctx regardless of leadership. The
+// returned closure blocks, after ctx is cancelled, until the current term has
+// drained, leadership is resigned, and the local periodics have stopped - the
 // caller invokes it once the HTTP servers have stopped. Disabled-mode runs
-// neither (async tasks stay pending, periodic maintenance does not run) and the
+// nothing (async tasks stay pending, periodic maintenance does not run) and the
 // closure is a no-op.
 func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Store, agentClient *agentclient.Client, log *slog.Logger) (func(), error) {
 	if !cfg.Workers.Enabled {
@@ -519,18 +527,35 @@ func startWorkers(ctx context.Context, cfg *config.APIConfig, st *etcdstore.Stor
 		return nil, errors.New("workers.enabled requires agent_client.enabled - provision mTLS material")
 	}
 
-	dispatcher := buildDispatcher(st, agentClient, cfg, log)
-	scheduler := buildScheduler(st, cfg, log)
-
 	var wg sync.WaitGroup
-	wg.Add(2)
+	if local := buildLocalScheduler(cfg, log); local != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = local.Run(ctx)
+		}()
+	}
+	// Only the elected replica runs the dispatcher and the cluster periodics.
+	// Each term builds fresh instances; the term ctx ends on lost leadership or
+	// shutdown and carries the fence the placement binds commit under.
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = dispatcher.Run(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		_ = scheduler.Run(ctx)
+		etcd.RunAsLeader(ctx, st.Client(), "workers", workerLeaderTTLSeconds, log, func(tctx context.Context) {
+			dispatcher := buildDispatcher(st, agentClient, cfg, log)
+			scheduler := buildScheduler(st, cfg, log)
+			var term sync.WaitGroup
+			term.Add(2)
+			go func() {
+				defer term.Done()
+				_ = dispatcher.Run(tctx)
+			}()
+			go func() {
+				defer term.Done()
+				_ = scheduler.Run(tctx)
+			}()
+			term.Wait()
+		})
 	}()
 
 	return wg.Wait, nil
@@ -689,11 +714,19 @@ func buildScheduler(st *etcdstore.Store, cfg *config.APIConfig, log *slog.Logger
 			storagepoolshandlers.ScanTriggerFunc(st, log))
 	}
 
-	if cfg.Workers.Backup.Enabled && cfg.Workers.Backup.Dir != "" {
-		s.Register("etcd.backup", positiveOr(cfg.Workers.Backup.Interval, 6*time.Hour), false,
-			etcd.BackupFunc(cfg.Etcd.ClientURL, cfg.Workers.Backup.Dir, cfg.Workers.Backup.Retention, log))
-	}
+	return s
+}
 
+// buildLocalScheduler registers the periodics every replica runs for itself,
+// outside the worker election: etcd.backup snapshots the LOCAL member, so
+// copies on several nodes are the point. Returns nil when there are none.
+func buildLocalScheduler(cfg *config.APIConfig, log *slog.Logger) *worker.Scheduler {
+	if !cfg.Workers.Backup.Enabled || cfg.Workers.Backup.Dir == "" {
+		return nil
+	}
+	s := worker.NewScheduler(log)
+	s.Register("etcd.backup", positiveOr(cfg.Workers.Backup.Interval, 6*time.Hour), false,
+		etcd.BackupFunc(cfg.Etcd.ClientURL, cfg.Workers.Backup.Dir, cfg.Workers.Backup.Retention, log))
 	return s
 }
 

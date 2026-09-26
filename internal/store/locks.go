@@ -3,17 +3,16 @@
 
 package store
 
-// Advisory-lock key namespace for HA-safe api-server coordination.
+// Advisory-lock key namespace for api-server coordination.
 //
-// Otherix api-server is deployed multi-replica for HA. Operations that
-// read mutable state and act on it in a separate write (placement is the
-// canonical case — pick a node, then insert a VM pinned to it) must
-// serialize their critical section across replicas, otherwise concurrent
-// decisions can over-allocate. The key namespace identifies each such
-// critical section. On the single-control-plane default AcquirePlacementLock
-// is a process-local keyed mutex (see internal/etcdstore/placement_lock.go);
-// the HA path replaces that backend with an etcd lock keyed by the same
-// lockKey.
+// Operations that read mutable state and act on it in a separate write
+// (placement is the canonical case — pick a node, then insert a VM pinned to
+// it) must serialize their critical section, otherwise concurrent decisions
+// can over-allocate. The key namespace identifies each such critical section.
+// AcquirePlacementLock is process-local (a keyed mutex, see
+// internal/etcdstore/placement_lock.go): it serializes placement inside the
+// worker leader; cross-replica exclusion comes from leader-only workers and
+// the leader fence on the bind txn.
 //
 // Contract:
 //

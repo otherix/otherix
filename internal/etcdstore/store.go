@@ -92,6 +92,10 @@ func New(c *etcd.Client, opts ...Option) *Store {
 	return s
 }
 
+// Client returns the etcd client the store writes through, for callers that
+// need a raw etcd primitive (the worker leader election).
+func (s *Store) Client() *etcd.Client { return s.c }
+
 // healthPingKey is a sentinel the readiness probe reads to confirm the etcd
 // member answers reads. It need not exist; a successful (empty) read still
 // round-trips to the member.

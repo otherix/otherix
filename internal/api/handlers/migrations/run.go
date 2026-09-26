@@ -273,9 +273,9 @@ func placeAndBind(ctx context.Context, st MigrationWorkerStore, placer Placer, c
 	// window (placer.Place reads candidate availability; BindMigrationTarget pins
 	// the choice). It closes the TOCTOU where two concurrent node-less migrations
 	// both score the same target before either binds and co-locate (reservation
-	// only counts ALREADY-bound targets). On the single-control-plane default this
-	// is a process-local keyed mutex; the HA path takes an etcd lock keyed by
-	// lockKey with the same contract. The defer below releases it after the bind
+	// only counts ALREADY-bound targets). The lock is process-local: it serializes
+	// placement inside the worker leader; cross-replica exclusion comes from
+	// leader-only workers and the leader fence on the bind txn. The defer below releases it after the bind
 	// commits; it does NOT guard the cutover re-pin (that is its own atomic txn).
 	release, err := st.AcquirePlacementLock(ctx, store.LockKeyPlacement)
 	if err != nil {

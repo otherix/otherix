@@ -8,14 +8,13 @@ import (
 	"sync"
 )
 
-// placementLocker is the process-local backend for Store.AcquirePlacementLock on
-// the single-control-plane default. It serializes the read-availability ->
+// placementLocker is the process-local backend for Store.AcquirePlacementLock. It serializes the read-availability ->
 // pin-commit window of one placement against every other placement, so
 // concurrent placements observe each other's pin before scoring and the
 // LeastAllocated scorer spreads VMs across nodes instead of co-locating. It is
 // keyed by the store.LockKey* namespace; each key is an independent capacity-1
-// semaphore. The HA path replaces this backend with an etcd lock keyed by the
-// same lockKey, leaving the AcquirePlacementLock contract unchanged.
+// semaphore. It serializes placement inside the worker leader; cross-replica
+// exclusion comes from leader-only workers and the leader fence on the bind txn.
 type placementLocker struct {
 	mu   sync.Mutex
 	sems map[int64]chan struct{}

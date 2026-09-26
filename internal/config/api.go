@@ -228,9 +228,10 @@ func (c CPCertConfig) Validate() error {
 
 // PlacementConfig selects the VM placement algorithm and per-resource
 // gating. The choice is passed down to internal/scheduler.SchedulePlacement
-// at vm.create time. Placement runs in-process inside the api-server and
-// serializes across replicas via store.LockKeyPlacement — no separate
-// scheduler binary.
+// at vm.create time. Placement runs in-process inside the api-server — no
+// separate scheduler binary. store.LockKeyPlacement is process-local: it
+// serializes placement inside the worker leader; cross-replica exclusion comes
+// from leader-only workers and the leader fence on the bind txn.
 //
 // Accepted Algorithm values mirror the scheduler.Algorithm* constants:
 //

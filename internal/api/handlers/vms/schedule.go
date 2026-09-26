@@ -65,7 +65,7 @@ func ScheduleFunc(st ScheduleStore, cfg ScheduleConfig, log *slog.Logger, res sc
 }
 
 // scheduleOne binds a single unscheduled VM or records why it stays pending. A
-// lost CAS (bound by another replica, or deleted) is a clean skip, not an error
+// lost CAS (bound by a previous leader, or deleted) is a clean skip, not an error
 // - it must never resurrect the VM or clobber the winning state.
 func scheduleOne(ctx context.Context, st ScheduleStore, cfg ScheduleConfig, log *slog.Logger, res scheduler.ResourcesConfig, vm store.VM) {
 	spec, err := store.UnmarshalSchedulingSpec(vm.SchedulingSpec)
@@ -79,7 +79,7 @@ func scheduleOne(ctx context.Context, st ScheduleStore, cfg ScheduleConfig, log 
 	case bindErr == nil:
 		log.InfoContext(ctx, "vm scheduled", "vm_id", vm.ID, "name", vm.Name)
 	case errors.Is(bindErr, store.ErrVMNotUnscheduled), errors.Is(bindErr, store.ErrNotFound):
-		// Bound by another replica or deleted concurrently - nothing to do.
+		// Bound by a previous leader or deleted concurrently - nothing to do.
 	default:
 		reason, msg, details := schedulingReasonFor(bindErr, spec)
 		if uerr := st.UpdateVMSchedulingReason(ctx, vm.ID, reason, msg, details); uerr != nil {
@@ -98,8 +98,11 @@ func bindWithMACRetry(ctx context.Context, st ScheduleStore, vm store.VM, spec s
 	// callback returns, so releasing at callback-return would reopen the race.
 	// Deliberately held across the MAC-retry loop: a collision re-mints a fresh
 	// random MAC, so retries are rare and each is one fast local CAS (<=8). If a
-	// future backend makes acquire/commit expensive (the HA etcd lock), revisit
-	// to a per-attempt acquire so one VM's retries do not serialize all placements.
+	// future backend makes acquire/commit expensive, revisit to a per-attempt
+	// acquire so one VM's retries do not serialize all placements. The lock is
+	// process-local: it serializes placement inside the worker leader;
+	// cross-replica exclusion comes from leader-only workers and the leader fence
+	// on the bind txn.
 	release, err := st.AcquirePlacementLock(ctx, store.LockKeyPlacement)
 	if err != nil {
 		return fmt.Errorf("acquire placement lock: %v", err)
