@@ -129,13 +129,21 @@ func TestRunAsLeaderLeavesNoKeyAfterAbandonedCampaign(t *testing.T) {
 
 	// B campaigns behind A (its key is written), then its parent is cancelled
 	// mid-campaign. When B's RunAsLeader returns, only A's key may remain.
+	prefix := etcd.Key("election", "t3") + "/"
 	ctxB, cancelB := context.WithCancel(context.Background())
 	doneB := make(chan struct{})
 	go func() { etcd.RunAsLeader(ctxB, cli, "t3", 5, discardLog(), rec.fn); close(doneB) }()
+	var leaseB clientv3.LeaseID
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		resp, err := cli.Raw().Get(context.Background(), etcd.Key("election", "t3"), clientv3.WithPrefix())
+		resp, err := cli.Raw().Get(context.Background(), prefix, clientv3.WithPrefix())
 		if err == nil && len(resp.Kvs) == 2 {
+			// B's key is the later of the two campaign keys.
+			b := resp.Kvs[0]
+			if resp.Kvs[1].CreateRevision > b.CreateRevision {
+				b = resp.Kvs[1]
+			}
+			leaseB = clientv3.LeaseID(b.Lease)
 			break
 		}
 		if time.Now().After(deadline) {
@@ -145,12 +153,21 @@ func TestRunAsLeaderLeavesNoKeyAfterAbandonedCampaign(t *testing.T) {
 	}
 	cancelB()
 	<-doneB
-	resp, err := cli.Raw().Get(context.Background(), etcd.Key("election", "t3"), clientv3.WithPrefix())
+	resp, err := cli.Raw().Get(context.Background(), prefix, clientv3.WithPrefix())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if len(resp.Kvs) != 1 {
 		t.Errorf("election keys after B returned = %d, want 1 (B's key must be gone)", len(resp.Kvs))
+	}
+	// Campaign deletes its own key on a parent cancel, so the key count alone
+	// cannot tell whether B's session was closed; its lease must be revoked.
+	ttl, err := cli.Raw().TimeToLive(context.Background(), leaseB)
+	if err != nil {
+		t.Fatalf("TimeToLive(%x): %v", leaseB, err)
+	}
+	if ttl.TTL != -1 {
+		t.Errorf("TimeToLive(B's lease).TTL = %d, want -1 (B's session lease must be revoked)", ttl.TTL)
 	}
 }
 
