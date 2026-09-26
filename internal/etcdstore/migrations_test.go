@@ -1539,3 +1539,40 @@ func TestDeleteExpiredMigrations(t *testing.T) {
 		}
 	}
 }
+
+// TestBindMigrationTargetHonoursTheLeaderFence: a stale fence leaves the target
+// unbound and returns the retryable ErrConcurrentUpdate.
+func TestBindMigrationTargetHonoursTheLeaderFence(t *testing.T) {
+	s, cl := startStore(t)
+	ctx := context.Background()
+	src := nodeParams(uniqueNodeName("src"))
+	tgt := nodeParams(uniqueNodeName("tgt"))
+	for _, n := range []store.CreateNodeParams{src, tgt} {
+		if _, err := s.CreateNode(ctx, n); err != nil {
+			t.Fatalf("CreateNode: %v", err)
+		}
+	}
+	m := seedNodelessMigration(t, s, uuid.New(), src.ID)
+
+	key := etcd.Key("election", "workers", "fence-test-mig")
+	put, err := cl.Raw().Put(ctx, key, "leader")
+	if err != nil {
+		t.Fatalf("Put leader key: %v", err)
+	}
+	fenced := etcd.WithFence(ctx, key, put.Header.Revision)
+	if _, err := cl.Raw().Delete(ctx, key); err != nil {
+		t.Fatalf("Delete leader key: %v", err)
+	}
+
+	err = s.BindMigrationTarget(fenced, m.ID, tgt.ID, "fast-ssd")
+	if !errors.Is(err, store.ErrConcurrentUpdate) {
+		t.Fatalf("BindMigrationTarget(stale fence) = %v, want ErrConcurrentUpdate", err)
+	}
+	got, err := s.MigrationByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("MigrationByID: %v", err)
+	}
+	if got.TargetNodeID != nil {
+		t.Errorf("TargetNodeID = %v after fenced bind, want nil", got.TargetNodeID)
+	}
+}
