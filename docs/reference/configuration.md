@@ -139,8 +139,8 @@ In-process worker pool and its sub-blocks.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `workers.enabled` | `true` | Run the in-process worker pool. |
-| `workers.max_workers` | `10` | Bounded concurrency. |
+| `workers.enabled` | `true` | Make this replica eligible for the worker-leader election; only the elected replica runs the worker pool and cluster periodic jobs. Also gates the per-replica `etcd.backup`. |
+| `workers.max_workers` | `10` | Bounded job concurrency of the worker leader, which is the whole cluster's job concurrency. |
 | `workers.tasks.retention.completed` | `7d` (168h) | Retention for completed tasks. |
 | `workers.tasks.retention.failed` | `30d` (720h) | Retention for failed / cancelled tasks. |
 | `workers.heartbeat.stale_threshold` | `90s` | Window after which a silent node flips to `unreachable`. |
