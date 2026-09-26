@@ -232,13 +232,14 @@ func vmDiskIndexOps(d store.VMDisk) []clientv3.Op {
 // read view over the store; it holds no lock and commits nothing.
 func (s *Store) PlacementQuerier() scheduler.Querier { return placementReader{s: s} }
 
-// AcquirePlacementLock acquires the cluster-wide advisory lock named by lockKey,
-// returning a release func the caller MUST defer. It serializes the placement
-// decision window (read availability -> pin commit) so concurrent placements
-// spread across nodes instead of co-locating. On the single-control-plane default
-// this is a process-local keyed mutex; the HA path will take an etcd lock keyed by
-// lockKey with the same contract. A ctx cancellation while waiting returns
-// ctx.Err() (retryable; nothing durable changed) with a no-op release.
+// AcquirePlacementLock acquires the advisory lock named by lockKey, returning a
+// release func the caller MUST defer. It serializes the placement decision window
+// (read availability -> pin commit) so concurrent placements spread across nodes
+// instead of co-locating. It is process-local (a keyed mutex): it serializes
+// placement inside the worker leader; cross-replica exclusion comes from
+// leader-only workers and the leader fence on the bind txn. A ctx cancellation
+// while waiting returns ctx.Err() (retryable; nothing durable changed) with a
+// no-op release.
 func (s *Store) AcquirePlacementLock(ctx context.Context, lockKey int64) (func(), error) {
 	return s.placementLk.acquire(ctx, lockKey)
 }

@@ -503,3 +503,68 @@ func TestBindScheduledVMRefusesADeletedVM(t *testing.T) {
 		t.Errorf("TaskByID(create) after a refused bind = %v, want ErrNotFound", err)
 	}
 }
+
+// fencedBindPlan binds vmID onto nodeID/poolID, the same writes as
+// TestBindScheduledVM builds.
+func fencedBindPlan(vmID, nodeID, poolID uuid.UUID) func(store.PlacementReader) (store.VMBindWrites, error) {
+	return func(store.PlacementReader) (store.VMBindWrites, error) {
+		return store.VMBindWrites{
+			PinnedNodeID: nodeID,
+			Disk: store.CreateVMDiskParams{
+				VmID: vmID, StoragePoolID: poolID, DeviceOrder: 0,
+				Bus: store.DiskBusVirtio, SizeGib: 0, SourceKind: "image",
+				Format: store.ImageFormatQcow2, CacheMode: store.DiskCacheModeWriteback,
+				Discard: store.DiskDiscardUnmap,
+			},
+			Task: store.CreateTaskParams{
+				ID: uuid.New(), Type: "vm.create", Status: store.TaskStatusPending,
+				ResourceType: "vm", ResourceID: &vmID, Args: []byte(`{}`), MaxAttempts: 25,
+			},
+			Job: stubJobArgs{},
+		}, nil
+	}
+}
+
+// TestBindScheduledVMHonoursTheLeaderFence: a bind whose leader key is gone
+// writes nothing and maps to ErrVMNotUnscheduled (which the schedule loop skips
+// without stamping a reason); a bind under a live leader key succeeds.
+func TestBindScheduledVMHonoursTheLeaderFence(t *testing.T) {
+	st, cli := etcdstore.FreshStore(t)
+	ctx := context.Background()
+	nodeID, poolID, _ := schedulingFixture(t, st)
+	vmID, err := st.CreateUnscheduledVM(ctx, mkUnscheduledParams(t, "vm-fence"))
+	if err != nil {
+		t.Fatalf("CreateUnscheduledVM: %v", err)
+	}
+
+	key := etcd.Key("election", "workers", "fence-test")
+	put, err := cli.Raw().Put(ctx, key, "leader")
+	if err != nil {
+		t.Fatalf("Put leader key: %v", err)
+	}
+	fenced := etcd.WithFence(ctx, key, put.Header.Revision)
+	if _, err := cli.Raw().Delete(ctx, key); err != nil { // the term's lease is gone
+		t.Fatalf("Delete leader key: %v", err)
+	}
+
+	err = st.BindScheduledVM(fenced, vmID, fencedBindPlan(vmID, nodeID, poolID))
+	if !errors.Is(err, store.ErrVMNotUnscheduled) {
+		t.Fatalf("BindScheduledVM(stale fence) = %v, want ErrVMNotUnscheduled", err)
+	}
+	vm, err := st.VMByID(ctx, vmID)
+	if err != nil {
+		t.Fatalf("VMByID: %v", err)
+	}
+	if vm.SchedulingStatus != store.VMSchedulingUnscheduled || vm.PinnedNodeID != nil {
+		t.Errorf("after fenced bind: status=%q pin=%v, want unscheduled and no pin", vm.SchedulingStatus, vm.PinnedNodeID)
+	}
+
+	put, err = cli.Raw().Put(ctx, key, "leader")
+	if err != nil {
+		t.Fatalf("Put leader key: %v", err)
+	}
+	live := etcd.WithFence(ctx, key, put.Header.Revision)
+	if err := st.BindScheduledVM(live, vmID, fencedBindPlan(vmID, nodeID, poolID)); err != nil {
+		t.Fatalf("BindScheduledVM(live fence): %v", err)
+	}
+}

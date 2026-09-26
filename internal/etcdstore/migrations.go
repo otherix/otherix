@@ -577,7 +577,8 @@ func (s *Store) CancelMigration(ctx context.Context, id uuid.UUID, reason string
 // a migration already bound to a DIFFERENT target is rejected with
 // store.ErrMigrationTargetConflict; re-binding the SAME target is an idempotent
 // no-op (a redelivered worker that already bound). A lost CAS returns
-// store.ErrConcurrentUpdate.
+// store.ErrConcurrentUpdate. A worker's call carries the leader fence; a
+// fenced-out commit also returns store.ErrConcurrentUpdate.
 func (s *Store) BindMigrationTarget(ctx context.Context, migID, targetNodeID uuid.UUID, poolName string) error {
 	resp, err := s.c.Raw().Get(ctx, migrationKey(migID))
 	if err != nil {
@@ -617,8 +618,9 @@ func (s *Store) BindMigrationTarget(ctx context.Context, migID, targetNodeID uui
 		clientv3.OpPut(migrationNodeIndexKey(target, m.ID), m.ID.String()),
 	}
 
+	conds := append([]clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(migrationKey(m.ID)), "=", rev)}, etcd.FenceCmps(ctx)...)
 	txResp, err := s.c.Raw().Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(migrationKey(m.ID)), "=", rev)).
+		If(conds...).
 		Then(ops...).
 		Commit()
 	if err != nil {

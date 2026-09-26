@@ -252,6 +252,11 @@ func (s *Store) BindScheduledVM(ctx context.Context, vmID uuid.UUID, plan func(s
 	if err != nil {
 		return err
 	}
+	// A worker-side bind carries the leader fence: it commits only while the
+	// term that planned it still leads. A fenced-out commit fails like any other
+	// lost compare and classifyBindFailure maps it to ErrVMNotUnscheduled, which
+	// the schedule loop skips.
+	conds = append(conds, etcd.FenceCmps(ctx)...)
 
 	txResp, err := s.c.Raw().Txn(ctx).If(conds...).Then(ops...).Commit()
 	if err != nil {

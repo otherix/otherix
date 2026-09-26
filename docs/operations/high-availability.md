@@ -6,10 +6,36 @@ control-plane store, the async job queue, and all cluster state live in that
 etcd. Run an odd number of replicas (3 or 5) so the cluster keeps quorum when
 one replica is down.
 
-All replicas are equal. There is no primary. Work (VM create/delete, lifecycle
-operations, storage-pool scans) is enqueued as jobs in etcd and any replica with
-workers enabled claims them off the queue, so adding replicas adds both quorum
-resilience and worker capacity.
+Every replica serves the API and agent heartbeats. Background work (VM
+create/delete, lifecycle operations, migrations, storage-pool scans, and the
+cluster periodic jobs) is enqueued as jobs in etcd and runs on exactly one
+replica: the worker leader, elected through etcd among the replicas with
+`workers.enabled`. The other replicas run no workers. Adding replicas adds
+quorum resilience, not worker capacity.
+
+### Worker leader
+
+- **Which replica leads.** The leader logs `became leader` (attributes
+  `election=workers`, `leader=<hostname>`) when it takes over and
+  `leadership ended` when it stops.
+- **Failover.** The leader holds an etcd session with a 15s TTL. If it dies,
+  another replica takes over within about that TTL. Jobs the dead leader was
+  running are requeued once their job lease (about 90s) expires, and the new
+  leader runs them again.
+- **Capacity.** Cluster-wide job concurrency is the leader's
+  `workers.max_workers` (default 10), not replicas x 10. Long-running jobs
+  such as migrations and node drains hold a slot for their whole duration;
+  raise `workers.max_workers` on every replica if they starve other work.
+- **A leader that cannot reach agents keeps leading.** Leadership follows the
+  leader's etcd session, not its path to the nodes. If agent-facing jobs fail
+  only on the leader, restart that replica (find it by the `became leader` log
+  line) and another one takes over.
+- **Backups are per replica.** `etcd.backup` snapshots the local member, so it
+  runs on every replica with both `workers.enabled` and
+  `workers.backup.enabled`, whether or not it leads.
+- **Rolling upgrades.** Replicas still on the previous version run workers
+  without the election, so until every replica is upgraded more than one
+  replica may run jobs, as before the upgrade.
 
 ## How replicas cluster
 
