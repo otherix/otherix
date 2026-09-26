@@ -431,3 +431,65 @@ func TestExecuteRecoversHandlerPanic(t *testing.T) {
 		t.Errorf("panicking handler did not go through RetryJob: attempt budget never consumed, poison job would crash-loop")
 	}
 }
+
+// lostLeaseSourceFake reports the lease lost on the first renew and records
+// the bookkeeping the dispatcher chose afterwards.
+type lostLeaseSourceFake struct {
+	mu       sync.Mutex
+	requeued int
+	retried  int
+}
+
+func (f *lostLeaseSourceFake) PendingJobs(context.Context) ([]etcdstore.Job, error) { return nil, nil }
+func (f *lostLeaseSourceFake) ClaimJob(context.Context, int64) (bool, string, error) {
+	return false, "", nil
+}
+func (f *lostLeaseSourceFake) CompleteJob(context.Context, int64) error { return nil }
+func (f *lostLeaseSourceFake) RetryJob(context.Context, int64, string, int32) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retried++
+	return true, nil
+}
+
+func (f *lostLeaseSourceFake) RequeueJob(context.Context, int64, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requeued++
+	return nil
+}
+
+func (f *lostLeaseSourceFake) RenewJobLease(context.Context, int64, string) (bool, error) {
+	return false, nil
+}
+
+// TestExecuteCancelsHandlerOnLostLease drives the real execute path: once a
+// renew reports the lease is gone, the handler's ctx is cancelled and the job
+// takes the requeue path (no attempt burnt), not the retry path.
+func TestExecuteCancelsHandlerOnLostLease(t *testing.T) {
+	src := &lostLeaseSourceFake{}
+	reg := registration{
+		handler: func(ctx context.Context, _ []byte) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(5 * time.Second):
+				return nil
+			}
+		},
+		maxAttempts: 5,
+	}
+	d := NewDispatcher(src, discardLogger(), time.Millisecond, 4)
+	d.renewInterval = time.Millisecond
+
+	start := time.Now()
+	d.execute(context.Background(), etcdstore.Job{ID: 40, Kind: "test.job"}, "tok-40", reg)
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("execute took %v; handler was not cancelled on the lost lease", el)
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if src.requeued != 1 || src.retried != 0 {
+		t.Errorf("requeued=%d retried=%d, want requeued=1 retried=0", src.requeued, src.retried)
+	}
+}

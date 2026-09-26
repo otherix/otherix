@@ -162,8 +162,8 @@ func (d *Dispatcher) drain(ctx context.Context) {
 }
 
 // execute runs one claimed job and resolves its queue lifecycle: complete on
-// success, requeue (no attempt bump) when graceful shutdown aborted the handler,
-// or retry/fail on a real error.
+// success, requeue (no attempt bump) when the run was cancelled - shutdown, lost
+// leadership or lost job lease - or retry/fail on a real error.
 //
 // The queue bookkeeping runs on a context derived with context.WithoutCancel so
 // it SURVIVES a shutdown cancel of ctx: otherwise an in-flight job aborted by
@@ -174,20 +174,26 @@ func (d *Dispatcher) drain(ctx context.Context) {
 // these writes land. The bg context is bounded by bookkeepingTimeout so teardown
 // is not blocked indefinitely.
 func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, token string, reg registration) {
+	// hctx ends when ctx does (shutdown, lost leadership) or when the renewer
+	// finds the job's lease is no longer ours; either way the handler stops and
+	// the job takes the no-penalty requeue path below.
+	hctx, hcancel := context.WithCancel(ctx)
+	defer hcancel()
 	done := make(chan struct{})
 	defer close(done)
-	d.startRenewer(ctx, j.ID, token, done)
+	d.startRenewer(ctx, j.ID, token, done, hcancel)
 
-	herr := guardPanic(ctx, d.log, j.Kind, func() error { return reg.handler(ctx, j.Args) })
+	herr := guardPanic(hctx, d.log, j.Kind, func() error { return reg.handler(hctx, j.Args) })
 	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
 	defer cancel()
 	switch {
-	case herr != nil && ctx.Err() != nil:
-		// Graceful shutdown cancelled the run ctx and the handler aborted on it:
-		// requeue the job to pending WITHOUT penalising the attempt counter (a
-		// deploy is not a real failure) so the next boot redelivers it.
+	case herr != nil && hctx.Err() != nil:
+		// The run was cancelled (shutdown, lost leadership, or lost job lease) and
+		// the handler aborted on it: requeue WITHOUT penalising the attempt
+		// counter. RequeueJob is claim-token gated, so it is a no-op when the job
+		// was already reclaimed by another delivery.
 		if rerr := d.src.RequeueJob(bg, j.ID, token); rerr != nil {
-			d.log.ErrorContext(bg, "worker dispatcher: shutdown requeue failed", "job_id", j.ID, "error", rerr)
+			d.log.ErrorContext(bg, "worker dispatcher: cancel requeue failed", "job_id", j.ID, "error", rerr)
 		}
 	case herr != nil:
 		d.log.WarnContext(ctx, "worker job failed", "kind", j.Kind, "job_id", j.ID, "attempts", j.Attempts, "error", herr)
@@ -212,8 +218,9 @@ func (d *Dispatcher) execute(ctx context.Context, j etcdstore.Job, token string,
 // context.WithoutCancel(ctx) so a graceful-shutdown cancel does not stop renewing
 // an in-flight job (mirroring the post-handler bookkeeping). The goroutine stops
 // when done closes (handler returned) or RenewJobLease reports the lease is no
-// longer ours. It is tracked on the WaitGroup so it cannot outlive shutdown.
-func (d *Dispatcher) startRenewer(ctx context.Context, id int64, token string, done <-chan struct{}) {
+// longer ours, in which case it cancels the handler through lost. It is tracked
+// on the WaitGroup so it cannot outlive shutdown.
+func (d *Dispatcher) startRenewer(ctx context.Context, id int64, token string, done <-chan struct{}, lost context.CancelFunc) {
 	renewCtx := context.WithoutCancel(ctx)
 	d.wg.Add(1)
 	go func() {
@@ -231,6 +238,7 @@ func (d *Dispatcher) startRenewer(ctx context.Context, id int64, token string, d
 					continue
 				}
 				if !ok {
+					lost() // the job is no longer ours: stop its handler
 					return
 				}
 			}
