@@ -234,7 +234,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		// Drain both ListenAndServe goroutines.
 		for i := 0; i < expected; i++ {
-			<-errCh
+			<-errCh //nolint:errcheck // the serve loops' exit errors are expected after Shutdown
 		}
 		return firstErr
 	case err := <-errCh:

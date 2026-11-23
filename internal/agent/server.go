@@ -562,7 +562,7 @@ func stopAgentServers(grace time.Duration, srv *http.Server, plane *ingress.Plan
 		out = fmt.Errorf("shutdown: %w", err)
 	}
 	for i := 0; i < drain; i++ {
-		<-errc
+		<-errc //nolint:errcheck // the serve loops' exit errors are expected after Shutdown
 	}
 	return out
 }
