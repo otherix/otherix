@@ -9,6 +9,12 @@ updates:
       interval: weekly
     commit-message:
       prefix: build
+    ignore:
+      # etcd is the control plane's embedded store: a minor or major release
+      # moves the on-disk storage version and needs a rolling-upgrade plan
+      # across replicas, so it is upgraded deliberately, not in the weekly batch.
+      - dependency-name: "go.etcd.io/etcd/*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       go:
         update-types: [minor, patch]
