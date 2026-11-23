@@ -1,0 +1,44 @@
+# Weekly dependency updates. Minor and patch bumps are grouped into one PR per
+# ecosystem to keep the review load low; major bumps arrive one PR each.
+# Security updates are separate and not limited by the schedule.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      go:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /deploy/docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      docker:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: docs
+    groups:
+      docs:
+        update-types: [minor, patch]
