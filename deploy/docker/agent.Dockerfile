@@ -33,7 +33,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -X github.com/otherix/otherix/internal/version.Date=${DATE}" \
       -o /out/otherix-agent ./cmd/agent
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates && adduser -D -u 10001 otherix
 COPY --from=builder /out/otherix-agent /usr/local/bin/otherix-agent
 USER otherix
