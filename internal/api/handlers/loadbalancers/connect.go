@@ -196,5 +196,5 @@ func healthStalenessWindow(hc store.LoadBalancerHealthCheck, lbPort int32) time.
 
 // shuffleVMs randomizes the candidate order in place for stateless balancing.
 func shuffleVMs(vms []store.VM) {
-	rand.Shuffle(len(vms), func(i, j int) { vms[i], vms[j] = vms[j], vms[i] })
+	rand.Shuffle(len(vms), func(i, j int) { vms[i], vms[j] = vms[j], vms[i] }) //nolint:gosec // load spreading, not a security decision
 }
